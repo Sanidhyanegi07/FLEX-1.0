@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$Clean,
+    [switch]$SkipBridge,
     [string]$Compiler = "gcc"
 )
 
@@ -10,11 +11,16 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
 $target = "test_command_parser.exe"
+$bridgeTarget = "flex_bridge.exe"
 
 if ($Clean) {
     if (Test-Path $target) {
         Remove-Item $target -Force
         Write-Host "Cleaned $target" -ForegroundColor Cyan
+    }
+    if (Test-Path $bridgeTarget) {
+        Remove-Item $bridgeTarget -Force
+        Write-Host "Cleaned $bridgeTarget" -ForegroundColor Cyan
     }
 }
 
@@ -42,12 +48,32 @@ $cflags = @(
     $target
 )
 
-
-
 Write-Host "Compiling test suite with: $Compiler $cflags" -ForegroundColor Cyan
 & $Compiler @cflags
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Compilation failed with exit code $LASTEXITCODE."
+    Write-Error "Compilation of test suite failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
+
+$bridgeCflags = @(
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-pedantic",
+    "-Icore-c/include",
+    "core-c/src/command_parser.c",
+    "core-c/src/state_manager.c",
+    "core-c/src/orchestrator.c",
+    "core-c/src/bridge_main.c",
+    "-o",
+    $bridgeTarget
+)
+
+Write-Host "Compiling bridge executable with: $Compiler $bridgeCflags" -ForegroundColor Cyan
+& $Compiler @bridgeCflags
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Compilation of bridge executable failed with exit code $LASTEXITCODE."
     exit $LASTEXITCODE
 }
 
@@ -56,9 +82,19 @@ Write-Host "Running $target..." -ForegroundColor Cyan
 $testExitCode = $LASTEXITCODE
 
 if ($testExitCode -ne 0) {
-    Write-Error "Tests failed with exit code $testExitCode."
+    Write-Error "Unit tests failed with exit code $testExitCode."
     exit $testExitCode
 }
 
-Write-Host "All tests completed successfully." -ForegroundColor Green
+if (-not $SkipBridge) {
+    Write-Host "Running bridge smoke tests (test_bridge.ps1)..." -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File ".\test_bridge.ps1" -BridgeExe ".\$bridgeTarget"
+    $bridgeExitCode = $LASTEXITCODE
+    if ($bridgeExitCode -ne 0) {
+        Write-Error "Bridge smoke tests failed with exit code $bridgeExitCode."
+        exit $bridgeExitCode
+    }
+}
+
+Write-Host "All builds and tests completed successfully." -ForegroundColor Green
 exit 0

@@ -36,12 +36,40 @@ make clean
 
 ### Option 3: Direct GCC Command
 ```powershell
+# Compile and run test suite:
 gcc -std=c11 -Wall -Wextra -Werror -pedantic -I core-c/include core-c/src/command_parser.c core-c/src/state_manager.c core-c/src/orchestrator.c core-c/tests/test_command_parser.c core-c/tests/test_state_manager.c core-c/tests/test_orchestrator.c -o test_command_parser.exe
 .\test_command_parser.exe
+
+# Compile bridge executable:
+gcc -std=c11 -Wall -Wextra -Werror -pedantic -I core-c/include core-c/src/command_parser.c core-c/src/state_manager.c core-c/src/orchestrator.c core-c/src/bridge_main.c -o flex_bridge.exe
+
+# Run bridge smoke tests:
+powershell -ExecutionPolicy Bypass -File .\test_bridge.ps1
 ```
 
+## Bridge CLI Protocol (Stage 1E.1)
+`flex_bridge.exe` is a native C11 line-based IPC bridge designed for communication over stdin/stdout with callers such as Python or automated test suites.
+
+### Line-Based Request Framing
+- Requests are fed line-by-line via `stdin`, terminated by `\n` or `\r\n`.
+- Supported actions:
+  - `DISPATCH<TAB><command>`: Dispatches `<command>` to the orchestrator layer. `<TAB>` is a single literal tab (`\t`) character.
+  - `FINISH`: Explicitly finishes the currently active operation.
+  - `STATUS`: Reports current lifecycle state, active operation, operation ID, and last error.
+  - `RESET_ERROR`: Resets any recoverable state manager error to `FLEX_STATE_OK`.
+- Every request produces **exactly one JSON object** on `stdout` followed by `\n` and immediate flush.
+- Diagnostics, warnings, and error messages are written exclusively to `stderr`, keeping `stdout` clean and JSON-parseable.
+- Overlong input lines exceeding `BRIDGE_BUFFER_SIZE` (2048 bytes) are safely detected, rejected with an error JSON (`REQUEST_TOO_LONG`), and drained until newline without corrupting subsequent requests.
+
+### Graceful Shutdown and Lifecycle
+- The bridge process maintains a single caller-owned `FlexStateManager` throughout its lifetime.
+- Dispatching `exit` requests shutdown (`shutdown_requested = true`), moving the lifecycle to `STOPPING`.
+- In-flight operations are **not** abruptly cancelled; callers must send `FINISH` to complete them.
+- New operations are rejected with `FLEX_STATE_ERROR_STOPPING` while in `STOPPING`.
+- Clean termination occurs upon standard input `EOF` with exit code 0. If EOF occurs while an operation is still active, a diagnostic warning is emitted to `stderr`.
+
 ## Test Coverage
-The test suite (`core-c/tests/test_command_parser.c`, `core-c/tests/test_state_manager.c`, and `core-c/tests/test_orchestrator.c`) validates:
+The test suite (`core-c/tests/test_command_parser.c`, `core-c/tests/test_state_manager.c`, `core-c/tests/test_orchestrator.c`, and `test_bridge.ps1`) validates:
 
 ### Stage 1A Coverage
 1. **Command Recognition**: Exact matching of `chat`, `voice`, `memory`, and `exit`.
@@ -76,6 +104,14 @@ The test suite (`core-c/tests/test_command_parser.c`, `core-c/tests/test_state_m
 6. **Graceful Shutdown Integration**: Mapping `exit` commands to shutdown requests while preserving in-flight operations until finished.
 7. **Error Differentiation**: Distinguishing parser syntax errors (`parser_status`) from state transition errors (`state_status`).
 8. **Null & Overflow Safety**: Guarding against NULL inputs/state pointers and cleanly reporting operation ID overflow through `FLEX_STATE_ERROR_ID_OVERFLOW`.
+
+### Stage 1E.1 Coverage
+1. **Line Protocol & Framing**: Validation of `DISPATCH<TAB><command>`, `FINISH`, `STATUS`, `RESET_ERROR`, and error responses for malformed framing (`MALFORMED_REQUEST`, `UNKNOWN_ACTION`, `EMPTY_REQUEST`).
+2. **Single JSON Line Invariance**: Guaranteed exactly one valid JSON object per request terminated with `\n` and flushed immediately.
+3. **JSON Escaping Compliance**: RFC 8259 escaping of quotes (`"`), backslashes (`\`), control characters (`\t`, `\n`, `\r`, `\b`, `\f`, `\u00xx`) verifying safe transmission of arbitrary argument content.
+4. **Oversized Input Drainage**: Safe rejection of lines > 2048 bytes with `REQUEST_TOO_LONG` and full drainage of trailing characters to avoid corruption of subsequent commands; enforcement of `FLEX_MAX_INPUT_LEN` (1024) returning `FLEX_STATUS_INPUT_TOO_LONG`.
+5. **Operation & Shutdown Lifecycle**: Preservation of in-flight operation upon `exit` dispatch, rejection of new operations during `STOPPING`, and clean `FINISH` completion.
+6. **EOF & Stderr Isolation**: Clean exit with code 0 on EOF, nonzero exit code on read errors, and isolation of diagnostics/warnings to `stderr`.
 
 
 
