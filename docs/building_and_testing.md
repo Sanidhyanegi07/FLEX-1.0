@@ -1,19 +1,38 @@
-# FLEX 1.0 — Building and Testing Core C
+# FLEX 1.0 — Building and Testing Core C & Python Bridge
 
-## Prerequisites
-- **C Compiler**: GCC with C11 support (e.g. MinGW-w64 or MinGW GCC 6.3.0+)
-- **Environment**: Windows PowerShell or standard POSIX Make / MinGW make
+## Prerequisites and Verified Toolchain
+
+A development or CI environment on Windows requires:
+- **C Compiler**: GCC with C11 support (e.g. MinGW-w64 or MinGW.org GCC 6.3.0+). Verified with GCC 6.3.0 (MinGW 32-bit `mingw32`).
+- **Python**: Python 3.8+ (64-bit Windows PE). Verified with `Python 3.15.0rc3` (prerelease, 100% standard-library compliant with zero third-party dependencies).
+- **PowerShell**: Windows PowerShell 5.1+ or PowerShell 7+.
+- **Make Utility**: GNU Make or MinGW Make (`mingw32-make`).
+
+> [!IMPORTANT]
+> **Clean Checkout Notice**:
+> Compiled binaries (`*.exe`, `*.o`, `*.dll`) are ignored by version control ([`.gitignore`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/.gitignore)) and are not stored in the repository. After a fresh `git clone` or checkout, you **must build** the binaries before running the bridge tests or Python client.
+
+---
+
+## Artifact and Executable Locations
+
+| Target Artifact | Source Files | Build Location | Description |
+|---|---|---|---|
+| `test_command_parser.exe` | `core-c/src/command_parser.c`<br>`core-c/src/state_manager.c`<br>`core-c/src/orchestrator.c`<br>`core-c/tests/*.c` | `<repo_root>/test_command_parser.exe` | C unit test runner validating Stages 1A–1D (541 assertions). |
+| `flex_bridge.exe` | `core-c/src/command_parser.c`<br>`core-c/src/state_manager.c`<br>`core-c/src/orchestrator.c`<br>`core-c/src/bridge_main.c` | `<repo_root>/flex_bridge.exe` | Standalone native IPC line bridge executable. |
+
+---
 
 ## How to Build and Run Tests
 
-### Option 1: PowerShell (Recommended on Windows)
-Run the automated build and test runner script from the repository root:
+### Option 1: PowerShell Automated Build & Test (Recommended on Windows)
+Run the automated build script from the repository root. This compiles both executables, runs the 541 C unit tests, runs the 74 PowerShell smoke tests, and runs all 49 Python unit and integration tests:
 
 ```powershell
 .\build_test.ps1
 ```
 
-To clean previous artifacts before building:
+To clean previous artifacts and rebuild from scratch:
 ```powershell
 .\build_test.ps1 -Clean
 ```
@@ -28,7 +47,7 @@ To skip the bridge smoke tests or Python tests:
 From the repository root:
 
 ```sh
-# Using GNU Make or MinGW Make
+# Compiles test_command_parser.exe and flex_bridge.exe, then runs C unit tests:
 mingw32-make all
 ```
 
