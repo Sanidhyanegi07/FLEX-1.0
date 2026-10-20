@@ -1,0 +1,13 @@
+# Build artifacts
+*.exe
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.a
+
+# Build directories
+build/
+bin/
+out/
