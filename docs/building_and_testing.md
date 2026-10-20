@@ -18,23 +18,43 @@ To clean previous artifacts before building:
 .\build_test.ps1 -Clean
 ```
 
+To skip the bridge smoke tests or Python tests:
+```powershell
+.\build_test.ps1 -SkipBridge
+.\build_test.ps1 -SkipPython
+```
+
 ### Option 2: GNU Make / MinGW Make
 From the repository root:
 
 ```sh
-# Using GNU Make
-make test
-
-# Or using MinGW Make
-mingw32-make test
+# Using GNU Make or MinGW Make
+mingw32-make all
 ```
 
 To clean up built binaries:
 ```sh
-make clean
+mingw32-make clean
 ```
 
-### Option 3: Direct GCC Command
+### Option 3: Python Client and End-to-End Integration Tests
+Run all Python test suites (unit tests in `test_core_bridge.py` + integration tests in `test_core_integration.py`):
+
+```powershell
+python -m unittest discover -s backend/tests -v
+```
+
+To run only the end-to-end integration test suite:
+```powershell
+python -m unittest backend/tests/test_core_integration.py -v
+```
+
+To run only the Python bridge client unit test suite:
+```powershell
+python -m unittest backend/tests/test_core_bridge.py -v
+```
+
+### Option 4: Direct GCC Command
 ```powershell
 # Compile and run test suite:
 gcc -std=c11 -Wall -Wextra -Werror -pedantic -I core-c/include core-c/src/command_parser.c core-c/src/state_manager.c core-c/src/orchestrator.c core-c/tests/test_command_parser.c core-c/tests/test_state_manager.c core-c/tests/test_orchestrator.c -o test_command_parser.exe
@@ -68,8 +88,45 @@ powershell -ExecutionPolicy Bypass -File .\test_bridge.ps1
 - New operations are rejected with `FLEX_STATE_ERROR_STOPPING` while in `STOPPING`.
 - Clean termination occurs upon standard input `EOF` with exit code 0. If EOF occurs while an operation is still active, a diagnostic warning is emitted to `stderr`.
 
+## End-to-End Integration (Stage 1E.3)
+The end-to-end integration architecture validates the full path:
+```text
+Python Application
+       │
+       ▼
+FlexBridgeClient (backend/core_bridge.py)
+       │  (stdin: DISPATCH\t<cmd>\n, STATUS\n, FINISH\n, RESET_ERROR\n)
+       ▼
+flex_bridge.exe (core-c/src/bridge_main.c)
+       │
+       ▼
+C Command Orchestrator (core-c/src/orchestrator.c)
+  ├── Command Parser (core-c/src/command_parser.c)
+  └── State Manager (core-c/src/state_manager.c)
+       │
+       ▼
+JSON Response Line (stdout)
+       │
+       ▼
+Python Application receives parsed dictionary
+```
+
+## Troubleshooting & Common Pitfalls
+
+1. **`FlexBridgeNotFoundError`**:
+   - Ensure `flex_bridge.exe` is built before running Python tests. Run `.\build_test.ps1` or `mingw32-make all`.
+   - Alternatively, set the environment variable: `$env:FLEX_BRIDGE_EXE = "C:\path\to\flex_bridge.exe"`.
+2. **Character Length vs. Byte Length (`FLEX_STATUS_INPUT_TOO_LONG`)**:
+   - In Python, `len("🚀") == 1` character, but `utf8_byte_length("🚀") == 4` bytes.
+   - The C core enforces an input length limit of 1024 UTF-8 bytes. Strings containing multi-byte Unicode characters may exceed this limit even if their Python character length is well below 1024.
+3. **Broken Pipe / Unexpected Process Exit (`FlexBridgeProcessError`)**:
+   - If the C executable terminates abruptly, `FlexBridgeClient` raises `FlexBridgeProcessError` containing the exit code and captured stderr diagnostics.
+   - To preserve state integrity, `FlexBridgeClient` never silently restarts in the middle of a session. Callers must invoke `client.restart(force=True)` explicitly.
+4. **Operation Active at Close**:
+   - Closing the client while an operation is active sets `closed_with_active_operation = True` and logs a warning. In-flight operations are not falsely reported as finished.
+
 ## Test Coverage
-The test suite (`core-c/tests/test_command_parser.c`, `core-c/tests/test_state_manager.c`, `core-c/tests/test_orchestrator.c`, and `test_bridge.ps1`) validates:
+The test suites across C, PowerShell, and Python validate:
 
 ### Stage 1A Coverage
 1. **Command Recognition**: Exact matching of `chat`, `voice`, `memory`, and `exit`.
@@ -112,6 +169,20 @@ The test suite (`core-c/tests/test_command_parser.c`, `core-c/tests/test_state_m
 4. **Oversized Input Drainage**: Safe rejection of lines > 2048 bytes with `REQUEST_TOO_LONG` and full drainage of trailing characters to avoid corruption of subsequent commands; enforcement of `FLEX_MAX_INPUT_LEN` (1024) returning `FLEX_STATUS_INPUT_TOO_LONG`.
 5. **Operation & Shutdown Lifecycle**: Preservation of in-flight operation upon `exit` dispatch, rejection of new operations during `STOPPING`, and clean `FINISH` completion.
 6. **EOF & Stderr Isolation**: Clean exit with code 0 on EOF, nonzero exit code on read errors, and isolation of diagnostics/warnings to `stderr`.
+
+### Stage 1E.2 Coverage
+1. **Process Management**: Persistent subprocess invocation via `subprocess.Popen` with background reader threads for stdout and stderr.
+2. **Path Resolution**: Hierarchical resolution across explicit arguments, environment variables, repository roots, and system PATH.
+3. **Exception Hierarchy**: Differentiating not-found, process/broken-pipe, timeout, and protocol errors.
+4. **Non-Silent Recovery**: Strict prohibition of silent auto-restarts, requiring explicit `client.restart()` to acknowledge state loss.
+5. **Context Manager**: Reliable process cleanup on exit with active operation tracking.
+
+### Stage 1E.3 Coverage
+1. **End-to-End Operation Lifecycle**: Proving seamless communication across Python `FlexBridgeClient` and native C core for `chat`, `voice`, and `memory`.
+2. **Monotonic Operation IDs**: Verification that operation IDs persist and increment monotonically across successive operations in a session.
+3. **In-Flight Shutdown Drainage**: Full end-to-end verification that `exit` switches lifecycle to `STOPPING` while allowing in-flight operations to be cleanly completed with `FINISH`.
+4. **Concurrent Operation Guarding**: End-to-end verification that rejected concurrent operations leave the primary operation completely uncorrupted.
+5. **Boundary & Encoding Resilience**: Verification that exact 1024-byte payloads pass, 1025-byte payloads fail safely, multi-byte Unicode strings respect byte limits, and 3000-byte oversized lines drain cleanly.
 
 
 

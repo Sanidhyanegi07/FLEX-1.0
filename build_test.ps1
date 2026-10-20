@@ -2,6 +2,7 @@
 param(
     [switch]$Clean,
     [switch]$SkipBridge,
+    [switch]$SkipPython,
     [string]$Compiler = "gcc"
 )
 
@@ -93,6 +94,21 @@ if (-not $SkipBridge) {
     if ($bridgeExitCode -ne 0) {
         Write-Error "Bridge smoke tests failed with exit code $bridgeExitCode."
         exit $bridgeExitCode
+    }
+}
+
+if (-not $SkipPython) {
+    Write-Host "Running Python unit & integration tests (backend/tests)..." -ForegroundColor Cyan
+    $pythonCmd = Get-Command "python" -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        & python -m unittest discover -s backend/tests -v
+        $pythonExitCode = $LASTEXITCODE
+        if ($pythonExitCode -ne 0) {
+            Write-Error "Python tests failed with exit code $pythonExitCode."
+            exit $pythonExitCode
+        }
+    } else {
+        Write-Warning "Python interpreter not found in PATH. Skipping Python tests."
     }
 }
 
