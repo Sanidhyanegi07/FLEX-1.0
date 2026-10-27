@@ -19,16 +19,17 @@ Stage 2A Architecture:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import math
+import os
 import queue
 import socket
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
 from .coordinator import (
@@ -46,6 +47,7 @@ from .ai.exceptions import (
     FLEXAIError,
 )
 from .ai.storage import SQLiteConversationStorage
+from .workspace import WorkspaceManager, is_binary_file
 
 logger = logging.getLogger(__name__)
 
@@ -705,8 +707,13 @@ class ChatView(tk.Frame):
         )
         self.btn_clear.pack(side=tk.LEFT, padx=3)
 
+        # Attachment bar for workspace files (Stage 2D)
+        self.attachment_bar = tk.Frame(bottom_deck, bg=COLOR_BG_ROOT)
+        self.attachment_chips_frame = tk.Frame(self.attachment_bar, bg=COLOR_BG_ROOT)
+        self.attachment_chips_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Floating Input Pill Container (matching reference image)
-        input_pill = tk.Frame(
+        self.input_pill = tk.Frame(
             bottom_deck,
             bg=COLOR_BG_INPUT,
             highlightthickness=1,
@@ -714,11 +721,11 @@ class ChatView(tk.Frame):
             padx=8,
             pady=4,
         )
-        input_pill.pack(side=tk.BOTTOM, fill=tk.X)
-        input_pill.bind("<Button-1>", lambda e: self.focus_composer())
+        self.input_pill.pack(side=tk.BOTTOM, fill=tk.X)
+        self.input_pill.bind("<Button-1>", lambda e: self.focus_composer())
 
         self.btn_send = tk.Button(
-            input_pill,
+            self.input_pill,
             text="➤",
             font=("Segoe UI", 11, "bold"),
             fg=COLOR_TEXT_PRIMARY,
@@ -734,7 +741,7 @@ class ChatView(tk.Frame):
         self.btn_send.pack(side=tk.RIGHT)
 
         self.btn_attach = tk.Button(
-            input_pill,
+            self.input_pill,
             text="📎",
             font=("Segoe UI", 11),
             fg=COLOR_TEXT_MUTED,
@@ -745,12 +752,12 @@ class ChatView(tk.Frame):
             padx=6,
             pady=2,
             cursor="hand2",
-            command=lambda: self.status_lbl.configure(text="Attachments: Planned for Stage 2 Knowledge Base.", fg=COLOR_TEXT_WARNING),
+            command=self._on_attach_clicked,
         )
         self.btn_attach.pack(side=tk.RIGHT, padx=(0, 4))
 
         self.txt_input = tk.Text(
-            input_pill,
+            self.input_pill,
             bg=COLOR_BG_INPUT,
             fg=COLOR_TEXT_PRIMARY,
             insertbackground=COLOR_TEXT_ACCENT,
@@ -902,6 +909,82 @@ class ChatView(tk.Frame):
         self.chat_display.see(tk.END)
         self.chat_display.configure(state=tk.DISABLED)
 
+    def _on_attach_clicked(self) -> None:
+        """Navigates to the Projects & Files workspace to select or manage attachments."""
+        if self.app and hasattr(self.app, "switch_view"):
+            self.app.switch_view("projects")
+
+    def refresh_attachments(self) -> None:
+        """Refreshes the attached workspace file chips displayed above the prompt composer."""
+        if not hasattr(self, "attachment_chips_frame"):
+            return
+        for child in self.attachment_chips_frame.winfo_children():
+            child.destroy()
+
+        wm = getattr(self.app, "workspace_manager", None)
+        if not wm:
+            self.attachment_bar.pack_forget()
+            return
+
+        attached = wm.get_attached_files()
+        if not attached:
+            self.attachment_bar.pack_forget()
+            return
+
+        tk.Label(
+            self.attachment_chips_frame,
+            text="📎 Attached Context:",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_ROOT,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        for rel in attached:
+            chip = tk.Frame(
+                self.attachment_chips_frame,
+                bg=COLOR_BG_CARD,
+                highlightthickness=1,
+                highlightbackground=COLOR_BORDER_FOCUS,
+                padx=4,
+                pady=1,
+            )
+            chip.pack(side=tk.LEFT, padx=3)
+            base_name = os.path.basename(rel) or rel
+            tk.Label(
+                chip,
+                text=base_name,
+                font=("Consolas", 8),
+                fg=COLOR_TEXT_PRIMARY,
+                bg=COLOR_BG_CARD,
+            ).pack(side=tk.LEFT, padx=(2, 4))
+            btn_x = tk.Button(
+                chip,
+                text="✕",
+                font=("Segoe UI", 7, "bold"),
+                fg=COLOR_TEXT_MUTED,
+                bg=COLOR_BG_CARD,
+                activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+                activeforeground=COLOR_TEXT_ERROR,
+                relief=tk.FLAT,
+                padx=2,
+                pady=0,
+                cursor="hand2",
+                command=lambda p=rel: self._detach_workspace_file(p),
+            )
+            btn_x.pack(side=tk.LEFT)
+
+        self.attachment_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 4), before=self.input_pill)
+
+    def _detach_workspace_file(self, rel_path: str) -> None:
+        wm = getattr(self.app, "workspace_manager", None)
+        if wm:
+            wm.detach_file(rel_path)
+            self.refresh_attachments()
+            if self.app and "projects" in getattr(self.app, "views", {}):
+                pv = self.app.views["projects"]
+                if hasattr(pv, "update_attachment_tray"):
+                    pv.update_attachment_tray()
+
     def _handle_enter_key(self, event: Any) -> str:
         if event.state & 0x0001:
             return self._handle_shift_enter(event)
@@ -940,6 +1023,16 @@ class ChatView(tk.Frame):
         self._append_to_chat(f"\nUser:\n", "user_hdr")
         self._append_to_chat(f"{raw_text}\n", "user_msg")
 
+        # Assemble workspace context block if files are attached
+        context_block: Optional[str] = None
+        attached_count = 0
+        if self.app and hasattr(self.app, "workspace_manager"):
+            try:
+                context_block, files = self.app.workspace_manager.build_context_block()
+                attached_count = len(files)
+            except Exception as exc:
+                logger.warning("Error building workspace context: %s", exc)
+
         self._busy = True
         if hasattr(self, "ai_core"):
             self.ai_core.set_compact_mode(True)
@@ -949,14 +1042,15 @@ class ChatView(tk.Frame):
             text="BUSY...", bg=COLOR_BTN_SECONDARY, state=tk.DISABLED
         )
         self.progress_bar.start(12)
+        status_suffix = f" with {attached_count} file(s) attached" if attached_count > 0 else ""
         self.status_lbl.configure(
-            text="Processing: Dispatched to C core orchestrator...", fg=COLOR_TEXT_WARNING
+            text=f"Processing: Dispatched to C core orchestrator{status_suffix}...", fg=COLOR_TEXT_WARNING
         )
 
         start_time = time.time()
         threading.Thread(
             target=self._worker_send,
-            args=(raw_text, start_time),
+            args=(raw_text, start_time, context_block, attached_count),
             daemon=True,
             name="FlexChatWorker",
         ).start()
@@ -996,20 +1090,31 @@ class ChatView(tk.Frame):
             except Exception as exc:
                 logger.error("Error processing chat queue item: %s", exc)
 
-    def _worker_send(self, text: str, start_time: float) -> None:
+    def _worker_send(
+        self,
+        text: str,
+        start_time: float,
+        context_block: Optional[str] = None,
+        attached_count: int = 0,
+    ) -> None:
         try:
-            result = self.coordinator.send_chat(text)
+            result = self.coordinator.send_chat(text, workspace_context=context_block)
             elapsed = time.time() - start_time
             if not self._closing and not (self.app and self.app._closing):
-                self._chat_queue.put(("success", result, elapsed))
+                self._chat_queue.put(("success", (result, attached_count), elapsed))
         except Exception as exc:
             elapsed = time.time() - start_time
             if not self._closing and not (self.app and self.app._closing):
                 self._chat_queue.put(("error", exc, elapsed))
 
-    def _on_chat_success(self, result: CoordinatorChatResult, elapsed: float) -> None:
+    def _on_chat_success(self, payload: Any, elapsed: float) -> None:
         if self._closing or (self.app and self.app._closing):
             return
+        if isinstance(payload, tuple):
+            result, attached_count = payload
+        else:
+            result, attached_count = payload, 0
+
         self._last_op_id = result.operation_id
         if self.app and hasattr(self.app, "badge_op") and self.app.badge_op.winfo_exists():
             self.app.badge_op.configure(text=f"OP #{result.operation_id}", fg=COLOR_TEXT_ACCENT)
@@ -1033,9 +1138,10 @@ class ChatView(tk.Frame):
         self._append_to_chat(f"{result.text}\n", "flex_msg")
 
         storage_tag = getattr(result, "storage_status", "MEMORY_ONLY")
+        ctx_tag = f" • Context: {attached_count} file(s)" if attached_count > 0 else ""
         meta = (
             f"└─ [C Core Verified: Op #{result.operation_id} • "
-            f"Parser: {result.parser_status} • State: {result.state_status} • "
+            f"Parser: {result.parser_status} • State: {result.state_status}{ctx_tag} • "
             f"Latency: {elapsed:.2f}s • Storage: {storage_tag}]\n"
         )
         self._append_to_chat(meta, "meta_tag")
@@ -1047,6 +1153,8 @@ class ChatView(tk.Frame):
         )
         if self.app and hasattr(self.app, "refresh_status"):
             self.app.refresh_status()
+        if self.app and hasattr(self.app, "_refresh_recent_chats"):
+            self.app._refresh_recent_chats()
         if self.app and hasattr(self.app, "_refresh_recent_chats"):
             self.app._refresh_recent_chats()
 
@@ -2151,8 +2259,606 @@ class MemoryView(tk.Frame):
                     self.app._refresh_recent_chats()
                 if self.app and hasattr(self.app, "refresh_status"):
                     self.app.refresh_status()
+            except Exception as e:
+                messagebox.showerror("Delete Error", f"Failed to delete conversation: {e}")
+
+
+class ProjectsView(tk.Frame):
+    """Projects & Files Workspace Management View for FLEX 1.0 (Stage 2D).
+
+    Provides an interactive, secure local workspace explorer:
+        - Native directory selection dialog with path persistence.
+        - Hierarchical, expandable directory tree with lazy-loading child nodes.
+        - Safe read-only file preview with automatic encoding detection and binary filtering.
+        - Chat attachment management: attach project files into the AI context block.
+        - Strict path containment: prevents directory traversal or symlink escapes.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        workspace_manager: Optional[WorkspaceManager] = None,
+        app: Optional["FlexDesktopApp"] = None,
+    ) -> None:
+        super().__init__(parent, bg=COLOR_BG_ROOT)
+        self.app = app
+        self.workspace_manager: WorkspaceManager = (
+            workspace_manager if workspace_manager is not None else WorkspaceManager()
+        )
+        self.selected_rel_path: Optional[str] = None
+        self._tree_nodes: Dict[str, str] = {}  # node_id -> rel_path
+
+        self._build_ui()
+        self.refresh()
+
+    def _build_ui(self) -> None:
+        # 1. Header Toolbar
+        header_frame = tk.Frame(self, bg=COLOR_BG_ROOT, padx=18, pady=10)
+        header_frame.pack(side=tk.TOP, fill=tk.X)
+
+        title_box = tk.Frame(header_frame, bg=COLOR_BG_ROOT)
+        title_box.pack(side=tk.LEFT)
+
+        lbl_title = tk.Label(
+            title_box,
+            text="📁 PROJECTS & FILES WORKSPACE",
+            font=("Segoe UI", 12, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_ROOT,
+        )
+        lbl_title.pack(anchor="w")
+
+        self.lbl_sub = tk.Label(
+            title_box,
+            text="Attach local project directories to supply code context to FLEX 1.0.",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_ROOT,
+        )
+        self.lbl_sub.pack(anchor="w")
+
+        # Header Action Controls
+        toolbar_right = tk.Frame(header_frame, bg=COLOR_BG_ROOT)
+        toolbar_right.pack(side=tk.RIGHT)
+
+        self.badge_status = tk.Label(
+            toolbar_right,
+            text="● NO WORKSPACE",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_CARD,
+            padx=8,
+            pady=3,
+            relief=tk.FLAT,
+        )
+        self.badge_status.pack(side=tk.LEFT, padx=(0, 8))
+
+        btn_browse = tk.Button(
+            toolbar_right,
+            text="📂 Select Workspace...",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER_FOCUS,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            command=self._on_select_workspace,
+        )
+        btn_browse.pack(side=tk.LEFT, padx=(0, 6))
+
+        btn_refresh = tk.Button(
+            toolbar_right,
+            text="⟳ Refresh",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BORDER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.refresh,
+        )
+        btn_refresh.pack(side=tk.LEFT, padx=(0, 6))
+
+        btn_clear = tk.Button(
+            toolbar_right,
+            text="✕ Clear",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BORDER,
+            activeforeground=COLOR_TEXT_ERROR,
+            relief=tk.FLAT,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+            command=self._on_clear_workspace,
+        )
+        btn_clear.pack(side=tk.LEFT)
+
+        # 2. Main Two-Column Layout (File Tree + Preview/Attachments)
+        body = tk.Frame(self, bg=COLOR_BG_ROOT, padx=18, pady=0)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        # ── Left Column: Workspace File Explorer ──────────────────────────────
+        left_col = tk.Frame(
+            body,
+            bg=COLOR_BG_PANEL,
+            width=320,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        left_col.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left_col.pack_propagate(False)
+
+        left_hdr = tk.Frame(left_col, bg=COLOR_BG_PANEL, padx=10, pady=8)
+        left_hdr.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Label(
+            left_hdr,
+            text="PROJECT FILES",
+            font=("Segoe UI", 8, "bold"),
+            fg="#64748B",
+            bg=COLOR_BG_PANEL,
+        ).pack(side=tk.LEFT)
+
+        self.lbl_file_count = tk.Label(
+            left_hdr,
+            text="0",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_CARD,
+            padx=6,
+            pady=1,
+        )
+        self.lbl_file_count.pack(side=tk.RIGHT)
+
+        # Treeview for File Explorer
+        tree_container = tk.Frame(left_col, bg=COLOR_BG_PANEL)
+        tree_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.tree_scroll = ttk.Scrollbar(tree_container, orient=tk.VERTICAL)
+        self.tree = ttk.Treeview(
+            tree_container,
+            show="tree",
+            selectmode="browse",
+            yscrollcommand=self.tree_scroll.set,
+            style="Projects.Treeview",
+        )
+        self.tree_scroll.configure(command=self.tree.yview)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.tree.bind("<<TreeviewOpen>>", self._on_tree_expand)
+
+        # ── Right Column: File Preview & Attachment Controls ─────────────────
+        right_col = tk.Frame(
+            body,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # File Preview Header
+        preview_hdr = tk.Frame(right_col, bg=COLOR_BG_PANEL, padx=14, pady=10)
+        preview_hdr.pack(side=tk.TOP, fill=tk.X)
+
+        preview_info = tk.Frame(preview_hdr, bg=COLOR_BG_PANEL)
+        preview_info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.lbl_file_name = tk.Label(
+            preview_info,
+            text="No file selected",
+            font=("Segoe UI", 12, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_file_name.pack(anchor="w")
+
+        self.lbl_file_meta = tk.Label(
+            preview_info,
+            text="Select a file from the left to inspect its contents and attach it to chat.",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_file_meta.pack(anchor="w", pady=(2, 0))
+
+        # Attach / Detach Button
+        self.btn_attach = tk.Button(
+            preview_hdr,
+            text="➕ Attach to Chat",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER_FOCUS,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            state=tk.DISABLED,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            command=self._on_toggle_attach,
+        )
+        self.btn_attach.pack(side=tk.RIGHT)
+
+        # Divider
+        tk.Frame(right_col, bg=COLOR_BORDER, height=1).pack(fill=tk.X)
+
+        # Text Preview Area
+        preview_body = tk.Frame(right_col, bg=COLOR_BG_CHAT)
+        preview_body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.txt_preview = tk.Text(
+            preview_body,
+            bg=COLOR_BG_CHAT,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            selectbackground=COLOR_BTN_PRIMARY,
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            padx=14,
+            pady=12,
+            wrap=tk.NONE,
+            state=tk.DISABLED,
+        )
+        self.txt_preview.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scroll_v = ttk.Scrollbar(preview_body, orient=tk.VERTICAL, command=self.txt_preview.yview)
+        scroll_v.pack(side=tk.RIGHT, fill=tk.Y)
+        scroll_h = ttk.Scrollbar(right_col, orient=tk.HORIZONTAL, command=self.txt_preview.xview)
+        scroll_h.pack(side=tk.TOP, fill=tk.X)
+        self.txt_preview.configure(yscrollcommand=scroll_v.set, xscrollcommand=scroll_h.set)
+
+        self.txt_preview.tag_configure("system_msg", foreground=COLOR_TEXT_MUTED, font=("Segoe UI", 8, "italic"))
+        self.txt_preview.tag_configure("warning_msg", foreground=COLOR_TEXT_WARNING, font=("Segoe UI", 9, "bold"))
+        self.txt_preview.tag_configure("code_msg", foreground=COLOR_TEXT_PRIMARY, font=("Consolas", 9))
+
+        # Bottom Tray: Active Chat Context Attachments
+        self.tray_frame = tk.Frame(right_col, bg=COLOR_BG_PANEL, padx=12, pady=8)
+        self.tray_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+        tray_top = tk.Frame(self.tray_frame, bg=COLOR_BG_PANEL)
+        tray_top.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            tray_top,
+            text="ATTACHED CHAT CONTEXT",
+            font=("Segoe UI", 8, "bold"),
+            fg="#64748B",
+            bg=COLOR_BG_PANEL,
+        ).pack(side=tk.LEFT)
+
+        self.lbl_tray_status = tk.Label(
+            tray_top,
+            text="0 / 5 files • 0 KB",
+            font=("Consolas", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        )
+        self.lbl_tray_status.pack(side=tk.LEFT, padx=(8, 0))
+
+        btn_clear_all = tk.Button(
+            tray_top,
+            text="Clear All",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+            activeforeground=COLOR_TEXT_ERROR,
+            relief=tk.FLAT,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self._on_clear_all_attachments,
+        )
+        btn_clear_all.pack(side=tk.RIGHT)
+
+        self.chips_box = tk.Frame(self.tray_frame, bg=COLOR_BG_PANEL)
+        self.chips_box.pack(fill=tk.X)
+
+    def refresh(self) -> None:
+        """Refreshes workspace status, file tree, and attachment tray."""
+        if not self.winfo_exists():
+            return
+
+        if self.workspace_manager.is_workspace_valid():
+            root_p = self.workspace_manager.workspace_root or ""
+            self.badge_status.configure(text="● WORKSPACE ACTIVE", fg=COLOR_TEXT_SUCCESS)
+            self.lbl_sub.configure(text=f"Active Workspace: {root_p}")
+        else:
+            self.badge_status.configure(text="● NO WORKSPACE", fg=COLOR_TEXT_MUTED)
+            self.lbl_sub.configure(text="No workspace directory selected. Choose a local project directory.")
+
+        self._populate_tree()
+        self.update_attachment_tray()
+
+    def set_workspace(self, path: str) -> None:
+        """Sets the active workspace path and refreshes the view."""
+        self.workspace_manager.set_workspace(path)
+        self.refresh()
+        if self.app and hasattr(self.app, "chat_view"):
+            self.app.chat_view.refresh_attachments()
+
+    def _on_select_workspace(self) -> None:
+        selected = filedialog.askdirectory(
+            title="Select Project Workspace Directory",
+            parent=self,
+        )
+        if selected:
+            try:
+                self.workspace_manager.set_workspace(selected)
+                self.refresh()
+                if self.app and hasattr(self.app, "chat_view"):
+                    self.app.chat_view.refresh_attachments()
             except Exception as exc:
-                messagebox.showerror("Delete Error", f"Could not delete conversation: {exc}", parent=self)
+                messagebox.showerror("Workspace Error", f"Could not set workspace: {exc}", parent=self)
+
+    def _on_clear_workspace(self) -> None:
+        self.workspace_manager.clear_workspace()
+        self.selected_rel_path = None
+        self._clear_preview("Workspace cleared. Select a project folder to browse files.")
+        self.refresh()
+        if self.app and hasattr(self.app, "chat_view"):
+            self.app.chat_view.refresh_attachments()
+
+    def _populate_tree(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._tree_nodes.clear()
+
+        if not self.workspace_manager.is_workspace_valid():
+            self.lbl_file_count.configure(text="0")
+            self.tree.insert("", tk.END, text="  [No workspace directory selected]")
+            self._clear_preview("Select or open a local project folder above to explore files.")
+            return
+
+        try:
+            items = self.workspace_manager.list_directory("")
+            self.lbl_file_count.configure(text=str(len(items)))
+            for item in items:
+                icon = "📁 " if item.is_dir else "📄 "
+                nid = self.tree.insert("", tk.END, text=f"{icon}{item.name}", open=False)
+                self._tree_nodes[nid] = item.rel_path
+                if item.is_dir:
+                    self.tree.insert(nid, tk.END, text="Loading...")
+        except Exception as exc:
+            logger.error("Error listing workspace root: %s", exc)
+            self.lbl_file_count.configure(text="0")
+            self.tree.insert("", tk.END, text=f"  [Error listing files: {exc}]")
+
+    def _on_tree_expand(self, event=None) -> None:
+        nid = self.tree.focus()
+        rel_path = self._tree_nodes.get(nid)
+        if not rel_path:
+            return
+
+        children = self.tree.get_children(nid)
+        if children and self.tree.item(children[0])["text"] == "Loading...":
+            self.tree.delete(children[0])
+            try:
+                sub_items = self.workspace_manager.list_directory(rel_path)
+                for sub in sub_items:
+                    icon = "📁 " if sub.is_dir else "📄 "
+                    cid = self.tree.insert(nid, tk.END, text=f"{icon}{sub.name}", open=False)
+                    self._tree_nodes[cid] = sub.rel_path
+                    if sub.is_dir:
+                        self.tree.insert(cid, tk.END, text="Loading...")
+            except Exception as exc:
+                self.tree.insert(nid, tk.END, text=f"  [Error: {exc}]")
+
+    def _on_tree_select(self, event=None) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        nid = sel[0]
+        rel_path = self._tree_nodes.get(nid)
+        if not rel_path:
+            return
+
+        # Check if directory
+        ws_root = self.workspace_manager.workspace_root
+        if not ws_root:
+            return
+        full_path = os.path.join(ws_root, rel_path)
+        if os.path.isdir(full_path):
+            self.selected_rel_path = None
+            self.lbl_file_name.configure(text=os.path.basename(rel_path))
+            self.lbl_file_meta.configure(text=f"Directory • {rel_path}")
+            self.btn_attach.configure(state=tk.DISABLED, text="➕ Attach to Chat")
+            self._clear_preview("Directory selected. Click the expand arrow to browse its contents.")
+            return
+
+        self.selected_rel_path = rel_path
+        self._load_file_preview(rel_path)
+        self._update_attach_button()
+
+    def _load_file_preview(self, rel_path: str) -> None:
+        ws_root = self.workspace_manager.workspace_root
+        if not ws_root:
+            return
+        full_path = os.path.join(ws_root, rel_path)
+
+        file_name = os.path.basename(rel_path)
+        self.lbl_file_name.configure(text=file_name)
+
+        size_str = "0 B"
+        mtime_str = "Unknown"
+        try:
+            stat_res = os.stat(full_path)
+            size_kb = stat_res.st_size / 1024.0
+            size_str = f"{stat_res.st_size} B" if stat_res.st_size < 1024 else f"{size_kb:.1f} KB"
+            mtime_str = datetime.fromtimestamp(stat_res.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        except OSError:
+            pass
+
+        self.lbl_file_meta.configure(
+            text=f"Path: {rel_path}  •  Size: {size_str}  •  Modified: {mtime_str}"
+        )
+
+        content, is_trunc, is_bin = self.workspace_manager.get_file_preview(rel_path)
+
+        self.txt_preview.configure(state=tk.NORMAL)
+        self.txt_preview.delete("1.0", tk.END)
+
+        if is_bin:
+            self.txt_preview.insert(tk.END, f"\n  ● BINARY FILE DETECTED\n", "warning_msg")
+            self.txt_preview.insert(tk.END, f"  File '{file_name}' contains binary or unprintable data and cannot be previewed.\n", "system_msg")
+            self.txt_preview.insert(tk.END, f"  Binary files cannot be attached to chat contexts.\n", "system_msg")
+        else:
+            if is_trunc:
+                max_kb = self.workspace_manager.max_preview_bytes // 1024
+                self.txt_preview.insert(tk.END, f"── File exceeds {max_kb} KB preview limit. Showing initial {max_kb} KB ──\n\n", "warning_msg")
+            self.txt_preview.insert(tk.END, content, "code_msg")
+
+        self.txt_preview.configure(state=tk.DISABLED)
+        self.txt_preview.see("1.0")
+
+    def _update_attach_button(self) -> None:
+        if not self.selected_rel_path:
+            self.btn_attach.configure(state=tk.DISABLED, text="➕ Attach to Chat")
+            return
+
+        ws_root = self.workspace_manager.workspace_root
+        if not ws_root:
+            self.btn_attach.configure(state=tk.DISABLED)
+            return
+
+        full_p = os.path.join(ws_root, self.selected_rel_path)
+        if not os.path.isfile(full_p) or is_binary_file(full_p):
+            self.btn_attach.configure(state=tk.DISABLED, text="➕ Attach to Chat")
+            return
+
+        attached = self.workspace_manager.get_attached_files()
+        norm_rel = os.path.normpath(self.selected_rel_path)
+        if norm_rel in attached:
+            self.btn_attach.configure(
+                state=tk.NORMAL,
+                text="✕ Detach from Chat",
+                bg=COLOR_BTN_SECONDARY,
+                highlightbackground=COLOR_BORDER,
+            )
+        else:
+            self.btn_attach.configure(
+                state=tk.NORMAL,
+                text="➕ Attach to Chat",
+                bg=COLOR_BG_SIDEBAR_ACTIVE,
+                highlightbackground=COLOR_BORDER_FOCUS,
+            )
+
+    def _on_toggle_attach(self) -> None:
+        if not self.selected_rel_path:
+            return
+        attached = self.workspace_manager.get_attached_files()
+        norm_rel = os.path.normpath(self.selected_rel_path)
+
+        if norm_rel in attached:
+            self.workspace_manager.detach_file(self.selected_rel_path)
+        else:
+            try:
+                self.workspace_manager.attach_file(self.selected_rel_path)
+            except Exception as exc:
+                messagebox.showwarning("Attachment Notice", str(exc), parent=self)
+
+        self._update_attach_button()
+        self.update_attachment_tray()
+        if self.app and hasattr(self.app, "chat_view"):
+            self.app.chat_view.refresh_attachments()
+
+    def _on_clear_all_attachments(self) -> None:
+        self.workspace_manager.clear_attachments()
+        self._update_attach_button()
+        self.update_attachment_tray()
+        if self.app and hasattr(self.app, "chat_view"):
+            self.app.chat_view.refresh_attachments()
+
+    def update_attachment_tray(self) -> None:
+        for w in self.chips_box.winfo_children():
+            w.destroy()
+
+        attached = self.workspace_manager.get_attached_files()
+        total_bytes = self.workspace_manager._calculate_current_attachment_bytes()
+        total_kb = total_bytes / 1024.0
+        max_kb = self.workspace_manager.max_context_bytes // 1024
+
+        self.lbl_tray_status.configure(
+            text=f"{len(attached)} / {self.workspace_manager.max_attached_files} files • {total_kb:.1f} KB / {max_kb} KB"
+        )
+
+        if not attached:
+            tk.Label(
+                self.chips_box,
+                text="No files attached. Select a file above and click '➕ Attach to Chat' to provide context for AI queries.",
+                font=("Segoe UI", 7, "italic"),
+                fg=COLOR_TEXT_MUTED,
+                bg=COLOR_BG_PANEL,
+            ).pack(anchor="w", pady=2)
+            return
+
+        for rel in attached:
+            chip = tk.Frame(
+                self.chips_box,
+                bg=COLOR_BG_CARD,
+                highlightthickness=1,
+                highlightbackground=COLOR_BORDER_FOCUS,
+                padx=6,
+                pady=2,
+            )
+            chip.pack(side=tk.LEFT, padx=(0, 6), pady=2)
+
+            tk.Label(
+                chip,
+                text=os.path.basename(rel),
+                font=("Consolas", 8),
+                fg=COLOR_TEXT_PRIMARY,
+                bg=COLOR_BG_CARD,
+            ).pack(side=tk.LEFT, padx=(0, 4))
+
+            btn_x = tk.Button(
+                chip,
+                text="✕",
+                font=("Segoe UI", 7, "bold"),
+                fg=COLOR_TEXT_MUTED,
+                bg=COLOR_BG_CARD,
+                activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+                activeforeground=COLOR_TEXT_ERROR,
+                relief=tk.FLAT,
+                padx=2,
+                pady=0,
+                cursor="hand2",
+                command=lambda p=rel: self._detach_chip(p),
+            )
+            btn_x.pack(side=tk.LEFT)
+
+    def _detach_chip(self, rel: str) -> None:
+        self.workspace_manager.detach_file(rel)
+        self._update_attach_button()
+        self.update_attachment_tray()
+        if self.app and hasattr(self.app, "chat_view"):
+            self.app.chat_view.refresh_attachments()
+
+    def _clear_preview(self, msg: str) -> None:
+        self.selected_rel_path = None
+        self.lbl_file_name.configure(text="No file selected")
+        self.lbl_file_meta.configure(text="")
+        self.btn_attach.configure(state=tk.DISABLED, text="➕ Attach to Chat")
+        self.txt_preview.configure(state=tk.NORMAL)
+        self.txt_preview.delete("1.0", tk.END)
+        self.txt_preview.insert(tk.END, f"\n  {msg}\n", "system_msg")
+        self.txt_preview.configure(state=tk.DISABLED)
 
 
 class DiagnosticsDrawer(tk.Frame):
@@ -2487,6 +3193,7 @@ class FlexDesktopApp:
         root: tk.Tk,
         coordinator: Optional[AICoordinator] = None,
         storage: Optional[SQLiteConversationStorage] = None,
+        workspace_manager: Optional[WorkspaceManager] = None,
     ) -> None:
         self.root: tk.Tk = root
         self.root.title("FLEX 1.0 — Core C + Local AI Desktop")
@@ -2512,6 +3219,9 @@ class FlexDesktopApp:
         else:
             self.coordinator = AICoordinator(auto_start=True, storage=self.storage)
 
+        self.workspace_manager: WorkspaceManager = (
+            workspace_manager if workspace_manager is not None else WorkspaceManager()
+        )
         self._closing: bool = False
         self._diagnostics_open: bool = False
         self._diagnostics_poll_id: Optional[str] = None
@@ -2556,6 +3266,20 @@ class FlexDesktopApp:
             troughcolor=COLOR_BG_INPUT,
             borderwidth=0,
             thickness=4,
+        )
+
+        style.configure(
+            "Projects.Treeview",
+            background="#121124",
+            foreground="#E2E8F0",
+            fieldbackground="#121124",
+            borderwidth=0,
+            font=("Segoe UI", 9),
+        )
+        style.map(
+            "Projects.Treeview",
+            background=[("selected", "#2C1B5E")],
+            foreground=[("selected", "#A78BFA")],
         )
 
     def _build_ui(self) -> None:
@@ -3025,19 +3749,10 @@ class FlexDesktopApp:
                     "Context injection into AI inference is limited to in-memory conversation history.",
                 ],
             ),
-            "projects": PrototypeView(
+            "projects": ProjectsView(
                 self.view_container,
-                title="Projects & Files",
-                icon="📁",
-                badge_text="● STATUS: PLANNED FOR STAGE 2",
-                badge_color=COLOR_TEXT_WARNING,
-                description="Project workspace manager allowing FLEX 1.0 to attach to local source directories and inspect workspace files.",
-                status_explanation="A dedicated project file tree and contextual file-binding workspace will be introduced in Stage 2.",
-                unavailable_features=[
-                    "Workspace directory tree explorer is not implemented in Stage 1.",
-                    "File attachment and multi-file code context ingestion are not active.",
-                    "No project configurations are stored on disk.",
-                ],
+                workspace_manager=self.workspace_manager,
+                app=self,
             ),
             "tools": PrototypeView(
                 self.view_container,
@@ -3120,10 +3835,16 @@ class FlexDesktopApp:
         if view_name == "memory" and "memory" in self.views and hasattr(self.views["memory"], "refresh"):
             self.views["memory"].refresh()
 
-        # Resume AI Core animation and focus composer when returning to Home
+        # Refresh ProjectsView when switching to Projects
+        if view_name == "projects" and "projects" in self.views and hasattr(self.views["projects"], "refresh"):
+            self.views["projects"].refresh()
+
+        # Resume AI Core animation, focus composer, and refresh attachments when returning to Home
         if view_name == "home" and hasattr(self, "chat_view"):
             self.chat_view.resume_animation()
             self.chat_view.focus_composer()
+            if hasattr(self.chat_view, "refresh_attachments"):
+                self.chat_view.refresh_attachments()
 
     def _show_auth_notice(self) -> None:
         """Informs the user that FLEX 1.0 operates locally without cloud authentication."""

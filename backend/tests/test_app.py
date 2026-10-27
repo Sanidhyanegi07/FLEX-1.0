@@ -15,6 +15,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -24,8 +25,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from backend.ai.storage import SQLiteConversationStorage
-from backend.app import AICoreVisualizer, DiagnosticsDrawer, FlexDesktopApp, MemoryView
+from backend.app import (
+    AICoreVisualizer,
+    ChatView,
+    DiagnosticsDrawer,
+    FlexDesktopApp,
+    MemoryView,
+    ProjectsView,
+    PrototypeView,
+)
 from backend.coordinator import AICoordinator, CoordinatorChatResult, CoordinatorDispatchError
+from backend.workspace import WorkspaceManager
 
 
 class TestFlexDesktopApp(unittest.TestCase):
@@ -243,8 +253,8 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.assertIs(self.app.chat_view.coordinator, self.mock_coordinator)
 
     def test_prototype_views_have_no_fake_interactive_controls(self) -> None:
-        # Note: memory is no longer a prototype view in Stage 2C; it is a functional MemoryView.
-        prototype_keys = ["voice", "knowledge", "projects", "tools", "settings"]
+        # Note: memory (Stage 2C) and projects (Stage 2D) are functional views, not prototype views.
+        prototype_keys = ["voice", "knowledge", "tools", "settings"]
 
         def check_widget_for_fake_controls(widget: tk.Widget) -> None:
             self.assertNotIsInstance(
@@ -1306,6 +1316,176 @@ class TestFlexDesktopAppStage2CMemoryView(unittest.TestCase):
         # Result from older search (token 9) should be rejected
         mem_view._apply_search_results(token=9, convs=stale_records)
         self.assertEqual(len(mem_view._card_widgets), 2)
+
+
+
+class TestFlexDesktopAppStage2DProjectsView(unittest.TestCase):
+    """Stage 2D regression tests for Projects & Files workspace view and chat attachments."""
+
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.withdraw()
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_app_stage2d.db"
+        self.settings_path = Path(self.temp_dir) / "test_settings.json"
+        self.workspace_dir = Path(self.temp_dir) / "sample_project"
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create sample files in workspace
+        (self.workspace_dir / "main.c").write_text("int main() { return 0; }\n", encoding="utf-8")
+        (self.workspace_dir / "README.md").write_text("# Sample Project\nFLEX 1.0 test workspace.\n", encoding="utf-8")
+        sub_dir = self.workspace_dir / "src"
+        sub_dir.mkdir()
+        (sub_dir / "utils.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
+
+        self.storage = SQLiteConversationStorage(db_path=self.db_path)
+        self.mock_coordinator = MagicMock(spec=AICoordinator)
+        self.mock_coordinator.is_running = True
+        self.mock_coordinator.storage = self.storage
+        self.mock_coordinator.active_conversation_id = None
+        self.mock_coordinator.get_status.return_value = {
+            "bridge": {"is_running": True, "lifecycle": "FLEX_LIFECYCLE_IDLE"},
+            "ai_health": True,
+            "model_available": True,
+            "model": "qwen2.5-coder:3b",
+        }
+        self.mock_coordinator.send_chat.return_value = "AI explanation of main.c"
+
+        self.workspace_manager = WorkspaceManager(settings_file=self.settings_path)
+
+        self.app = FlexDesktopApp(
+            root=self.root,
+            coordinator=self.mock_coordinator,
+            storage=self.storage,
+            workspace_manager=self.workspace_manager,
+        )
+        self.app.root.update_idletasks()
+
+    def tearDown(self) -> None:
+        if hasattr(self, "app") and self.app is not None:
+            self.app.on_closing()
+        if hasattr(self, "storage") and self.storage is not None:
+            self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_projects_view_is_functional_and_mounted(self) -> None:
+        """ProjectsView is registered in self.app.views and is a ProjectsView instance, not PrototypeView."""
+        self.assertIn("projects", self.app.views)
+        projects_view = self.app.views["projects"]
+        self.assertIsInstance(projects_view, ProjectsView)
+        self.assertNotIsInstance(projects_view, PrototypeView)
+
+    def test_empty_state_shown_when_no_workspace_selected(self) -> None:
+        """When no workspace is set, the status label shows NO WORKSPACE."""
+        projects_view: ProjectsView = self.app.views["projects"]
+        self.assertIn("NO WORKSPACE", projects_view.badge_status.cget("text"))
+        self.assertIn("No workspace directory selected", projects_view.lbl_sub.cget("text"))
+
+    def test_select_workspace_populates_tree_and_status(self) -> None:
+        """Setting workspace updates status label, workspace path label, and populates the file tree."""
+        projects_view: ProjectsView = self.app.views["projects"]
+
+        with patch("tkinter.filedialog.askdirectory", return_value=str(self.workspace_dir)):
+            projects_view._on_select_workspace()
+
+        self.assertIn("WORKSPACE ACTIVE", projects_view.badge_status.cget("text"))
+        self.assertIn(str(self.workspace_dir), projects_view.lbl_sub.cget("text"))
+
+        # Check treeview children
+        children = projects_view.tree.get_children("")
+        self.assertGreaterEqual(len(children), 3)
+
+        # Look for main.c, README.md, src
+        child_texts = [projects_view.tree.item(c, "text") for c in children]
+        self.assertTrue(any("main.c" in t for t in child_texts))
+        self.assertTrue(any("README.md" in t for t in child_texts))
+        self.assertTrue(any("src" in t for t in child_texts))
+
+    def test_file_selection_shows_read_only_preview(self) -> None:
+        """Selecting a text file in treeview displays its content in preview text widget."""
+        projects_view: ProjectsView = self.app.views["projects"]
+        projects_view.set_workspace(str(self.workspace_dir))
+
+        # Find main.c item
+        children = projects_view.tree.get_children("")
+        main_c_item = None
+        for c in children:
+            if "main.c" in projects_view.tree.item(c, "text"):
+                main_c_item = c
+                break
+
+        self.assertIsNotNone(main_c_item)
+        projects_view.tree.selection_set(main_c_item)
+        projects_view._on_tree_select(None)
+
+        content = projects_view.txt_preview.get("1.0", "end")
+        self.assertIn("int main() { return 0; }", content)
+        self.assertEqual(projects_view.txt_preview.cget("state"), "disabled")
+
+    def test_attach_and_detach_updates_tray_and_chat_view(self) -> None:
+        """Attaching a file adds chip to ProjectsView tray and ChatView attachment bar."""
+        projects_view: ProjectsView = self.app.views["projects"]
+        chat_view: ChatView = self.app.views["home"]
+        projects_view.set_workspace(str(self.workspace_dir))
+
+        rel_path = "main.c"
+        self.workspace_manager.attach_file(rel_path)
+        self.assertIn(rel_path, self.workspace_manager.attached_files)
+        projects_view.update_attachment_tray()
+        chat_view.refresh_attachments()
+
+        # Check ChatView attachment chips (label + chip)
+        self.assertGreaterEqual(len(chat_view.attachment_chips_frame.winfo_children()), 2)
+
+        # Detach file
+        self.workspace_manager.detach_file(rel_path)
+        projects_view.update_attachment_tray()
+        chat_view.refresh_attachments()
+
+        self.assertEqual(len(chat_view.attachment_chips_frame.winfo_children()), 0)
+
+    def test_chat_send_passes_workspace_context(self) -> None:
+        """Sending a chat message passes assembled workspace context to coordinator."""
+        projects_view: ProjectsView = self.app.views["projects"]
+        chat_view: ChatView = self.app.views["home"]
+        projects_view.set_workspace(str(self.workspace_dir))
+
+        self.workspace_manager.attach_file("main.c")
+        chat_view.refresh_attachments()
+
+        mock_result = CoordinatorChatResult(
+            text="AI explanation of main.c",
+            operation_id=1,
+            command_name="chat",
+            parser_status="FLEX_STATUS_OK",
+            state_status="FLEX_STATE_OK",
+            model="qwen2.5-coder:3b",
+        )
+        mock_send_chat = MagicMock(return_value=mock_result)
+        self.mock_coordinator.send_chat = mock_send_chat
+
+        chat_view.txt_input.delete("1.0", tk.END)
+        chat_view.txt_input.insert("1.0", "Explain this C file")
+        chat_view._placeholder_active = False
+        chat_view.send_message()
+
+        # Let scheduled worker run
+        time.sleep(0.05)
+        self.app.root.update()
+
+        mock_send_chat.assert_called_once()
+        args, kwargs = mock_send_chat.call_args
+        self.assertIn("Explain this C file", args[0])
+        workspace_context = kwargs.get("workspace_context")
+        self.assertIsNotNone(workspace_context)
+        self.assertIn("WORKSPACE CONTEXT", workspace_context)
+        self.assertIn("main.c", workspace_context)
+        self.assertIn("int main() { return 0; }", workspace_context)
 
 
 if __name__ == "__main__":

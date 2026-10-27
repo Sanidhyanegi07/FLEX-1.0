@@ -334,6 +334,7 @@ class AICoordinator:
         self,
         user_message: str,
         timeout: Optional[float] = None,
+        workspace_context: Optional[str] = None,
     ) -> CoordinatorChatResult:
         """Executes the complete end-to-end request pipeline for a user chat turn.
 
@@ -350,6 +351,7 @@ class AICoordinator:
         Args:
             user_message: The user's input text prompt.
             timeout: Optional override for inference request timeout.
+            workspace_context: Optional structured file context block from attached workspace files.
 
         Returns:
             CoordinatorChatResult: The assistant response and C core metadata.
@@ -430,10 +432,15 @@ class AICoordinator:
             cleanup_error: Optional[Exception] = None
             llm_response: Optional[LLMResponse] = None
 
+            # Incorporate workspace context into prompt sent to Ollama
+            effective_prompt = prompt_for_ai
+            if workspace_context and workspace_context.strip():
+                effective_prompt = f"{workspace_context.strip()}\n\nUser Question:\n{prompt_for_ai}"
+
             try:
                 # Actual local Ollama inference — never fabricate a response
                 llm_response = self.provider.generate(
-                    prompt=prompt_for_ai,
+                    prompt=effective_prompt,
                     system_prompt=self.system_prompt,
                     history=self.history,
                     timeout=timeout,
