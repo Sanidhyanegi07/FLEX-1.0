@@ -45,6 +45,7 @@ from .ai.exceptions import (
     AITimeoutError,
     FLEXAIError,
 )
+from .ai.storage import SQLiteConversationStorage
 
 logger = logging.getLogger(__name__)
 
@@ -930,10 +931,11 @@ class ChatView(tk.Frame):
         )
         self._append_to_chat(f"{result.text}\n", "flex_msg")
 
+        storage_tag = getattr(result, "storage_status", "MEMORY_ONLY")
         meta = (
             f"└─ [C Core Verified: Op #{result.operation_id} • "
             f"Parser: {result.parser_status} • State: {result.state_status} • "
-            f"Latency: {elapsed:.2f}s]\n"
+            f"Latency: {elapsed:.2f}s • Storage: {storage_tag}]\n"
         )
         self._append_to_chat(meta, "meta_tag")
 
@@ -944,6 +946,42 @@ class ChatView(tk.Frame):
         )
         if self.app and hasattr(self.app, "refresh_status"):
             self.app.refresh_status()
+        if self.app and hasattr(self.app, "_refresh_recent_chats"):
+            self.app._refresh_recent_chats()
+
+    def restore_conversation_messages(self, conversation_id: str) -> None:
+        """Restores and renders saved conversation messages from persistent storage."""
+        storage = getattr(self.coordinator, "storage", None)
+        if not storage:
+            return
+        try:
+            messages = storage.get_messages(conversation_id)
+            if not messages:
+                return
+            self.chat_display.configure(state=tk.NORMAL)
+            self.chat_display.delete("1.0", tk.END)
+            self._display_welcome_banner()
+            conv_meta = storage.get_conversation(conversation_id)
+            title = conv_meta.title if conv_meta else conversation_id[:8]
+            self._append_to_chat(
+                f"─── Restored Session: {title} ───\n\n",
+                "system_msg",
+            )
+            for m in messages:
+                if m.role == "user":
+                    self._append_to_chat("\nUser:\n", "user_hdr")
+                    self._append_to_chat(f"{m.content}\n", "user_msg")
+                elif m.role == "assistant":
+                    model_str = f" [{m.model}]" if m.model else ""
+                    self._append_to_chat(f"\nFLEX 1.0{model_str}:\n", "flex_hdr")
+                    self._append_to_chat(f"{m.content}\n", "flex_msg")
+                elif m.role == "system":
+                    self._append_to_chat(f"{m.content}\n", "system_msg")
+            self.chat_display.configure(state=tk.DISABLED)
+            if hasattr(self, "ai_core"):
+                self.ai_core.set_compact_mode(True)
+        except Exception as exc:
+            logger.warning("Could not restore conversation %s: %s", conversation_id, exc)
 
     def _on_chat_error(self, exc: Exception, elapsed: float) -> None:
         if self._closing or (self.app and self.app._closing):
@@ -1466,11 +1504,22 @@ class DiagnosticsDrawer(tk.Frame):
         # Card 3: Memory
         history_count = data.get("history_count", 0)
         history_max = data.get("history_max", 50)
+        storage_enabled = data.get("storage_enabled", False)
+        storage_degraded = data.get("storage_degraded", False)
+
         self.lbl_mem_buffer.configure(
             text=f"● Active: {history_count} / {history_max} messages", fg=COLOR_TEXT_ACCENT
         )
-        self.lbl_mem_storage.configure(text="Ephemeral FIFO Buffer", fg=COLOR_TEXT_MUTED)
-        self.lbl_mem_db.configure(text="NOT IMPLEMENTED (Stage 1G)", fg="#64748B")
+        if storage_enabled:
+            if storage_degraded:
+                self.lbl_mem_storage.configure(text="Degraded (In-Memory Fallback)", fg=COLOR_TEXT_WARNING)
+                self.lbl_mem_db.configure(text="● DEGRADED (Check permissions)", fg=COLOR_TEXT_WARNING)
+            else:
+                self.lbl_mem_storage.configure(text="Persistent SQLite + FIFO Cache", fg=COLOR_TEXT_SUCCESS)
+                self.lbl_mem_db.configure(text="● Operational (conversations.db)", fg=COLOR_TEXT_SUCCESS)
+        else:
+            self.lbl_mem_storage.configure(text="Ephemeral FIFO Buffer", fg=COLOR_TEXT_MUTED)
+            self.lbl_mem_db.configure(text="NOT CONFIGURED", fg="#64748B")
         self.lbl_mem_vector.configure(text="NOT IMPLEMENTED", fg="#64748B")
 
         # Card 4: Network
@@ -1496,22 +1545,43 @@ class DiagnosticsDrawer(tk.Frame):
 class FlexDesktopApp:
     """FLEX 1.0 Multi-Panel Space-Themed Desktop Application."""
 
-    def __init__(self, root: tk.Tk, coordinator: Optional[AICoordinator] = None) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        coordinator: Optional[AICoordinator] = None,
+        storage: Optional[SQLiteConversationStorage] = None,
+    ) -> None:
         self.root: tk.Tk = root
         self.root.title("FLEX 1.0 — Core C + Local AI Desktop")
         self.root.geometry("1080x740")
         self.root.minsize(880, 580)
         self.root.configure(bg=COLOR_BG_ROOT)
 
-        self.coordinator: AICoordinator = (
-            coordinator if coordinator is not None else AICoordinator(auto_start=True)
-        )
+        if storage is not None:
+            self.storage: Optional[SQLiteConversationStorage] = storage
+        elif coordinator is not None and getattr(coordinator, "storage", None) is not None:
+            self.storage = coordinator.storage
+        elif coordinator is None:
+            try:
+                self.storage = SQLiteConversationStorage()
+            except Exception as exc:
+                logger.error("Could not initialize conversation storage: %s", exc)
+                self.storage = None
+        else:
+            self.storage = None
+
+        if coordinator is not None:
+            self.coordinator = coordinator
+        else:
+            self.coordinator = AICoordinator(auto_start=True, storage=self.storage)
+
         self._closing: bool = False
         self._diagnostics_open: bool = False
         self._diagnostics_poll_id: Optional[str] = None
         self.last_diagnostics: Dict[str, Any] = {}
         self.current_view_name: str = "home"
         self.nav_buttons: Dict[str, tk.Button] = {}
+        self.recent_chat_labels: Dict[str, tk.Label] = {}
 
         self._diagnostics_queue: queue.Queue = queue.Queue()
         self._queue_poll_id: Optional[str] = None
@@ -1519,6 +1589,11 @@ class FlexDesktopApp:
 
         self._setup_styles()
         self._build_ui()
+
+        # Restore active conversation messages if available
+        active_cid = getattr(self.coordinator, "active_conversation_id", None)
+        if active_cid and hasattr(self, "chat_view"):
+            self.chat_view.restore_conversation_messages(active_cid)
 
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -1698,7 +1773,7 @@ class FlexDesktopApp:
             btn.pack(fill=tk.X, padx=6, pady=1)
             self.nav_buttons[key] = btn
 
-        # Recent Chats Section (matching reference design)
+        # Recent Chats Section (dynamic from persistent storage)
         rc_header = tk.Label(
             self.sidebar_frame,
             text="Recent Chats",
@@ -1710,20 +1785,9 @@ class FlexDesktopApp:
         )
         rc_header.pack(fill=tk.X, pady=(12, 4))
 
-        recent_chats = ["Explain APIs", "Debug Java Code", "My Project Ideas"]
-        for rc_title in recent_chats:
-            rc_lbl = tk.Label(
-                self.sidebar_frame,
-                text=rc_title,
-                font=("Segoe UI", 8),
-                fg=COLOR_TEXT_MUTED,
-                bg=COLOR_BG_SIDEBAR,
-                anchor="w",
-                padx=16,
-                pady=3,
-                cursor="hand2",
-            )
-            rc_lbl.pack(fill=tk.X)
+        self.recent_chats_container = tk.Frame(self.sidebar_frame, bg=COLOR_BG_SIDEBAR)
+        self.recent_chats_container.pack(fill=tk.X)
+        self._refresh_recent_chats()
 
         # Sidebar Spacer
         spacer = tk.Frame(self.sidebar_frame, bg=COLOR_BG_SIDEBAR)
@@ -2122,10 +2186,77 @@ class FlexDesktopApp:
         if view_name == "home" and hasattr(self, "chat_view"):
             self.chat_view.resume_animation()
 
+    def _refresh_recent_chats(self) -> None:
+        """Populates the Recent Chats sidebar dynamically from storage."""
+        if not hasattr(self, "recent_chats_container"):
+            return
+        for widget in self.recent_chats_container.winfo_children():
+            widget.destroy()
+        if hasattr(self, "recent_chat_labels"):
+            self.recent_chat_labels.clear()
+        else:
+            self.recent_chat_labels = {}
+
+        conversations: List[Dict[str, Any]] = []
+        if self.storage is not None:
+            try:
+                conversations = [c.to_dict() for c in self.storage.list_conversations(limit=8)]
+            except Exception as exc:
+                logger.warning("Could not list conversations for sidebar: %s", exc)
+
+        if not conversations:
+            empty_lbl = tk.Label(
+                self.recent_chats_container,
+                text="No saved chats",
+                font=("Segoe UI", 8, "italic"),
+                fg="#64748B",
+                bg=COLOR_BG_SIDEBAR,
+                anchor="w",
+                padx=16,
+                pady=2,
+            )
+            empty_lbl.pack(fill=tk.X)
+            return
+
+        active_id = getattr(self.coordinator, "active_conversation_id", None)
+        for conv in conversations:
+            cid = conv["id"]
+            title = conv["title"]
+            is_active = (cid == active_id)
+            fg_color = COLOR_TEXT_ACCENT if is_active else COLOR_TEXT_MUTED
+            rc_lbl = tk.Label(
+                self.recent_chats_container,
+                text=title,
+                font=("Segoe UI", 8, "bold" if is_active else "normal"),
+                fg=fg_color,
+                bg=COLOR_BG_SIDEBAR,
+                anchor="w",
+                padx=16,
+                pady=3,
+                cursor="hand2",
+            )
+            rc_lbl.pack(fill=tk.X)
+            rc_lbl.bind("<Button-1>", lambda e, c_id=cid: self.load_conversation(c_id))
+            self.recent_chat_labels[cid] = rc_lbl
+
+    def load_conversation(self, conversation_id: str) -> None:
+        """Loads and switches to a saved conversation."""
+        if self._busy:
+            return
+        if hasattr(self.coordinator, "set_active_conversation"):
+            self.coordinator.set_active_conversation(conversation_id, sync_history=True)
+        if hasattr(self, "chat_view"):
+            self.chat_view.restore_conversation_messages(conversation_id)
+        self.switch_view("home")
+        self._refresh_recent_chats()
+
     def new_chat(self) -> None:
-        """Clears conversation history and returns immediately to the Home view."""
+        """Creates a new conversation in storage, clears transcript, and returns immediately to Home."""
         try:
+            if hasattr(self.coordinator, "create_new_conversation"):
+                self.coordinator.create_new_conversation()
             self.chat_view.clear_conversation()
+            self._refresh_recent_chats()
         except Exception as e:
             logger.error("Error clearing conversation during new_chat: %s", e)
         self.switch_view("home")
@@ -2538,10 +2669,24 @@ class FlexDesktopApp:
             if "memory" in self.status_pills and self.status_pills["memory"].winfo_exists():
                 hist_count = diagnostics.get("history_count", 0)
                 hist_max = diagnostics.get("history_max", 50)
-                self.status_pills["memory"].configure(
-                    text=f"● Memory — Session Buffer ({hist_count}/{hist_max})",
-                    fg=COLOR_TEXT_ACCENT,
-                )
+                storage_enabled = diagnostics.get("storage_enabled", False)
+                if storage_enabled:
+                    storage_degraded = diagnostics.get("storage_degraded", False)
+                    if storage_degraded:
+                        self.status_pills["memory"].configure(
+                            text=f"● Memory — SQLite (Degraded {hist_count}/{hist_max})",
+                            fg=COLOR_TEXT_WARNING,
+                        )
+                    else:
+                        self.status_pills["memory"].configure(
+                            text=f"● Memory — SQLite Active ({hist_count}/{hist_max})",
+                            fg=COLOR_TEXT_SUCCESS,
+                        )
+                else:
+                    self.status_pills["memory"].configure(
+                        text=f"● Memory — Session Buffer ({hist_count}/{hist_max})",
+                        fg=COLOR_TEXT_ACCENT,
+                    )
 
             # Voice Pill (Honest)
             if "voice" in self.status_pills and self.status_pills["voice"].winfo_exists():
@@ -2645,6 +2790,11 @@ class FlexDesktopApp:
             )
         except Exception:
             pass
+        if hasattr(self, "storage") and self.storage is not None:
+            try:
+                self.storage.close()
+            except Exception as e:
+                logger.debug("Error during storage close: %s", e)
         try:
             self.coordinator.close(timeout=1.0)
         except Exception as e:

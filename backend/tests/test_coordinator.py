@@ -319,5 +319,136 @@ class TestAICoordinatorLiveIntegration(unittest.TestCase):
         self.assertEqual(bridge_status["active_operation"], "FLEX_OPERATION_NONE")
 
 
+class TestAICoordinatorPersistence(unittest.TestCase):
+    """Unit tests for AICoordinator SQLite persistence integration."""
+
+    def setUp(self) -> None:
+        self.mock_bridge = MagicMock(spec=FlexBridgeClient)
+        self.mock_bridge.is_running = True
+        def mock_dispatch(cmd: str, timeout: Optional[float] = None) -> dict:
+            args = cmd[5:] if cmd.startswith("chat ") else cmd
+            return {
+                "action": "DISPATCH",
+                "success": True,
+                "parser_status": "FLEX_STATUS_OK",
+                "state_status": "FLEX_STATE_OK",
+                "operation_started": True,
+                "operation_id": 100,
+                "command_name": "chat",
+                "args": args,
+            }
+        self.mock_bridge.dispatch.side_effect = mock_dispatch
+        self.mock_bridge.finish.return_value = {
+            "action": "FINISH",
+            "success": True,
+            "state_status": "FLEX_STATE_OK",
+            "lifecycle": "FLEX_LIFECYCLE_IDLE",
+        }
+
+        self.mock_provider = MagicMock(spec=LLMProvider)
+        self.mock_provider.generate.return_value = LLMResponse(
+            text="Persistence stores messages to SQLite.",
+            model="qwen2.5-coder:3b",
+            total_duration_ns=1000000,
+        )
+
+        from backend.ai.storage import SQLiteConversationStorage
+        self.storage = SQLiteConversationStorage(db_path=":memory:")
+        self.coordinator = AICoordinator(
+            bridge=self.mock_bridge,
+            provider=self.mock_provider,
+            storage=self.storage,
+            auto_start=False,
+        )
+
+    def tearDown(self) -> None:
+        if hasattr(self, "storage") and self.storage is not None:
+            self.storage.close()
+
+    def test_persisted_chat_turn_saves_both_messages(self) -> None:
+        """Verifies full turn saves user prompt and assistant response to SQLite."""
+        cid = self.coordinator.active_conversation_id
+        self.assertIsNotNone(cid)
+
+        result = self.coordinator.send_chat("How does persistence work?")
+
+        self.assertEqual(result.storage_status, "PERSISTED")
+        self.assertEqual(result.conversation_id, cid)
+
+        # Check messages in storage
+        messages = self.storage.get_messages(cid)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0].role, "user")
+        self.assertEqual(messages[0].content, "How does persistence work?")
+        self.assertEqual(messages[1].role, "assistant")
+        self.assertEqual(messages[1].content, "Persistence stores messages to SQLite.")
+
+        # Check messages in in-memory history
+        hist = self.coordinator.history.get_messages()
+        self.assertEqual(len(hist), 2)
+        self.assertEqual(hist[0].content, "How does persistence work?")
+        self.assertEqual(hist[1].content, "Persistence stores messages to SQLite.")
+
+    def test_user_message_persisted_when_inference_fails(self) -> None:
+        """Verifies user message is preserved in SQLite and history when Ollama inference fails."""
+        cid = self.coordinator.active_conversation_id
+        self.mock_provider.generate.side_effect = AIServiceUnavailableError("Daemon down")
+
+        with self.assertRaises(AIServiceUnavailableError):
+            self.coordinator.send_chat("Preserve my question")
+
+        # C core finish must still be called
+        self.mock_bridge.finish.assert_called_once()
+
+        # User message was preserved in SQLite!
+        stored_msgs = self.storage.get_messages(cid)
+        self.assertEqual(len(stored_msgs), 1)
+        self.assertEqual(stored_msgs[0].role, "user")
+        self.assertEqual(stored_msgs[0].content, "Preserve my question")
+
+        # In-memory history is synchronized with the saved user message
+        hist = self.coordinator.history.get_messages()
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(hist[0].content, "Preserve my question")
+
+    def test_storage_write_failure_falls_back_to_memory_only(self) -> None:
+        """Verifies failure in storage write does not crash coordinator and reports MEMORY_ONLY."""
+        self.storage.save_message = MagicMock(side_effect=Exception("Disk full"))
+
+        result = self.coordinator.send_chat("Test write failure")
+
+        self.assertEqual(result.storage_status, "MEMORY_ONLY")
+        self.assertIn("Disk full", self.coordinator.last_storage_error or "")
+        # Turn still completed in memory
+        self.assertEqual(result.text, "Persistence stores messages to SQLite.")
+        self.assertEqual(len(self.coordinator.history.get_messages()), 2)
+
+    def test_switching_conversations_syncs_in_memory_history(self) -> None:
+        """Verifies switching conversations swaps active conversation ID and in-memory history."""
+        # Conv 1
+        c1 = self.coordinator.create_new_conversation("Conversation 1")
+        self.storage.save_message(c1, role="user", content="C1 User Msg")
+        self.storage.save_message(c1, role="assistant", content="C1 Assistant Msg")
+
+        # Conv 2
+        c2 = self.coordinator.create_new_conversation("Conversation 2")
+        self.storage.save_message(c2, role="user", content="C2 User Msg")
+
+        # Switch to C1
+        self.coordinator.set_active_conversation(c1, sync_history=True)
+        self.assertEqual(self.coordinator.active_conversation_id, c1)
+        c1_hist = self.coordinator.history.get_messages()
+        self.assertEqual(len(c1_hist), 2)
+        self.assertEqual(c1_hist[0].content, "C1 User Msg")
+        self.assertEqual(c1_hist[1].content, "C1 Assistant Msg")
+
+        # Switch to C2
+        self.coordinator.set_active_conversation(c2, sync_history=True)
+        self.assertEqual(self.coordinator.active_conversation_id, c2)
+        c2_hist = self.coordinator.history.get_messages()
+        self.assertEqual(len(c2_hist), 1)
+        self.assertEqual(c2_hist[0].content, "C2 User Msg")
+
+
 if __name__ == "__main__":
     unittest.main()

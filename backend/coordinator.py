@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
 import threading
+from typing import Any, Dict, Optional, Union
+import uuid
 
 from .ai.base import LLMProvider, LLMResponse
 from .ai.config import OllamaConfig
 from .ai.history import InMemoryConversationHistory
 from .ai.ollama_provider import OllamaProvider
+from .ai.storage import SQLiteConversationStorage
 from .core_bridge import FlexBridgeClient, FlexBridgeError
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,8 @@ class CoordinatorChatResult:
     model: str
     raw_response: Optional[Dict[str, Any]] = None
     total_duration_ns: Optional[int] = None
+    conversation_id: Optional[str] = None
+    storage_status: str = "MEMORY_ONLY"
 
 
 DEFAULT_SYSTEM_PROMPT: str = (
@@ -109,6 +113,8 @@ class AICoordinator:
         history: Optional[InMemoryConversationHistory] = None,
         system_prompt: Optional[str] = None,
         auto_start: bool = True,
+        storage: Optional[SQLiteConversationStorage] = None,
+        active_conversation_id: Optional[str] = None,
     ) -> None:
         """Initializes the coordinator with required subsystems.
 
@@ -118,6 +124,8 @@ class AICoordinator:
             history: Optional conversation history buffer. If None, creates 50-message buffer.
             system_prompt: System prompt string. If None, uses DEFAULT_SYSTEM_PROMPT.
             auto_start: If True, launches the bridge subprocess immediately if not already running.
+            storage: Optional SQLiteConversationStorage for persistent conversation memory.
+            active_conversation_id: Optional initial conversation ID to activate.
         """
         self.bridge: FlexBridgeClient = bridge if bridge is not None else FlexBridgeClient()
         self.provider: LLMProvider = provider if provider is not None else OllamaProvider()
@@ -127,8 +135,27 @@ class AICoordinator:
         self.system_prompt: str = (
             system_prompt if system_prompt is not None else DEFAULT_SYSTEM_PROMPT
         )
+        self.storage: Optional[SQLiteConversationStorage] = storage
+        self._active_conversation_id: Optional[str] = active_conversation_id
+        self.last_storage_status: str = "MEMORY_ONLY"
+        self.last_storage_error: Optional[str] = None
 
         self._lock: threading.RLock = threading.RLock()
+
+        if self.storage is not None:
+            if self._active_conversation_id is not None:
+                self.sync_history_from_storage(self._active_conversation_id)
+            else:
+                try:
+                    recent = self.storage.list_conversations(limit=1)
+                    if recent:
+                        self._active_conversation_id = recent[0].id
+                        self.sync_history_from_storage(recent[0].id)
+                    else:
+                        self._active_conversation_id = self.storage.create_conversation()
+                except Exception as exc:
+                    logger.warning("Error initializing active conversation from storage: %s", exc)
+                    self.last_storage_error = str(exc)
 
         if auto_start and not self.bridge.is_running:
             self.start()
@@ -166,6 +193,61 @@ class AICoordinator:
         """Clears all in-memory conversation history messages."""
         self.history.clear()
 
+    @property
+    def active_conversation_id(self) -> Optional[str]:
+        """Returns the current active conversation ID."""
+        return self._active_conversation_id
+
+    def set_active_conversation(
+        self, conversation_id: str, sync_history: bool = True
+    ) -> None:
+        """Switches the active conversation and optionally synchronizes in-memory history.
+
+        Args:
+            conversation_id: Target conversation ID.
+            sync_history: If True, populates in-memory history from storage.
+        """
+        with self._lock:
+            self._active_conversation_id = conversation_id
+            if sync_history and self.storage is not None:
+                self.sync_history_from_storage(conversation_id)
+
+    def sync_history_from_storage(self, conversation_id: str) -> None:
+        """Populates in-memory history buffer with recent messages from storage."""
+        with self._lock:
+            self.history.clear()
+            if self.storage is None:
+                return
+            try:
+                records = self.storage.get_messages(
+                    conversation_id, limit=self.history.max_messages
+                )
+                for rec in records:
+                    if rec.role == "user":
+                        self.history.add_user_message(rec.content)
+                    elif rec.role == "assistant":
+                        self.history.add_assistant_message(rec.content)
+                    elif rec.role == "system":
+                        self.history.add_system_message(rec.content)
+            except Exception as exc:
+                logger.warning("Failed to sync history from storage for %s: %s", conversation_id, exc)
+                self.last_storage_error = str(exc)
+
+    def create_new_conversation(self, title: str = "New Chat") -> str:
+        """Creates a new conversation in storage and sets it active.
+
+        Returns:
+            str: The newly created conversation ID.
+        """
+        with self._lock:
+            if self.storage is not None:
+                cid = self.storage.create_conversation(title=title)
+            else:
+                cid = str(uuid.uuid4())
+            self._active_conversation_id = cid
+            self.history.clear()
+            return cid
+
     def check_ollama_health(self) -> bool:
         """Pings the local Ollama service. Returns True if healthy, False otherwise."""
         return self.provider.check_health()
@@ -201,12 +283,19 @@ class AICoordinator:
             model_name = getattr(cfg_model, "model", "qwen2.5-coder:3b")
             model_avail = self.check_model_available(model_name) if ai_health else False
 
+            storage_enabled = self.storage is not None
+            storage_degraded = getattr(self.storage, "is_degraded", False)
+
             return {
                 "bridge": bridge_status,
                 "ai_health": ai_health,
                 "model_available": model_avail,
                 "model": model_name,
                 "history_count": len(self.history.get_messages()),
+                "active_conversation_id": self._active_conversation_id,
+                "storage_enabled": storage_enabled,
+                "storage_degraded": storage_degraded,
+                "storage_status": self.last_storage_status,
             }
 
     def dispatch_command(self, command: str, timeout: Optional[float] = None) -> Dict[str, Any]:
@@ -306,7 +395,24 @@ class AICoordinator:
             if not prompt_for_ai:
                 prompt_for_ai = "Hello"
 
-            # 4. AI Inference & Guaranteed Cleanup
+            # 4. If storage is enabled, persist user message once C core accepted dispatch
+            user_saved = False
+            if self.storage is not None and self._active_conversation_id:
+                try:
+                    self.storage.save_message(
+                        conversation_id=self._active_conversation_id,
+                        role="user",
+                        content=prompt_for_ai,
+                        auto_title=True,
+                    )
+                    user_saved = True
+                    self.last_storage_status = "PERSISTED"
+                except Exception as s_exc:
+                    logger.warning("Storage failure saving user message: %s", s_exc)
+                    self.last_storage_status = "MEMORY_ONLY"
+                    self.last_storage_error = str(s_exc)
+
+            # 5. AI Inference & Guaranteed Cleanup
             inference_error: Optional[Exception] = None
             cleanup_error: Optional[Exception] = None
             llm_response: Optional[LLMResponse] = None
@@ -321,6 +427,8 @@ class AICoordinator:
                 )
             except Exception as exc:
                 inference_error = exc
+                if user_saved:
+                    self.history.add_user_message(prompt_for_ai)
                 raise
             finally:
                 # REQUIREMENT: Cleanup must be attempted when an operation has started, even if inference fails.
@@ -349,10 +457,26 @@ class AICoordinator:
                             # Inference succeeded, but cleanup failed. Raise cleanup error.
                             raise cleanup_error from None
 
-            # 5. Inference and cleanup both succeeded: record to history and return result
+            # 6. Inference and cleanup both succeeded: record to history and return result
             assert llm_response is not None
             self.history.add_user_message(prompt_for_ai)
             self.history.add_assistant_message(llm_response.text)
+
+            if self.storage is not None and self._active_conversation_id:
+                try:
+                    self.storage.save_message(
+                        conversation_id=self._active_conversation_id,
+                        role="assistant",
+                        content=llm_response.text,
+                        model=llm_response.model,
+                    )
+                    self.last_storage_status = "PERSISTED"
+                except Exception as s_exc:
+                    logger.warning("Storage failure saving assistant response: %s", s_exc)
+                    self.last_storage_status = "MEMORY_ONLY"
+                    self.last_storage_error = str(s_exc)
+            else:
+                self.last_storage_status = "MEMORY_ONLY"
 
             return CoordinatorChatResult(
                 text=llm_response.text,
@@ -363,4 +487,6 @@ class AICoordinator:
                 model=llm_response.model,
                 raw_response=llm_response.raw_response,
                 total_duration_ns=llm_response.total_duration_ns,
+                conversation_id=self._active_conversation_id,
+                storage_status=self.last_storage_status,
             )

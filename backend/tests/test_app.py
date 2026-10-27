@@ -652,5 +652,122 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.assertTrue(self.app._closing)
 
 
+class TestFlexDesktopAppPersistence(unittest.TestCase):
+    """Unit tests for persistent conversation memory in FlexDesktopApp."""
+
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.withdraw()
+
+        from backend.ai.storage import SQLiteConversationStorage
+        from backend.ai.history import InMemoryConversationHistory
+
+        self.storage = SQLiteConversationStorage(db_path=":memory:")
+        self.mock_coordinator = MagicMock(spec=AICoordinator)
+        self.mock_coordinator.is_running = True
+        self.mock_coordinator.storage = self.storage
+        self.mock_coordinator.history = InMemoryConversationHistory()
+        self.mock_coordinator.active_conversation_id = None
+        self.mock_coordinator.get_status.return_value = {
+            "bridge": {"lifecycle": "FLEX_LIFECYCLE_IDLE"},
+            "ai_health": True,
+            "model_available": True,
+            "model": "qwen2.5-coder:3b",
+            "history_count": 0,
+            "storage_enabled": True,
+            "storage_degraded": False,
+            "storage_status": "PERSISTED",
+        }
+
+    def tearDown(self) -> None:
+        if hasattr(self, "app") and not self.app._closing:
+            self.app.on_closing()
+        elif hasattr(self, "root"):
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+        if hasattr(self, "storage") and self.storage is not None:
+            self.storage.close()
+
+    def test_startup_with_empty_database(self) -> None:
+        """Verifies startup with empty database initializes cleanly and displays empty state."""
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+        self.assertIsNotNone(self.app.recent_chats_container)
+        self.assertEqual(len(self.app.recent_chat_labels), 0)
+
+    def test_startup_restores_existing_conversation(self) -> None:
+        """Verifies that on startup, messages from the active conversation are restored into chat_display."""
+        cid = self.storage.create_conversation("Historical Chat")
+        self.storage.save_message(cid, role="user", content="Past question")
+        self.storage.save_message(
+            cid, role="assistant", content="Past answer", model="qwen2.5-coder:3b"
+        )
+        self.mock_coordinator.active_conversation_id = cid
+
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+
+        rendered_text = self.app.chat_display.get("1.0", tk.END)
+        self.assertIn("Past question", rendered_text)
+        self.assertIn("Past answer", rendered_text)
+        self.assertIn("Restored Session", rendered_text)
+
+    def test_switching_between_conversations_in_gui(self) -> None:
+        """Verifies clicking or loading another conversation switches active transcript."""
+        c1 = self.storage.create_conversation("Topic 1")
+        self.storage.save_message(c1, role="user", content="Question 1")
+        self.storage.save_message(c1, role="assistant", content="Answer 1")
+
+        c2 = self.storage.create_conversation("Topic 2")
+        self.storage.save_message(c2, role="user", content="Question 2")
+        self.storage.save_message(c2, role="assistant", content="Answer 2")
+
+        def mock_set_active(conv_id: str, sync_history: bool = True) -> None:
+            self.mock_coordinator.active_conversation_id = conv_id
+
+        self.mock_coordinator.set_active_conversation.side_effect = mock_set_active
+        self.mock_coordinator.active_conversation_id = c1
+
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+
+        # Switch to Topic 2
+        self.app.load_conversation(c2)
+        rendered_text = self.app.chat_display.get("1.0", tk.END)
+        self.assertIn("Question 2", rendered_text)
+        self.assertIn("Answer 2", rendered_text)
+        self.assertNotIn("Question 1", rendered_text)
+
+    def test_start_new_conversation_in_gui(self) -> None:
+        """Verifies new_chat creates a fresh conversation and clears transcript."""
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+        self.app.new_chat()
+
+        self.mock_coordinator.create_new_conversation.assert_called_once()
+        self.mock_coordinator.clear_history.assert_called_once()
+        self.assertEqual(self.app.current_view_name, "home")
+
+    def test_recent_chats_rendering(self) -> None:
+        """Verifies sidebar renders recent chat titles from persistent storage."""
+        self.storage.create_conversation("First Project")
+        self.storage.create_conversation("Second Project")
+
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+        self.assertEqual(len(self.app.recent_chat_labels), 2)
+
+    def test_database_unavailable_at_startup_fails_safely(self) -> None:
+        """Verifies that if storage fails or is None, the app still launches in ephemeral mode."""
+        self.mock_coordinator.storage = None
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=None)
+        self.assertIsNone(self.app.storage)
+        self.assertEqual(self.app.current_view_name, "home")
+
+    def test_clean_shutdown_closes_storage(self) -> None:
+        """Verifies on_closing calls storage.close()."""
+        mock_storage = MagicMock()
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=mock_storage)
+        self.app.on_closing()
+        mock_storage.close.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
