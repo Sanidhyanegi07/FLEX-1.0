@@ -11,6 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -23,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from backend.ai.storage import SQLiteConversationStorage
-from backend.app import AICoreVisualizer, DiagnosticsDrawer, FlexDesktopApp
+from backend.app import AICoreVisualizer, DiagnosticsDrawer, FlexDesktopApp, MemoryView
 from backend.coordinator import AICoordinator, CoordinatorChatResult, CoordinatorDispatchError
 
 
@@ -242,8 +243,8 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.assertIs(self.app.chat_view.coordinator, self.mock_coordinator)
 
     def test_prototype_views_have_no_fake_interactive_controls(self) -> None:
-        """Verifies that prototype views contain no fake interactive buttons or inputs."""
-        prototype_keys = ["voice", "memory", "knowledge", "projects", "tools", "settings"]
+        # Note: memory is no longer a prototype view in Stage 2C; it is a functional MemoryView.
+        prototype_keys = ["voice", "knowledge", "projects", "tools", "settings"]
 
         def check_widget_for_fake_controls(widget: tk.Widget) -> None:
             self.assertNotIsInstance(
@@ -1038,6 +1039,191 @@ class TestFlexDesktopAppStage2C1UIStabilization(unittest.TestCase):
             self.app._show_auth_notice()
             mock_info.assert_called_once()
             self.assertIn("local-first", self.app.chat_view.status_lbl.cget("text").lower())
+
+
+class TestFlexDesktopAppStage2CMemoryView(unittest.TestCase):
+    """Unit and GUI tests for Stage 2C functional MemoryView interface."""
+
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.withdraw()
+
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.temp_dir, "test_memory_view.db")
+        self.storage = SQLiteConversationStorage(db_path=self.db_path)
+
+        self.mock_coordinator = MagicMock(spec=AICoordinator)
+        self.mock_coordinator.is_running = True
+        self.mock_coordinator.storage = self.storage
+        self.mock_coordinator.active_conversation_id = None
+        self.mock_coordinator.get_status.return_value = {
+            "bridge": {"is_running": True, "lifecycle": "FLEX_LIFECYCLE_IDLE"},
+            "ai_health": True,
+            "model_available": True,
+            "model": "qwen2.5-coder:3b",
+        }
+
+        self.app = FlexDesktopApp(
+            self.root, coordinator=self.mock_coordinator, storage=self.storage
+        )
+
+    def tearDown(self) -> None:
+        if hasattr(self, "app") and self.app is not None:
+            self.app.on_closing()
+        if hasattr(self, "storage") and self.storage is not None:
+            self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_memory_view_is_functional_not_prototype(self) -> None:
+        """Verifies that 'memory' is an interactive MemoryView instance with real widgets."""
+        memory_view = self.app.views.get("memory")
+        self.assertIsInstance(memory_view, MemoryView)
+        self.assertTrue(hasattr(memory_view, "search_entry"))
+        self.assertTrue(hasattr(memory_view, "btn_open"))
+        self.assertTrue(hasattr(memory_view, "btn_rename"))
+        self.assertTrue(hasattr(memory_view, "btn_delete"))
+
+    def test_persisted_conversation_appears_in_memory_view(self) -> None:
+        """Verifies that saved conversations in SQLite are rendered in the MemoryView list."""
+        cid = self.storage.create_conversation("C Memory Architecture")
+        self.storage.save_message(cid, role="user", content="Explain heap vs stack")
+        self.storage.save_message(cid, role="assistant", content="Heap is dynamic; stack is fixed.")
+
+        self.app.switch_view("memory")
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+
+        self.assertIn(cid, mem_view._card_widgets)
+        self.assertEqual(mem_view.selected_cid, cid)
+        self.assertEqual(mem_view.lbl_detail_title.cget("text"), "C Memory Architecture")
+
+    def test_messages_load_in_chronological_order(self) -> None:
+        """Verifies conversation messages are loaded and formatted in chronological order."""
+        cid = self.storage.create_conversation("Pointers in C")
+        self.storage.save_message(cid, role="user", content="What is a pointer?")
+        self.storage.save_message(cid, role="assistant", content="A variable holding memory address.")
+        self.storage.save_message(cid, role="user", content="What is a dereference?")
+
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        transcript_content = mem_view.txt_transcript.get("1.0", tk.END)
+        self.assertIn("What is a pointer?", transcript_content)
+        self.assertIn("A variable holding memory address.", transcript_content)
+        self.assertIn("What is a dereference?", transcript_content)
+
+        idx_1 = transcript_content.index("What is a pointer?")
+        idx_2 = transcript_content.index("A variable holding memory address.")
+        idx_3 = transcript_content.index("What is a dereference?")
+        self.assertTrue(idx_1 < idx_2 < idx_3)
+
+    def test_recent_chats_and_memory_consistent_counts(self) -> None:
+        """Verifies Recent Chats and MemoryView agree on saved conversation count."""
+        # 1. Start with 1 conversation with messages and 1 unstarted empty conversation
+        c_active = self.storage.create_conversation("Pointers Discussion")
+        self.storage.save_message(c_active, role="user", content="Explain NULL pointer")
+        self.storage.create_conversation("New Chat")  # Empty placeholder
+
+        self.app._refresh_recent_chats()
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+
+        # Both views should filter out unstarted empty 'New Chat' drafts
+        self.assertEqual(len(self.app.recent_chat_labels), 1)
+        self.assertEqual(mem_view.lbl_list_count.cget("text"), "1")
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=True), 1)
+
+    def test_search_conversations_in_memory_view(self) -> None:
+        """Verifies searching conversations by title or message content."""
+        c1 = self.storage.create_conversation("Operating Systems")
+        self.storage.save_message(c1, role="user", content="Explain scheduling algorithms")
+
+        c2 = self.storage.create_conversation("Networking Basics")
+        self.storage.save_message(c2, role="user", content="Explain TCP handshake")
+
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        self.assertEqual(len(mem_view._card_widgets), 2)
+
+        # Search by title
+        mem_view._search_query = "Operating"
+        mem_view._populate_conversation_list()
+        self.assertEqual(len(mem_view._card_widgets), 1)
+        self.assertIn(c1, mem_view._card_widgets)
+
+        # Search by message content
+        mem_view._search_query = "handshake"
+        mem_view._populate_conversation_list()
+        self.assertEqual(len(mem_view._card_widgets), 1)
+        self.assertIn(c2, mem_view._card_widgets)
+
+        # Clear search
+        mem_view._clear_search()
+        self.assertEqual(len(mem_view._card_widgets), 2)
+
+    def test_open_in_chat_action_switches_to_home(self) -> None:
+        """Verifies 'Open in Chat' loads the conversation and switches to Home view."""
+        cid = self.storage.create_conversation("Algorithms")
+        self.storage.save_message(cid, role="user", content="Binary search complexity?")
+
+        self.app.switch_view("memory")
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        mem_view._on_open_clicked()
+        self.assertEqual(self.app.current_view_name, "home")
+        self.mock_coordinator.set_active_conversation.assert_called_with(cid, sync_history=True)
+
+    def test_rename_conversation_updates_memory_and_recent_chats(self) -> None:
+        """Verifies renaming a conversation updates SQLite, MemoryView, and Recent Chats."""
+        cid = self.storage.create_conversation("Old Title")
+        self.storage.save_message(cid, role="user", content="Hello world")
+        self.app._refresh_recent_chats()
+
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        with patch("tkinter.simpledialog.askstring", return_value="Renamed Space Topic"):
+            mem_view._on_rename_clicked()
+
+        updated_conv = self.storage.get_conversation(cid)
+        self.assertEqual(updated_conv.title, "Renamed Space Topic")
+        self.assertEqual(mem_view.lbl_detail_title.cget("text"), "Renamed Space Topic")
+        self.assertIn("Renamed Space Topic", [lbl.cget("text") for lbl in self.app.recent_chat_labels.values()])
+
+    def test_delete_conversation_with_confirmation_updates_both_views(self) -> None:
+        """Verifies deleting a conversation cascades and updates all views."""
+        cid = self.storage.create_conversation("To Be Deleted")
+        self.storage.save_message(cid, role="user", content="Temporary message")
+        self.app._refresh_recent_chats()
+
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        with patch("tkinter.messagebox.askyesno", return_value=True):
+            mem_view._on_delete_clicked()
+
+        self.assertIsNone(self.storage.get_conversation(cid))
+        self.assertNotIn(cid, mem_view._card_widgets)
+        self.assertNotIn(cid, self.app.recent_chat_labels)
+
+    def test_empty_database_shows_empty_state(self) -> None:
+        """Verifies that an empty database displays a clean empty state in MemoryView."""
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+
+        self.assertEqual(mem_view.lbl_list_count.cget("text"), "0")
+        self.assertEqual(len(mem_view._card_widgets), 0)
+        self.assertIsNone(mem_view.selected_cid)
+        self.assertEqual(mem_view.btn_open.cget("state"), tk.DISABLED)
 
 
 if __name__ == "__main__":

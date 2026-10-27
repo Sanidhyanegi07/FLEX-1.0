@@ -405,6 +405,62 @@ class TestSQLiteStorageUnit(unittest.TestCase):
             timeout = cur.fetchone()[0]
             self.assertEqual(timeout, 5000)
 
+    def test_get_conversation_count_filtering(self) -> None:
+        """Verifies get_conversation_count with and without filter_empty."""
+        self.assertEqual(self.storage.get_conversation_count(), 0)
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=True), 0)
+
+        # 1. Create empty default conversation
+        c1 = self.storage.create_conversation("New Chat")
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=False), 1)
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=True), 0)
+
+        # 2. Add message to it
+        self.storage.save_message(c1, role="user", content="Hello world", auto_title=False)
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=True), 1)
+
+        # 3. Create a conversation with custom title but 0 messages
+        self.storage.create_conversation("Pointers in C")
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=False), 2)
+        self.assertEqual(self.storage.get_conversation_count(filter_empty=True), 2)
+
+    def test_get_total_message_count(self) -> None:
+        """Verifies total message count across all conversations."""
+        self.assertEqual(self.storage.get_total_message_count(), 0)
+
+        c1 = self.storage.create_conversation("Conv 1")
+        c2 = self.storage.create_conversation("Conv 2")
+
+        self.storage.save_message(c1, role="user", content="msg 1")
+        self.storage.save_message(c1, role="assistant", content="msg 2")
+        self.storage.save_message(c2, role="user", content="msg 3")
+
+        self.assertEqual(self.storage.get_total_message_count(), 3)
+
+    def test_search_conversations(self) -> None:
+        """Verifies searching conversations by title and message content."""
+        c1 = self.storage.create_conversation("Kernel Architecture")
+        self.storage.save_message(c1, role="user", content="Explain scheduling algorithms")
+
+        c2 = self.storage.create_conversation("Python Desktop")
+        self.storage.save_message(c2, role="user", content="How does Tkinter event loop work?")
+
+        # Search by title
+        res_kernel = self.storage.search_conversations("Kernel")
+        self.assertEqual(len(res_kernel), 1)
+        self.assertEqual(res_kernel[0].id, c1)
+
+        # Search by message content
+        res_tk = self.storage.search_conversations("Tkinter")
+        self.assertEqual(len(res_tk), 1)
+        self.assertEqual(res_tk[0].id, c2)
+
+        # Empty search returns all
+        self.assertEqual(len(self.storage.search_conversations("")), 2)
+
+        # Non-matching search returns empty list
+        self.assertEqual(len(self.storage.search_conversations("nonexistent_term_xyz")), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

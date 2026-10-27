@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
 from .coordinator import (
@@ -1335,6 +1335,731 @@ class PrototypeView(tk.Frame):
             bullet_lbl.pack(anchor="w", padx=(10, 0), pady=1)
 
 
+class MemoryView(tk.Frame):
+    """Functional local conversation-memory interface for FLEX 1.0 (Stage 2C).
+
+    Provides persistent conversation recall, search, detail inspection,
+    renaming, and deletion directly connected to the SQLite storage engine.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        coordinator: Any,
+        storage: Optional[SQLiteConversationStorage],
+        app: Optional["FlexDesktopApp"] = None,
+    ) -> None:
+        super().__init__(parent, bg=COLOR_BG_ROOT)
+        self.coordinator = coordinator
+        self.storage = storage
+        self.app = app
+
+        self.selected_cid: Optional[str] = None
+        self._search_query: str = ""
+        self._card_widgets: Dict[str, tk.Frame] = {}
+        self._search_has_focus: bool = False
+
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        # 1. Header Bar
+        header_frame = tk.Frame(self, bg=COLOR_BG_PANEL, padx=18, pady=10)
+        header_frame.pack(side=tk.TOP, fill=tk.X)
+
+        title_box = tk.Frame(header_frame, bg=COLOR_BG_PANEL)
+        title_box.pack(side=tk.LEFT)
+
+        lbl_title = tk.Label(
+            title_box,
+            text="🧠  Memory & Stored Context",
+            font=("Segoe UI", 13, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+        )
+        lbl_title.pack(anchor="w")
+
+        lbl_sub = tk.Label(
+            title_box,
+            text="Persistent SQLite Conversation History & Context Recall (Stage 2C)",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        )
+        lbl_sub.pack(anchor="w")
+
+        # Telemetry & Status Badges (Right side of header)
+        badges_box = tk.Frame(header_frame, bg=COLOR_BG_PANEL)
+        badges_box.pack(side=tk.RIGHT)
+
+        self.badge_storage = tk.Label(
+            badges_box,
+            text="● INITIALIZING",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_CARD,
+            padx=8,
+            pady=2,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.badge_storage.pack(side=tk.LEFT, padx=4)
+
+        self.badge_metrics = tk.Label(
+            badges_box,
+            text="0 Chats • 0 Msgs",
+            font=("Consolas", 8),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_CARD,
+            padx=8,
+            pady=2,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.badge_metrics.pack(side=tk.LEFT, padx=4)
+
+        # 2. Search & Toolbar Frame
+        toolbar_frame = tk.Frame(self, bg=COLOR_BG_ROOT, padx=18, pady=8)
+        toolbar_frame.pack(side=tk.TOP, fill=tk.X)
+
+        search_container = tk.Frame(
+            toolbar_frame,
+            bg=COLOR_BG_INPUT,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=8,
+            pady=3,
+        )
+        search_container.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        lbl_search_icon = tk.Label(
+            search_container,
+            text="🔍",
+            font=("Segoe UI", 9),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_INPUT,
+        )
+        lbl_search_icon.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.search_entry = tk.Entry(
+            search_container,
+            font=("Segoe UI", 9),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_INPUT,
+            insertbackground=COLOR_TEXT_ACCENT,
+            relief=tk.FLAT,
+        )
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.search_entry.insert(0, "Search saved conversations and messages...")
+        self.search_entry.configure(fg=COLOR_TEXT_MUTED)
+
+        self.search_entry.bind("<FocusIn>", self._on_search_focus_in)
+        self.search_entry.bind("<FocusOut>", self._on_search_focus_out)
+        self.search_entry.bind("<KeyRelease>", self._on_search_key_release)
+
+        btn_clear_search = tk.Button(
+            search_container,
+            text="✕",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_INPUT,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            activebackground=COLOR_BG_INPUT,
+            relief=tk.FLAT,
+            cursor="hand2",
+            command=self._clear_search,
+        )
+        btn_clear_search.pack(side=tk.RIGHT)
+
+        btn_new_chat = tk.Button(
+            toolbar_frame,
+            text="+ New Chat",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER_FOCUS,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            command=self._on_new_chat,
+        )
+        btn_new_chat.pack(side=tk.LEFT, padx=(0, 6))
+
+        btn_refresh = tk.Button(
+            toolbar_frame,
+            text="⟳ Refresh",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BORDER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self.refresh,
+        )
+        btn_refresh.pack(side=tk.LEFT)
+
+        # 3. Two-Column Workspace (Master List + Detail Transcript)
+        body = tk.Frame(self, bg=COLOR_BG_ROOT, padx=18, pady=0)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0, 12))
+
+        # ── Left Column: Conversation Browser ─────────────────────────────
+        left_col = tk.Frame(
+            body,
+            bg=COLOR_BG_PANEL,
+            width=320,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        left_col.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left_col.pack_propagate(False)
+
+        left_hdr = tk.Frame(left_col, bg=COLOR_BG_PANEL, padx=10, pady=8)
+        left_hdr.pack(side=tk.TOP, fill=tk.X)
+
+        tk.Label(
+            left_hdr,
+            text="SAVED CONVERSATIONS",
+            font=("Segoe UI", 8, "bold"),
+            fg="#64748B",
+            bg=COLOR_BG_PANEL,
+        ).pack(side=tk.LEFT)
+
+        self.lbl_list_count = tk.Label(
+            left_hdr,
+            text="0",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_CARD,
+            padx=6,
+            pady=1,
+        )
+        self.lbl_list_count.pack(side=tk.RIGHT)
+
+        # Scrollable Canvas for cards
+        canvas_box = tk.Frame(left_col, bg=COLOR_BG_PANEL)
+        canvas_box.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(
+            canvas_box,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.scrollbar = ttk.Scrollbar(
+            canvas_box,
+            orient=tk.VERTICAL,
+            command=self.canvas.yview,
+        )
+        self.scroll_content = tk.Frame(self.canvas, bg=COLOR_BG_PANEL)
+        self.scroll_content.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+        )
+        self._canvas_window = self.canvas.create_window(
+            (0, 0), window=self.scroll_content, anchor="nw"
+        )
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(self._canvas_window, width=e.width),
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _on_mousewheel(event):
+            try:
+                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            except Exception:
+                pass
+
+        self.canvas.bind("<MouseWheel>", _on_mousewheel)
+        self.scroll_content.bind("<MouseWheel>", _on_mousewheel)
+
+        # ── Right Column: Detail / Transcript Inspector ───────────────────
+        right_col = tk.Frame(
+            body,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        detail_hdr = tk.Frame(right_col, bg=COLOR_BG_PANEL, padx=14, pady=10)
+        detail_hdr.pack(side=tk.TOP, fill=tk.X)
+
+        detail_info = tk.Frame(detail_hdr, bg=COLOR_BG_PANEL)
+        detail_info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.lbl_detail_title = tk.Label(
+            detail_info,
+            text="Select a conversation to view stored messages",
+            font=("Segoe UI", 11, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_detail_title.pack(fill=tk.X)
+
+        self.lbl_detail_meta = tk.Label(
+            detail_info,
+            text="No conversation selected",
+            font=("Consolas", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_detail_meta.pack(fill=tk.X, pady=(2, 0))
+
+        # Action Buttons on right of detail header
+        detail_actions = tk.Frame(detail_hdr, bg=COLOR_BG_PANEL)
+        detail_actions.pack(side=tk.RIGHT)
+
+        self.btn_open = tk.Button(
+            detail_actions,
+            text="💬 Open in Chat",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_PRIMARY,
+            activebackground=COLOR_BORDER_FOCUS,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            state=tk.DISABLED,
+            command=self._on_open_clicked,
+        )
+        self.btn_open.pack(side=tk.LEFT, padx=3)
+
+        self.btn_rename = tk.Button(
+            detail_actions,
+            text="✏️ Rename",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BORDER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=8,
+            pady=3,
+            cursor="hand2",
+            state=tk.DISABLED,
+            command=self._on_rename_clicked,
+        )
+        self.btn_rename.pack(side=tk.LEFT, padx=3)
+
+        self.btn_delete = tk.Button(
+            detail_actions,
+            text="🗑️ Delete",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_ERROR,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BORDER,
+            activeforeground=COLOR_TEXT_ERROR,
+            relief=tk.FLAT,
+            padx=8,
+            pady=3,
+            cursor="hand2",
+            state=tk.DISABLED,
+            command=self._on_delete_clicked,
+        )
+        self.btn_delete.pack(side=tk.LEFT, padx=3)
+
+        # Transcript Display
+        text_box = tk.Frame(right_col, bg=COLOR_BG_INPUT)
+        text_box.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.txt_transcript = tk.Text(
+            text_box,
+            font=("Segoe UI", 9),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_INPUT,
+            insertbackground=COLOR_TEXT_ACCENT,
+            relief=tk.FLAT,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            padx=12,
+            pady=10,
+        )
+        txt_scroll = ttk.Scrollbar(
+            text_box,
+            orient=tk.VERTICAL,
+            command=self.txt_transcript.yview,
+        )
+        self.txt_transcript.configure(yscrollcommand=txt_scroll.set)
+        self.txt_transcript.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        txt_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Transcript Tag Styles
+        self.txt_transcript.tag_configure("user_hdr", foreground=COLOR_TEXT_VIOLET, font=("Segoe UI", 9, "bold"))
+        self.txt_transcript.tag_configure("user_msg", foreground=COLOR_TEXT_PRIMARY, font=("Segoe UI", 9))
+        self.txt_transcript.tag_configure("flex_hdr", foreground=COLOR_TEXT_ACCENT, font=("Segoe UI", 9, "bold"))
+        self.txt_transcript.tag_configure("flex_msg", foreground=COLOR_TEXT_PRIMARY, font=("Segoe UI", 9))
+        self.txt_transcript.tag_configure("system_msg", foreground=COLOR_TEXT_MUTED, font=("Segoe UI", 8, "italic"))
+        self.txt_transcript.tag_configure("meta_tag", foreground="#475569", font=("Consolas", 8))
+
+    def _on_search_focus_in(self, event=None) -> None:
+        if not self._search_has_focus and self.search_entry.get() == "Search saved conversations and messages...":
+            self.search_entry.delete(0, tk.END)
+            self.search_entry.configure(fg=COLOR_TEXT_PRIMARY)
+            self._search_has_focus = True
+
+    def _on_search_focus_out(self, event=None) -> None:
+        if not self.search_entry.get().strip():
+            self._search_has_focus = False
+            self.search_entry.delete(0, tk.END)
+            self.search_entry.insert(0, "Search saved conversations and messages...")
+            self.search_entry.configure(fg=COLOR_TEXT_MUTED)
+
+    def _on_search_key_release(self, event=None) -> None:
+        val = self.search_entry.get()
+        if self._search_has_focus and val != "Search saved conversations and messages...":
+            self._search_query = val.strip()
+        else:
+            self._search_query = ""
+        self._populate_conversation_list()
+
+    def _clear_search(self) -> None:
+        self.search_entry.delete(0, tk.END)
+        self._search_query = ""
+        self._on_search_focus_out()
+        self._populate_conversation_list()
+
+    def _on_new_chat(self) -> None:
+        if self.app and hasattr(self.app, "new_chat"):
+            self.app.new_chat()
+        elif self.coordinator and hasattr(self.coordinator, "create_new_conversation"):
+            self.coordinator.create_new_conversation()
+            self.refresh()
+
+    def refresh(self) -> None:
+        """Refreshes storage status, telemetry badges, and conversation list from SQLite."""
+        if not self.winfo_exists():
+            return
+
+        storage = self.storage or getattr(self.coordinator, "storage", None)
+        if storage is None:
+            self.badge_storage.configure(text="● EPHEMERAL MODE", fg=COLOR_TEXT_ERROR)
+            self.badge_metrics.configure(text="Storage Uninitialized")
+            self._populate_empty_list("No persistent storage configured (Ephemeral Mode).")
+            return
+
+        if getattr(storage, "is_degraded", False):
+            self.badge_storage.configure(text="● IN-MEMORY FALLBACK", fg=COLOR_TEXT_WARNING)
+        else:
+            self.badge_storage.configure(text="● SQLITE ACTIVE (WAL)", fg=COLOR_TEXT_SUCCESS)
+
+        try:
+            total_convs = storage.get_conversation_count(filter_empty=True)
+            total_msgs = storage.get_total_message_count()
+            conv_word = "Chat" if total_convs == 1 else "Chats"
+            msg_word = "Msg" if total_msgs == 1 else "Msgs"
+            self.badge_metrics.configure(
+                text=f"{total_convs} {conv_word} • {total_msgs} {msg_word}"
+            )
+        except Exception as exc:
+            logger.debug("Error updating MemoryView metrics: %s", exc)
+
+        self._populate_conversation_list()
+
+    def _populate_conversation_list(self) -> None:
+        for widget in self.scroll_content.winfo_children():
+            widget.destroy()
+        self._card_widgets.clear()
+
+        storage = self.storage or getattr(self.coordinator, "storage", None)
+        if storage is None:
+            self._populate_empty_list("No persistent storage active.")
+            return
+
+        try:
+            if self._search_query:
+                convs = storage.search_conversations(
+                    self._search_query, limit=50, filter_empty=True
+                )
+            else:
+                convs = storage.list_conversations(limit=50)
+                # Filter out unstarted empty 'New Chat' drafts to match Recent Chats
+                convs = [
+                    c for c in convs
+                    if storage.get_message_count(c.id) > 0 or c.title != "New Chat"
+                ]
+        except Exception as exc:
+            logger.error("Error querying conversations for MemoryView: %s", exc)
+            self._populate_empty_list(f"Database query error: {exc}")
+            return
+
+        self.lbl_list_count.configure(text=str(len(convs)))
+
+        if not convs:
+            if self._search_query:
+                msg = f"No conversations found matching\n'{self._search_query}'."
+            else:
+                msg = "No saved conversations found.\nStart chatting in Home to persist chats."
+            self._populate_empty_list(msg)
+            self._clear_detail()
+            return
+
+        active_cid = getattr(self.coordinator, "active_conversation_id", None)
+        first_cid = convs[0].id
+
+        for c in convs:
+            is_active = (c.id == active_cid)
+            is_selected = (c.id == self.selected_cid)
+            msg_count = 0
+            try:
+                msg_count = storage.get_message_count(c.id)
+            except Exception:
+                pass
+
+            card = tk.Frame(
+                self.scroll_content,
+                bg=COLOR_BG_SIDEBAR_ACTIVE if is_selected else COLOR_BG_PANEL,
+                highlightthickness=1,
+                highlightbackground=COLOR_BORDER_FOCUS if is_selected else COLOR_BORDER,
+                padx=10,
+                pady=6,
+                cursor="hand2",
+            )
+            card.pack(fill=tk.X, padx=4, pady=2)
+
+            top_row = tk.Frame(card, bg=card.cget("bg"))
+            top_row.pack(fill=tk.X)
+
+            title_text = c.title if len(c.title) <= 28 else c.title[:26] + "..."
+            lbl_title = tk.Label(
+                top_row,
+                text=title_text,
+                font=("Segoe UI", 9, "bold" if is_selected or is_active else "normal"),
+                fg=COLOR_TEXT_ACCENT if is_active else COLOR_TEXT_PRIMARY,
+                bg=card.cget("bg"),
+                anchor="w",
+            )
+            lbl_title.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            lbl_cnt = tk.Label(
+                top_row,
+                text=f"{msg_count} msgs",
+                font=("Consolas", 7),
+                fg=COLOR_TEXT_MUTED,
+                bg=COLOR_BG_CARD,
+                padx=4,
+                pady=1,
+            )
+            lbl_cnt.pack(side=tk.RIGHT)
+
+            # Date row
+            date_str = c.updated_at[:16].replace("T", " ") if len(c.updated_at) >= 16 else c.updated_at
+            lbl_date = tk.Label(
+                card,
+                text=f"Updated: {date_str}",
+                font=("Segoe UI", 7),
+                fg=COLOR_TEXT_MUTED,
+                bg=card.cget("bg"),
+                anchor="w",
+            )
+            lbl_date.pack(fill=tk.X, pady=(2, 0))
+
+            card_bind = lambda e, cid=c.id: self.select_conversation(cid)
+            card.bind("<Button-1>", card_bind)
+            top_row.bind("<Button-1>", card_bind)
+            lbl_title.bind("<Button-1>", card_bind)
+            lbl_cnt.bind("<Button-1>", card_bind)
+            lbl_date.bind("<Button-1>", card_bind)
+
+            self._card_widgets[c.id] = card
+
+        # Select conversation
+        if self.selected_cid and self.selected_cid in [c.id for c in convs]:
+            self.select_conversation(self.selected_cid)
+        elif convs:
+            self.select_conversation(first_cid)
+
+    def _populate_empty_list(self, msg: str) -> None:
+        self.lbl_list_count.configure(text="0")
+        lbl = tk.Label(
+            self.scroll_content,
+            text=msg,
+            font=("Segoe UI", 9, "italic"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            justify=tk.CENTER,
+            pady=30,
+        )
+        lbl.pack(fill=tk.BOTH, expand=True)
+
+    def select_conversation(self, cid: str) -> None:
+        """Selects a conversation, highlights card, and loads messages in detail pane."""
+        self.selected_cid = cid
+        storage = self.storage or getattr(self.coordinator, "storage", None)
+        if storage is None:
+            return
+
+        # Update card visuals
+        for card_id, card in self._card_widgets.items():
+            if not card.winfo_exists():
+                continue
+            if card_id == cid:
+                card.configure(
+                    bg=COLOR_BG_SIDEBAR_ACTIVE,
+                    highlightbackground=COLOR_BORDER_FOCUS,
+                )
+                for child in card.winfo_children():
+                    child.configure(bg=COLOR_BG_SIDEBAR_ACTIVE)
+                    for subchild in child.winfo_children():
+                        if subchild != child.winfo_children()[-1]:
+                            subchild.configure(bg=COLOR_BG_SIDEBAR_ACTIVE)
+            else:
+                card.configure(
+                    bg=COLOR_BG_PANEL,
+                    highlightbackground=COLOR_BORDER,
+                )
+                for child in card.winfo_children():
+                    child.configure(bg=COLOR_BG_PANEL)
+                    for subchild in child.winfo_children():
+                        if subchild != child.winfo_children()[-1]:
+                            subchild.configure(bg=COLOR_BG_PANEL)
+
+        conv = None
+        messages = []
+        try:
+            conv = storage.get_conversation(cid)
+            messages = storage.get_messages(cid)
+        except Exception as exc:
+            logger.error("Error loading conversation %s: %s", cid, exc)
+
+        if not conv:
+            self._clear_detail()
+            return
+
+        self.btn_open.configure(state=tk.NORMAL)
+        self.btn_rename.configure(state=tk.NORMAL)
+        self.btn_delete.configure(state=tk.NORMAL)
+
+        self.lbl_detail_title.configure(text=conv.title)
+        up_str = conv.updated_at[:19].replace("T", " ") if len(conv.updated_at) >= 19 else conv.updated_at
+        cr_str = conv.created_at[:19].replace("T", " ") if len(conv.created_at) >= 19 else conv.created_at
+        self.lbl_detail_meta.configure(
+            text=f"UUID: {conv.id}  •  Updated: {up_str}  •  Created: {cr_str}  •  {len(messages)} messages"
+        )
+
+        self.txt_transcript.configure(state=tk.NORMAL)
+        self.txt_transcript.delete("1.0", tk.END)
+
+        if not messages:
+            self.txt_transcript.insert(
+                tk.END,
+                "This conversation has no recorded messages.\nClick 'Open in Chat' to start talking.\n",
+                "system_msg",
+            )
+        else:
+            for msg in messages:
+                if msg.role == "user":
+                    self.txt_transcript.insert(tk.END, f"\nUser:\n", "user_hdr")
+                    self.txt_transcript.insert(tk.END, f"{msg.content}\n", "user_msg")
+                elif msg.role == "assistant":
+                    m_name = msg.model or "qwen2.5-coder:3b"
+                    self.txt_transcript.insert(tk.END, f"\nFLEX 1.0 [{m_name}]:\n", "flex_hdr")
+                    self.txt_transcript.insert(tk.END, f"{msg.content}\n", "flex_msg")
+                else:
+                    self.txt_transcript.insert(tk.END, f"\n[{msg.role.upper()}]:\n", "system_msg")
+                    self.txt_transcript.insert(tk.END, f"{msg.content}\n", "user_msg")
+
+                m_time = msg.created_at[:19].replace("T", " ") if len(msg.created_at) >= 19 else msg.created_at
+                self.txt_transcript.insert(
+                    tk.END,
+                    f"└─ [Seq #{msg.sequence_num} • {m_time}]\n",
+                    "meta_tag",
+                )
+
+        self.txt_transcript.configure(state=tk.DISABLED)
+        self.txt_transcript.see("1.0")
+
+    def _clear_detail(self) -> None:
+        self.selected_cid = None
+        self.btn_open.configure(state=tk.DISABLED)
+        self.btn_rename.configure(state=tk.DISABLED)
+        self.btn_delete.configure(state=tk.DISABLED)
+        self.lbl_detail_title.configure(text="No conversation selected")
+        self.lbl_detail_meta.configure(text="")
+        self.txt_transcript.configure(state=tk.NORMAL)
+        self.txt_transcript.delete("1.0", tk.END)
+        self.txt_transcript.insert(
+            tk.END,
+            "Select a conversation from the left to view stored messages and recall history.\n",
+            "system_msg",
+        )
+        self.txt_transcript.configure(state=tk.DISABLED)
+
+    def _on_open_clicked(self) -> None:
+        if self.selected_cid and self.app and hasattr(self.app, "load_conversation"):
+            self.app.load_conversation(self.selected_cid)
+
+    def _on_rename_clicked(self) -> None:
+        if not self.selected_cid:
+            return
+        storage = self.storage or getattr(self.coordinator, "storage", None)
+        if not storage:
+            return
+        conv = storage.get_conversation(self.selected_cid)
+        if not conv:
+            return
+
+        new_title = simpledialog.askstring(
+            "Rename Conversation",
+            "Enter new conversation title:",
+            initialvalue=conv.title,
+            parent=self,
+        )
+        if new_title and new_title.strip():
+            try:
+                storage.update_conversation_title(self.selected_cid, new_title.strip())
+                self.refresh()
+                if self.app and hasattr(self.app, "_refresh_recent_chats"):
+                    self.app._refresh_recent_chats()
+            except Exception as exc:
+                messagebox.showerror("Rename Error", f"Could not rename conversation: {exc}", parent=self)
+
+    def _on_delete_clicked(self) -> None:
+        if not self.selected_cid:
+            return
+        storage = self.storage or getattr(self.coordinator, "storage", None)
+        if not storage:
+            return
+        conv = storage.get_conversation(self.selected_cid)
+        if not conv:
+            return
+
+        confirm = messagebox.askyesno(
+            "Delete Conversation",
+            f"Are you sure you want to permanently delete:\n'{conv.title}'?\n\nAll messages in this conversation will be removed.",
+            parent=self,
+        )
+        if confirm:
+            try:
+                target_cid = self.selected_cid
+                storage.delete_conversation(target_cid)
+                if self.coordinator and self.coordinator.active_conversation_id == target_cid:
+                    if self.app and hasattr(self.app, "new_chat"):
+                        self.app.new_chat()
+                    else:
+                        self.coordinator.create_new_conversation()
+                self.selected_cid = None
+                self.refresh()
+                if self.app and hasattr(self.app, "_refresh_recent_chats"):
+                    self.app._refresh_recent_chats()
+                if self.app and hasattr(self.app, "refresh_status"):
+                    self.app.refresh_status()
+            except Exception as exc:
+                messagebox.showerror("Delete Error", f"Could not delete conversation: {exc}", parent=self)
+
+
 class DiagnosticsDrawer(tk.Frame):
     """Collapsible System Diagnostics Drawer for FLEX 1.0 (Stage 2B).
 
@@ -2185,19 +2910,11 @@ class FlexDesktopApp:
                     "Hardware audio devices are not captured or monitored.",
                 ],
             ),
-            "memory": PrototypeView(
+            "memory": MemoryView(
                 self.view_container,
-                title="Memory & Context",
-                icon="🧠",
-                badge_text="● STATUS: SQLITE STORAGE OPERATIONAL (STAGE 2C)",
-                badge_color=COLOR_TEXT_SUCCESS,
-                description="Conversation recall and context persistence system powered by local SQLite database.",
-                status_explanation="Conversation histories and metadata are saved locally to conversations.db with WAL mode, isolated active conversation switching, and in-memory FIFO caching.",
-                unavailable_features=[
-                    "Vector embeddings and semantic long-term search are planned for Stage 3.",
-                    "Cross-conversation semantic entity extraction is not yet active.",
-                    "Cloud synchronization is not implemented (Local-First architecture).",
-                ],
+                coordinator=self.coordinator,
+                storage=self.storage,
+                app=self,
             ),
             "knowledge": PrototypeView(
                 self.view_container,
@@ -2304,6 +3021,10 @@ class FlexDesktopApp:
         self.current_view_name = view_name
         self._highlight_nav_button(view_name)
 
+        # Refresh MemoryView when switching to Memory
+        if view_name == "memory" and "memory" in self.views and hasattr(self.views["memory"], "refresh"):
+            self.views["memory"].refresh()
+
         # Resume AI Core animation and focus composer when returning to Home
         if view_name == "home" and hasattr(self, "chat_view"):
             self.chat_view.resume_animation()
@@ -2400,6 +3121,8 @@ class FlexDesktopApp:
             self.coordinator.set_active_conversation(conversation_id, sync_history=True)
         if hasattr(self, "chat_view"):
             self.chat_view.restore_conversation_messages(conversation_id)
+        if "memory" in self.views and hasattr(self.views["memory"], "selected_cid"):
+            self.views["memory"].selected_cid = conversation_id
         self.switch_view("home")
         self._refresh_recent_chats()
         if hasattr(self, "chat_view"):
@@ -2414,6 +3137,8 @@ class FlexDesktopApp:
                 self.coordinator.create_new_conversation()
             self.chat_view.clear_conversation()
             self._refresh_recent_chats()
+            if "memory" in self.views and hasattr(self.views["memory"], "refresh"):
+                self.views["memory"].refresh()
         except Exception as e:
             logger.error("Error clearing conversation during new_chat: %s", e)
         self.switch_view("home")
@@ -2707,9 +3432,17 @@ class FlexDesktopApp:
             storage_degraded = bool(getattr(self.coordinator, "storage_degraded", False) or getattr(storage_obj, "is_degraded", False))
             storage_error = getattr(self.coordinator, "last_storage_error", None)
             total_conversations = 0
+            total_messages = 0
             if storage_obj is not None and hasattr(storage_obj, "get_conversation_count"):
                 try:
+                    total_conversations = storage_obj.get_conversation_count(filter_empty=True)
+                except TypeError:
                     total_conversations = storage_obj.get_conversation_count()
+                except Exception:
+                    pass
+            if storage_obj is not None and hasattr(storage_obj, "get_total_message_count"):
+                try:
+                    total_messages = storage_obj.get_total_message_count()
                 except Exception:
                     pass
 
@@ -2734,6 +3467,7 @@ class FlexDesktopApp:
                 "storage_degraded": storage_degraded,
                 "storage_error": storage_error,
                 "total_conversations": total_conversations,
+                "total_messages": total_messages,
                 "internet": internet_ok,
                 "timestamp": datetime.now().strftime("%H:%M:%S"),
             }

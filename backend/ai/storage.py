@@ -731,6 +731,117 @@ class SQLiteConversationStorage:
             except Exception as exc:
                 raise StorageReadError(f"Failed to count messages: {exc}") from exc
 
+    def get_conversation_count(self, filter_empty: bool = False) -> int:
+        """Returns total number of stored conversations.
+
+        Args:
+            filter_empty: If True, only counts conversations that have at least one message
+                          or a custom title (i.e. not an empty 'New Chat' draft).
+                          If False, counts all records in the conversations table.
+
+        Returns:
+            int: Number of matching conversations.
+
+        Raises:
+            StorageReadError: If database read fails.
+        """
+        with self._lock:
+            if self._conn is None:
+                raise StorageReadError("Storage connection is not open.")
+            try:
+                if filter_empty:
+                    cur = self._conn.execute(
+                        """
+                        SELECT COUNT(*) AS cnt FROM conversations c
+                        WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)
+                           OR c.title != ?;
+                        """,
+                        (DEFAULT_CONVERSATION_TITLE,),
+                    )
+                else:
+                    cur = self._conn.execute("SELECT COUNT(*) AS cnt FROM conversations;")
+                return cur.fetchone()["cnt"]
+            except Exception as exc:
+                raise StorageReadError(f"Failed to count conversations: {exc}") from exc
+
+    def get_total_message_count(self) -> int:
+        """Returns the total number of messages stored across all conversations."""
+        with self._lock:
+            if self._conn is None:
+                raise StorageReadError("Storage connection is not open.")
+            try:
+                cur = self._conn.execute("SELECT COUNT(*) AS cnt FROM messages;")
+                return cur.fetchone()["cnt"]
+            except Exception as exc:
+                raise StorageReadError(f"Failed to count total messages: {exc}") from exc
+
+    def search_conversations(
+        self, query: str, limit: int = 50, filter_empty: bool = False
+    ) -> List[ConversationRecord]:
+        """Searches conversations matching a search query in title or message content.
+
+        Args:
+            query: Search query text.
+            limit: Maximum number of records to return.
+            filter_empty: If True, excludes conversations with zero messages and default title.
+
+        Returns:
+            List[ConversationRecord]: Chronologically recent matching conversations.
+
+        Raises:
+            StorageReadError: If database query fails.
+        """
+        clean_query = query.strip() if query else ""
+        if not clean_query:
+            all_records = self.list_conversations(limit=limit)
+            if filter_empty:
+                return [
+                    c for c in all_records
+                    if self.get_message_count(c.id) > 0 or c.title != DEFAULT_CONVERSATION_TITLE
+                ]
+            return all_records
+
+        pattern = f"%{clean_query}%"
+        with self._lock:
+            if self._conn is None:
+                raise StorageReadError("Storage connection is not open.")
+            try:
+                if filter_empty:
+                    sql = """
+                        SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at
+                        FROM conversations c
+                        LEFT JOIN messages m ON m.conversation_id = c.id
+                        WHERE (c.title LIKE ? OR m.content LIKE ?)
+                          AND (m.id IS NOT NULL OR c.title != ?)
+                        ORDER BY c.updated_at DESC
+                        LIMIT ?;
+                    """
+                    params: tuple = (pattern, pattern, DEFAULT_CONVERSATION_TITLE, max(1, limit))
+                else:
+                    sql = """
+                        SELECT DISTINCT c.id, c.title, c.created_at, c.updated_at
+                        FROM conversations c
+                        LEFT JOIN messages m ON m.conversation_id = c.id
+                        WHERE c.title LIKE ? OR m.content LIKE ?
+                        ORDER BY c.updated_at DESC
+                        LIMIT ?;
+                    """
+                    params = (pattern, pattern, max(1, limit))
+
+                cur = self._conn.execute(sql, params)
+                rows = cur.fetchall()
+                return [
+                    ConversationRecord(
+                        id=row["id"],
+                        title=row["title"],
+                        created_at=row["created_at"],
+                        updated_at=row["updated_at"],
+                    )
+                    for row in rows
+                ]
+            except Exception as exc:
+                raise StorageReadError(f"Failed to search conversations: {exc}") from exc
+
     def close(self) -> None:
         """Closes the underlying database connection cleanly."""
         with self._lock:
