@@ -19,15 +19,17 @@ Stage 2A Architecture:
 
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 import math
 import queue
+import socket
 import sys
 import threading
 import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .coordinator import (
     AICoordinator,
@@ -724,6 +726,22 @@ class ChatView(tk.Frame):
         )
         self.btn_refresh.pack(side=tk.LEFT, padx=3)
 
+        self.btn_diag = tk.Button(
+            btn_box,
+            text="⚙ Diagnostics",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BTN_SECONDARY_HOVER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            command=self._on_diagnostics_clicked,
+            cursor="hand2",
+        )
+        self.btn_diag.pack(side=tk.LEFT, padx=3)
+
         self.btn_clear = tk.Button(
             btn_box,
             text="Clear",
@@ -811,6 +829,10 @@ class ChatView(tk.Frame):
     def _on_refresh_clicked(self) -> None:
         if self.app and hasattr(self.app, "refresh_status"):
             self.app.refresh_status()
+
+    def _on_diagnostics_clicked(self) -> None:
+        if self.app and hasattr(self.app, "toggle_diagnostics_drawer"):
+            self.app.toggle_diagnostics_drawer()
 
     def _display_welcome_banner(self) -> None:
         self._append_to_chat(
@@ -1159,6 +1181,317 @@ class PrototypeView(tk.Frame):
             bullet_lbl.pack(anchor="w", padx=(10, 0), pady=1)
 
 
+class DiagnosticsDrawer(tk.Frame):
+    """Collapsible System Diagnostics Drawer for FLEX 1.0 (Stage 2B).
+
+    Provides live, unembellished telemetry for all active and planned subsystems:
+        - C11 Core / Native Bridge: Process state, PID, lifecycle state, active op, error state.
+        - Local Ollama AI: Connectivity, endpoint, model configured, model availability, inference state.
+        - Memory Subsystem: Current in-memory FIFO message count vs capacity; honest status on persistent DB.
+        - Network Connectivity: Local Ollama daemon vs Public Internet vs Cloud services.
+        - Unimplemented Modules: Explicitly labels Voice Studio (STT/TTS) and Knowledge Base (RAG)
+          as NOT IMPLEMENTED / PLANNED FOR STAGE 2. Zero fake green indicators.
+        - Overall Application Health: Comprehensive calculation (HEALTHY / DEGRADED / OFFLINE).
+    """
+
+    def __init__(self, parent: tk.Widget, app: Optional["FlexDesktopApp"] = None) -> None:
+        super().__init__(
+            parent,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=10,
+            pady=8,
+        )
+        self.app = app
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        # 1. Header Bar
+        header = tk.Frame(self, bg=COLOR_BG_PANEL)
+        header.pack(fill=tk.X, pady=(0, 6))
+
+        title_box = tk.Frame(header, bg=COLOR_BG_PANEL)
+        title_box.pack(side=tk.LEFT)
+
+        lbl_title = tk.Label(
+            title_box,
+            text="⚙ SYSTEM DIAGNOSTICS & TELEMETRY",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_VIOLET,
+            bg=COLOR_BG_PANEL,
+        )
+        lbl_title.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.badge_health = tk.Label(
+            title_box,
+            text="● INITIALIZING",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_CARD,
+            padx=8,
+            pady=1,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.badge_health.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.lbl_health_desc = tk.Label(
+            title_box,
+            text="Checking subsystem telemetry...",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        )
+        self.lbl_health_desc.pack(side=tk.LEFT)
+
+        action_box = tk.Frame(header, bg=COLOR_BG_PANEL)
+        action_box.pack(side=tk.RIGHT)
+
+        self.lbl_timestamp = tk.Label(
+            action_box,
+            text="Last check: --:--:--",
+            font=("Consolas", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        )
+        self.lbl_timestamp.pack(side=tk.LEFT, padx=(0, 8))
+
+        btn_refresh = tk.Button(
+            action_box,
+            text="⟳ Refresh",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BTN_SECONDARY_HOVER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=8,
+            pady=1,
+            cursor="hand2",
+            command=self._on_refresh_clicked,
+        )
+        btn_refresh.pack(side=tk.LEFT, padx=(0, 4))
+
+        btn_close = tk.Button(
+            action_box,
+            text="✕ Close",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self._on_close_clicked,
+        )
+        btn_close.pack(side=tk.LEFT)
+
+        # 2. Telemetry Cards Container (2 Rows)
+        cards_frame = tk.Frame(self, bg=COLOR_BG_PANEL)
+        cards_frame.pack(fill=tk.BOTH, expand=True)
+
+        row_1 = tk.Frame(cards_frame, bg=COLOR_BG_PANEL)
+        row_1.pack(fill=tk.X, pady=(0, 4))
+
+        row_2 = tk.Frame(cards_frame, bg=COLOR_BG_PANEL)
+        row_2.pack(fill=tk.X)
+
+        # Card 1: C Core / Native Bridge
+        c_card = self._create_card(row_1, "NATIVE C CORE (C11)")
+        self.lbl_c_status = self._create_row(c_card, "Process:", "● Starting...")
+        self.lbl_c_lifecycle = self._create_row(c_card, "Lifecycle:", "FLEX_LIFECYCLE_UNKNOWN")
+        self.lbl_c_op = self._create_row(c_card, "Active Op:", "FLEX_OPERATION_NONE")
+        self.lbl_c_err = self._create_row(c_card, "State Status:", "FLEX_STATE_OK")
+
+        # Card 2: Local AI (Ollama)
+        ai_card = self._create_card(row_1, "LOCAL AI (OLLAMA)")
+        self.lbl_ai_daemon = self._create_row(ai_card, "Daemon:", "● Checking...")
+        self.lbl_ai_model = self._create_row(ai_card, "Configured:", "qwen2.5-coder:3b")
+        self.lbl_ai_storage = self._create_row(ai_card, "Local Model:", "Checking...")
+        self.lbl_ai_infer = self._create_row(ai_card, "Inference:", "Idle")
+
+        # Card 3: Memory Subsystem
+        mem_card = self._create_card(row_1, "MEMORY SUBSYSTEM")
+        self.lbl_mem_buffer = self._create_row(mem_card, "Session FIFO:", "0 / 50 turns")
+        self.lbl_mem_storage = self._create_row(mem_card, "Storage:", "Ephemeral In-Memory")
+        self.lbl_mem_db = self._create_row(mem_card, "Persistent DB:", "NOT IMPLEMENTED")
+        self.lbl_mem_vector = self._create_row(mem_card, "Vector Memory:", "NOT IMPLEMENTED")
+
+        # Card 4: Network & Connectivity
+        net_card = self._create_card(row_2, "NETWORK & CONNECTIVITY")
+        self.lbl_net_local = self._create_row(net_card, "Local Ollama:", "127.0.0.1:11434")
+        self.lbl_net_internet = self._create_row(net_card, "Public Internet:", "Checking...")
+        self.lbl_net_cloud = self._create_row(net_card, "Cloud Auth:", "NOT CONFIGURED (Local Only)")
+
+        # Card 5: Future Modules Audit
+        audit_card = self._create_card(row_2, "FUTURE MODULE AUDIT")
+        self.lbl_mod_voice = self._create_row(audit_card, "Voice (STT/TTS):", "NOT IMPLEMENTED (Stage 1G)")
+        self.lbl_mod_kb = self._create_row(audit_card, "Knowledge (RAG):", "NOT IMPLEMENTED (Stage 2)")
+        self.lbl_mod_tools = self._create_row(audit_card, "Native Tools:", "C Core Active (Home)")
+
+    def _create_card(self, parent: tk.Widget, title: str) -> tk.Frame:
+        card = tk.Frame(
+            parent,
+            bg=COLOR_BG_CARD,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=8,
+            pady=6,
+        )
+        card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=3)
+
+        hdr = tk.Label(
+            card,
+            text=title,
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_CARD,
+            anchor="w",
+        )
+        hdr.pack(fill=tk.X, pady=(0, 4))
+        return card
+
+    def _create_row(self, card: tk.Frame, key: str, default_val: str) -> tk.Label:
+        row = tk.Frame(card, bg=COLOR_BG_CARD)
+        row.pack(fill=tk.X, pady=1)
+
+        lbl_k = tk.Label(
+            row,
+            text=key,
+            font=("Consolas", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_CARD,
+            anchor="w",
+            width=15,
+        )
+        lbl_k.pack(side=tk.LEFT)
+
+        lbl_v = tk.Label(
+            row,
+            text=default_val,
+            font=("Consolas", 7),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_CARD,
+            anchor="w",
+        )
+        lbl_v.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        return lbl_v
+
+    def _on_refresh_clicked(self) -> None:
+        if self.app and hasattr(self.app, "refresh_status"):
+            self.app.refresh_status()
+
+    def _on_close_clicked(self) -> None:
+        if self.app and hasattr(self.app, "close_diagnostics_drawer"):
+            self.app.close_diagnostics_drawer()
+
+    def update_diagnostics(self, data: Dict[str, Any]) -> None:
+        """Updates all telemetry fields from diagnostic data."""
+        if not self.winfo_exists():
+            return
+
+        # Overall health badge
+        health_state = data.get("health_state", "UNKNOWN")
+        health_fg = data.get("health_fg", COLOR_TEXT_MUTED)
+        health_bg = data.get("health_bg", COLOR_BG_CARD)
+        self.badge_health.configure(text=f"● {health_state}", fg=health_fg, bg=health_bg)
+
+        # Health description
+        if health_state == "HEALTHY":
+            desc = "All core systems nominal: C Core bridge active, Local Ollama online."
+        elif health_state == "DEGRADED":
+            desc = "System operating with degraded capabilities (review warnings below)."
+        else:
+            desc = "Critical core service offline. AI inference or command dispatch unavailable."
+        self.lbl_health_desc.configure(text=desc)
+
+        # Timestamp
+        ts = data.get("timestamp", datetime.now().strftime("%H:%M:%S"))
+        self.lbl_timestamp.configure(text=f"Last check: {ts}")
+
+        # Card 1: C Core
+        bridge = data.get("bridge", {})
+        bridge_running = data.get("bridge_running", False)
+        pid = data.get("bridge_pid")
+        lifecycle = bridge.get("lifecycle", "FLEX_LIFECYCLE_UNKNOWN")
+        active_op = bridge.get("active_operation", "FLEX_OPERATION_NONE")
+        last_err = bridge.get("last_error", "FLEX_STATE_OK")
+
+        if bridge_running:
+            self.lbl_c_status.configure(text=f"● ONLINE (PID {pid})", fg=COLOR_TEXT_SUCCESS)
+        else:
+            self.lbl_c_status.configure(text="● OFFLINE", fg=COLOR_TEXT_ERROR)
+
+        self.lbl_c_lifecycle.configure(
+            text=lifecycle,
+            fg=COLOR_TEXT_SUCCESS if lifecycle == "FLEX_LIFECYCLE_IDLE" else (
+                COLOR_TEXT_WARNING if lifecycle == "FLEX_LIFECYCLE_PROCESSING" else COLOR_TEXT_ERROR
+            ),
+        )
+        self.lbl_c_op.configure(text=active_op, fg=COLOR_TEXT_PRIMARY)
+        self.lbl_c_err.configure(
+            text=last_err,
+            fg=COLOR_TEXT_SUCCESS if last_err == "FLEX_STATE_OK" else COLOR_TEXT_ERROR,
+        )
+
+        # Card 2: Local AI
+        ai_health = data.get("ai_health", False)
+        model = data.get("model", "qwen2.5-coder:3b")
+        model_avail = data.get("model_available", False)
+        is_inferring = data.get("is_inferring", False)
+
+        if ai_health:
+            self.lbl_ai_daemon.configure(text="● ONLINE (127.0.0.1:11434)", fg=COLOR_TEXT_SUCCESS)
+        else:
+            self.lbl_ai_daemon.configure(text="● OFFLINE (ollama serve)", fg=COLOR_TEXT_ERROR)
+
+        self.lbl_ai_model.configure(text=model, fg=COLOR_TEXT_PRIMARY)
+
+        if ai_health and model_avail:
+            self.lbl_ai_storage.configure(text="● Available locally", fg=COLOR_TEXT_SUCCESS)
+        elif ai_health:
+            self.lbl_ai_storage.configure(text="● Model Missing (pull needed)", fg=COLOR_TEXT_WARNING)
+        else:
+            self.lbl_ai_storage.configure(text="● Service Unreachable", fg=COLOR_TEXT_MUTED)
+
+        if is_inferring:
+            self.lbl_ai_infer.configure(text="● Turn in flight (Generating...)", fg=COLOR_TEXT_ACCENT)
+        else:
+            self.lbl_ai_infer.configure(text="Idle (Ready for prompt)", fg=COLOR_TEXT_MUTED)
+
+        # Card 3: Memory
+        history_count = data.get("history_count", 0)
+        history_max = data.get("history_max", 50)
+        self.lbl_mem_buffer.configure(
+            text=f"● Active: {history_count} / {history_max} messages", fg=COLOR_TEXT_ACCENT
+        )
+        self.lbl_mem_storage.configure(text="Ephemeral FIFO Buffer", fg=COLOR_TEXT_MUTED)
+        self.lbl_mem_db.configure(text="NOT IMPLEMENTED (Stage 1G)", fg="#64748B")
+        self.lbl_mem_vector.configure(text="NOT IMPLEMENTED", fg="#64748B")
+
+        # Card 4: Network
+        internet = data.get("internet", False)
+        if ai_health:
+            self.lbl_net_local.configure(text="● Reachable (localhost:11434)", fg=COLOR_TEXT_SUCCESS)
+        else:
+            self.lbl_net_local.configure(text="● Unreachable", fg=COLOR_TEXT_ERROR)
+
+        if internet:
+            self.lbl_net_internet.configure(text="● Online (DNS probe)", fg=COLOR_TEXT_SUCCESS)
+        else:
+            self.lbl_net_internet.configure(text="● Offline / Local-only", fg=COLOR_TEXT_WARNING)
+
+        self.lbl_net_cloud.configure(text="NOT CONFIGURED (Local Only)", fg=COLOR_TEXT_MUTED)
+
+        # Card 5: Future Modules Audit
+        self.lbl_mod_voice.configure(text="NOT IMPLEMENTED (Stage 1G)", fg="#64748B")
+        self.lbl_mod_kb.configure(text="NOT IMPLEMENTED (Stage 2)", fg="#64748B")
+        self.lbl_mod_tools.configure(text="C Core Active in Home", fg=COLOR_TEXT_SUCCESS)
+
+
 class FlexDesktopApp:
     """FLEX 1.0 Multi-Panel Space-Themed Desktop Application."""
 
@@ -1173,8 +1506,14 @@ class FlexDesktopApp:
             coordinator if coordinator is not None else AICoordinator(auto_start=True)
         )
         self._closing: bool = False
+        self._diagnostics_open: bool = False
+        self._diagnostics_poll_id: Optional[str] = None
+        self.last_diagnostics: Dict[str, Any] = {}
         self.current_view_name: str = "home"
         self.nav_buttons: Dict[str, tk.Button] = {}
+
+        self._diagnostics_queue: queue.Queue = queue.Queue()
+        self._queue_poll_id: Optional[str] = None
 
         self._setup_styles()
         self._build_ui()
@@ -1182,8 +1521,9 @@ class FlexDesktopApp:
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # Initial status refresh in background
-        self.root.after(200, self.refresh_status)
+        # Main-thread queue processor & recurring status poll
+        self._queue_poll_id = self.root.after(100, self._process_diagnostics_queue)
+        self._diagnostics_poll_id = self.root.after(250, self._schedule_status_poll)
 
     def _setup_styles(self) -> None:
         style = ttk.Style()
@@ -1500,30 +1840,46 @@ class FlexDesktopApp:
         lbl_create.pack()
 
         # 2. System Status Panel
+        status_hdr_box = tk.Frame(self.right_sidebar, bg=COLOR_BG_SIDEBAR)
+        status_hdr_box.pack(fill=tk.X, pady=(6, 4), padx=10)
+
         status_hdr = tk.Label(
-            self.right_sidebar,
+            status_hdr_box,
             text="SYSTEM STATUS",
             font=("Segoe UI", 8, "bold"),
             fg="#64748B",
             bg=COLOR_BG_SIDEBAR,
-            padx=12,
             anchor="w",
         )
-        status_hdr.pack(fill=tk.X, pady=(6, 4))
+        status_hdr.pack(side=tk.LEFT)
 
-        status_items = [
-            ("● AI Engine — Local Model Ready", COLOR_TEXT_SUCCESS),
-            ("● Memory — Active", COLOR_TEXT_SUCCESS),
-            ("● Voice — Ready", COLOR_TEXT_SUCCESS),
-            ("● Knowledge Base — Connected", COLOR_TEXT_SUCCESS),
-            ("● Internet — Available", COLOR_TEXT_SUCCESS),
+        self.badge_overall_health = tk.Label(
+            status_hdr_box,
+            text="● INITIALIZING",
+            font=("Consolas", 7, "bold"),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_CARD,
+            padx=6,
+            pady=1,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.badge_overall_health.pack(side=tk.RIGHT)
+
+        self.status_pills: Dict[str, tk.Label] = {}
+        pill_definitions = [
+            ("ai", "● AI Engine — Checking...", COLOR_TEXT_MUTED),
+            ("memory", "● Memory — Session Buffer Only", COLOR_TEXT_ACCENT),
+            ("voice", "● Voice — Not Implemented", COLOR_TEXT_MUTED),
+            ("knowledge", "● Knowledge Base — Planned (Stage 2)", COLOR_TEXT_MUTED),
+            ("network", "● Network — Checking...", COLOR_TEXT_MUTED),
         ]
-        for st_text, st_col in status_items:
+        for key, initial_txt, initial_col in pill_definitions:
             pill = tk.Label(
                 self.right_sidebar,
-                text=st_text,
+                text=initial_txt,
                 font=("Consolas", 7),
-                fg=st_col,
+                fg=initial_col,
                 bg=COLOR_BG_CARD,
                 padx=8,
                 pady=4,
@@ -1532,6 +1888,23 @@ class FlexDesktopApp:
                 highlightbackground=COLOR_BORDER,
             )
             pill.pack(fill=tk.X, padx=10, pady=2)
+            self.status_pills[key] = pill
+
+        self.btn_toggle_diagnostics = tk.Button(
+            self.right_sidebar,
+            text="🔍 Diagnostics Drawer ▾",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            command=self.toggle_diagnostics_drawer,
+        )
+        self.btn_toggle_diagnostics.pack(fill=tk.X, padx=10, pady=(4, 2))
 
         # 3. Quick Actions Panel
         qa_hdr = tk.Label(
@@ -1598,6 +1971,12 @@ class FlexDesktopApp:
             parent=self.view_container,
             coordinator=self.coordinator,
             root=self.root,
+            app=self,
+        )
+
+        # Diagnostics Drawer (Stage 2B) — Collapsible HUD Panel
+        self.diagnostics_drawer = DiagnosticsDrawer(
+            self.view_container,
             app=self,
         )
 
@@ -1811,27 +2190,262 @@ class FlexDesktopApp:
     def _reset_input_state(self) -> None:
         self.chat_view._reset_input_state()
 
-    def refresh_status(self) -> None:
-        threading.Thread(target=self._worker_refresh_status, daemon=True).start()
+    def toggle_diagnostics_drawer(self) -> None:
+        """Toggles the visibility of the System Diagnostics Drawer."""
+        if self._diagnostics_open:
+            self.close_diagnostics_drawer()
+        else:
+            self.open_diagnostics_drawer()
 
-    def _worker_refresh_status(self) -> None:
-        try:
-            status = self.coordinator.get_status()
-            if not self._closing:
-                self.root.after(0, self._apply_status, status)
-        except Exception as e:
-            logger.debug("Telemetry refresh error: %s", e)
+    def open_diagnostics_drawer(self) -> None:
+        """Opens and mounts the System Diagnostics Drawer at the bottom of the workspace."""
+        if self._closing or self._diagnostics_open:
+            return
+        self._diagnostics_open = True
+        cur_view = self.views.get(self.current_view_name)
+        if cur_view is not None and cur_view.winfo_ismapped():
+            self.diagnostics_drawer.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 8), before=cur_view)
+        else:
+            self.diagnostics_drawer.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 8))
+        if hasattr(self, "btn_toggle_diagnostics"):
+            self.btn_toggle_diagnostics.configure(
+                text="▲ Close Diagnostics",
+                fg=COLOR_TEXT_ACCENT,
+            )
+        # Populate immediately with latest available telemetry
+        if hasattr(self, "last_diagnostics") and self.last_diagnostics:
+            self.diagnostics_drawer.update_diagnostics(self.last_diagnostics)
+        self.refresh_status()
 
-    def _apply_status(self, status: Dict[str, Any]) -> None:
+    def close_diagnostics_drawer(self) -> None:
+        """Hides the System Diagnostics Drawer."""
+        if not self._diagnostics_open:
+            return
+        self._diagnostics_open = False
+        self.diagnostics_drawer.pack_forget()
+        if hasattr(self, "btn_toggle_diagnostics"):
+            self.btn_toggle_diagnostics.configure(
+                text="🔍 Diagnostics Drawer ▾",
+                fg=COLOR_TEXT_PRIMARY,
+            )
+
+    @staticmethod
+    def calculate_overall_health(diagnostics: Dict[str, Any]) -> Tuple[str, str, str]:
+        """Calculates overall health state from diagnostic telemetry.
+
+        Rules:
+        - HEALTHY (Green):
+            C Core bridge is running with valid lifecycle (not ERROR).
+            Local Ollama daemon is reachable.
+            Configured model is available locally.
+        - DEGRADED (Amber):
+            C Core is running, BUT:
+            - Local Ollama is unreachable, OR
+            - Configured model is missing locally, OR
+            - C Core reported a state error, OR
+            - External network probe failed (offline local-only mode).
+        - OFFLINE (Red):
+            C Core bridge is not running / crashed, OR
+            Both C Core and Ollama are unavailable.
+
+        Returns:
+            Tuple[state_label, text_color, bg_color]
+        """
+        bridge_running = bool(diagnostics.get("bridge_running", False))
+        bridge = diagnostics.get("bridge", {})
+        lifecycle = bridge.get("lifecycle", "FLEX_LIFECYCLE_UNKNOWN")
+        last_error = bridge.get("last_error", "FLEX_STATE_OK")
+        ai_health = bool(diagnostics.get("ai_health", False))
+        model_available = bool(diagnostics.get("model_available", False))
+        internet = bool(diagnostics.get("internet", False))
+
+        if not bridge_running or (not bridge_running and not ai_health):
+            return ("OFFLINE", COLOR_TEXT_ERROR, "#450A0A")
+
+        if lifecycle == "FLEX_LIFECYCLE_ERROR" or (last_error not in ("FLEX_STATE_OK", "") and last_error is not None):
+            return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
+
+        if not ai_health or not model_available:
+            return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
+
+        if not internet:
+            return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
+
+        return ("HEALTHY", COLOR_TEXT_SUCCESS, "#064E3B")
+
+    @staticmethod
+    def _check_internet_connection(timeout: float = 0.8) -> bool:
+        """Lightweight standard-library socket probe to check internet connectivity."""
+        for host in ("1.1.1.1", "8.8.8.8"):
+            try:
+                sock = socket.create_connection((host, 53), timeout=timeout)
+                sock.close()
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _process_diagnostics_queue(self) -> None:
+        """Processes background diagnostics messages safely on the main thread."""
+        self._queue_poll_id = None
         if self._closing:
             return
-        # 1. Bridge Status
-        bridge = status.get("bridge", {})
-        is_running = bridge.get("is_running", False) or self.coordinator.is_running
+        try:
+            while hasattr(self, "_diagnostics_queue") and not self._diagnostics_queue.empty():
+                item = self._diagnostics_queue.get_nowait()
+                self._apply_diagnostics(item)
+        except Exception:
+            pass
+        if not self._closing:
+            self._queue_poll_id = self.root.after(150, self._process_diagnostics_queue)
+
+    def refresh_status(self) -> None:
+        """Triggers a background telemetry refresh thread."""
+        threading.Thread(target=self._worker_refresh_status, daemon=True, name="FlexDiagnosticsWorker").start()
+
+    def _schedule_status_poll(self) -> None:
+        """Recurring status poll loop with safe bounded interval (5000ms)."""
+        self._diagnostics_poll_id = None
+        if self._closing:
+            return
+        self.refresh_status()
+        if not self._closing:
+            self._diagnostics_poll_id = self.root.after(5000, self._schedule_status_poll)
+
+    def _worker_refresh_status(self) -> None:
+        """Worker thread that gathers subsystem telemetry without blocking GUI or active chat turns."""
+        try:
+            if self._closing:
+                return
+
+            bridge_obj = getattr(self.coordinator, "bridge", None)
+            is_bridge_running = bool(getattr(self.coordinator, "is_running", False) or getattr(bridge_obj, "is_running", False))
+
+            # 1. Check if coordinator lock is held by an active turn.
+            # Do NOT block or interfere with C bridge commands while chat turn is in flight!
+            coordinator_lock = getattr(self.coordinator, "_lock", None)
+            coordinator_busy = False
+            acquired = False
+            if coordinator_lock is not None and hasattr(coordinator_lock, "acquire"):
+                try:
+                    acquired = bool(coordinator_lock.acquire(blocking=False))
+                    coordinator_busy = not acquired
+                except Exception:
+                    coordinator_busy = False
+                    acquired = False
+
+            bridge_status: Dict[str, Any] = {}
+            if not coordinator_busy:
+                try:
+                    if is_bridge_running and bridge_obj and hasattr(bridge_obj, "get_status"):
+                        try:
+                            bridge_status = bridge_obj.get_status()
+                        except Exception as e:
+                            bridge_status = {"error": str(e), "is_running": False}
+                    else:
+                        bridge_status = {
+                            "is_running": False,
+                            "lifecycle": "FLEX_LIFECYCLE_UNKNOWN",
+                            "active_operation": "FLEX_OPERATION_NONE",
+                        }
+                finally:
+                    if acquired and coordinator_lock is not None and hasattr(coordinator_lock, "release"):
+                        try:
+                            coordinator_lock.release()
+                        except Exception:
+                            pass
+            else:
+                # Active chat in progress: use cached status to prevent pipe collision
+                bridge_status = {
+                    "is_running": is_bridge_running,
+                    "lifecycle": getattr(bridge_obj, "_lifecycle", "FLEX_LIFECYCLE_PROCESSING"),
+                    "active_operation": getattr(bridge_obj, "_active_operation", "FLEX_OPERATION_CHAT"),
+                    "busy": True,
+                }
+
+            # 2. Local Ollama health & model check
+            ai_health = False
+            if hasattr(self.coordinator, "check_ollama_health"):
+                try:
+                    ai_health = bool(self.coordinator.check_ollama_health())
+                except Exception:
+                    pass
+
+            model_name = "qwen2.5-coder:3b"
+            provider = getattr(self.coordinator, "provider", None)
+            cfg_model = getattr(provider, "config", None) if provider else None
+            if cfg_model and hasattr(cfg_model, "model"):
+                model_name = str(cfg_model.model)
+
+            model_avail = False
+            if ai_health and hasattr(self.coordinator, "check_model_available"):
+                try:
+                    model_avail = bool(self.coordinator.check_model_available(model_name))
+                except Exception:
+                    pass
+
+            # 3. Memory stats
+            history_count = 0
+            history_max = 50
+            history_obj = getattr(self.coordinator, "history", None)
+            if history_obj is not None and hasattr(history_obj, "get_messages"):
+                try:
+                    history_count = len(history_obj.get_messages())
+                    history_max = getattr(history_obj, "max_messages", 50)
+                except Exception:
+                    pass
+
+            # 4. Safe, non-blocking network probe
+            internet_ok = self._check_internet_connection(timeout=0.8)
+
+            # 5. Active inference state from chat view
+            is_inferring = bool(getattr(self, "chat_view", None) and self.chat_view._busy)
+            bridge_pid = getattr(bridge_obj, "pid", None) if is_bridge_running and bridge_obj else None
+
+            diagnostics = {
+                "bridge": bridge_status,
+                "bridge_running": is_bridge_running,
+                "bridge_pid": bridge_pid,
+                "ai_health": ai_health,
+                "model": model_name,
+                "model_available": model_avail,
+                "is_inferring": is_inferring,
+                "history_count": history_count,
+                "history_max": history_max,
+                "internet": internet_ok,
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+            }
+
+            # 6. Overall Health calculation
+            health_state, health_fg, health_bg = self.calculate_overall_health(diagnostics)
+            diagnostics["health_state"] = health_state
+            diagnostics["health_fg"] = health_fg
+            diagnostics["health_bg"] = health_bg
+
+            if not self._closing:
+                if hasattr(self, "_diagnostics_queue"):
+                    self._diagnostics_queue.put(diagnostics)
+                try:
+                    self.root.after(0, self._apply_diagnostics, diagnostics)
+                except (RuntimeError, Exception):
+                    pass
+        except Exception as e:
+            logger.debug("Diagnostics refresh error: %s", e)
+
+    def _apply_diagnostics(self, diagnostics: Dict[str, Any]) -> None:
+        """Applies fresh diagnostic telemetry to all UI components."""
+        if self._closing:
+            return
+
+        self.last_diagnostics = diagnostics
+
+        # 1. Update legacy Top Bar Badges for test and backward compatibility
+        bridge = diagnostics.get("bridge", {})
+        is_running = diagnostics.get("bridge_running", False)
         lifecycle = bridge.get("lifecycle", "UNKNOWN")
+        pid = diagnostics.get("bridge_pid")
 
         if is_running:
-            pid = self.coordinator.bridge.pid
             self.badge_bridge.configure(
                 text=f"● C CORE: {lifecycle} (PID {pid})",
                 fg=COLOR_TEXT_SUCCESS,
@@ -1842,10 +2456,9 @@ class FlexDesktopApp:
                 fg=COLOR_TEXT_ERROR,
             )
 
-        # 2. Ollama Status
-        ai_health = status.get("ai_health", False)
-        model = status.get("model", "qwen2.5-coder:3b")
-        model_avail = status.get("model_available", False)
+        ai_health = diagnostics.get("ai_health", False)
+        model = diagnostics.get("model", "qwen2.5-coder:3b")
+        model_avail = diagnostics.get("model_available", False)
 
         if ai_health and model_avail:
             self.badge_ai.configure(
@@ -1854,7 +2467,7 @@ class FlexDesktopApp:
             )
         elif ai_health:
             self.badge_ai.configure(
-                text=f"● OLLAMA: ONLINE (MODEL MISSING)",
+                text="● OLLAMA: ONLINE (MODEL MISSING)",
                 fg=COLOR_TEXT_WARNING,
             )
         else:
@@ -1863,7 +2476,7 @@ class FlexDesktopApp:
                 fg=COLOR_TEXT_ERROR,
             )
 
-        # 3. Reflect authoritative OFFLINE state on AI Core when idle
+        # 2. Reflect authoritative OFFLINE state on AI Core when idle
         if hasattr(self, "chat_view") and hasattr(self.chat_view, "ai_core"):
             if not is_running and not ai_health:
                 if self.chat_view.ai_core.state == AICoreVisualizer.STATE_IDLE:
@@ -1871,10 +2484,140 @@ class FlexDesktopApp:
             elif (is_running or ai_health) and self.chat_view.ai_core.state == AICoreVisualizer.STATE_OFFLINE:
                 self.chat_view.ai_core.set_state(AICoreVisualizer.STATE_IDLE)
 
+        # 3. Update Right Sidebar Overall Health Badge
+        if "health_state" not in diagnostics:
+            health_state, health_fg, health_bg = self.calculate_overall_health(diagnostics)
+            diagnostics["health_state"] = health_state
+            diagnostics["health_fg"] = health_fg
+            diagnostics["health_bg"] = health_bg
+        else:
+            health_state = diagnostics["health_state"]
+            health_fg = diagnostics.get("health_fg", COLOR_TEXT_MUTED)
+            health_bg = diagnostics.get("health_bg", COLOR_BG_CARD)
+        if hasattr(self, "badge_overall_health") and self.badge_overall_health.winfo_exists():
+            self.badge_overall_health.configure(
+                text=f"● {health_state}",
+                fg=health_fg,
+                bg=health_bg,
+            )
+
+        # 4. Update Right Sidebar Dynamic Status Pills
+        if hasattr(self, "status_pills"):
+            # AI Engine Pill
+            if "ai" in self.status_pills and self.status_pills["ai"].winfo_exists():
+                if ai_health and model_avail:
+                    self.status_pills["ai"].configure(
+                        text="● AI Engine — Local Model Ready", fg=COLOR_TEXT_SUCCESS
+                    )
+                elif ai_health:
+                    self.status_pills["ai"].configure(
+                        text="● AI Engine — Model Missing", fg=COLOR_TEXT_WARNING
+                    )
+                else:
+                    self.status_pills["ai"].configure(
+                        text="● AI Engine — Offline", fg=COLOR_TEXT_ERROR
+                    )
+
+            # Memory Pill
+            if "memory" in self.status_pills and self.status_pills["memory"].winfo_exists():
+                hist_count = diagnostics.get("history_count", 0)
+                hist_max = diagnostics.get("history_max", 50)
+                self.status_pills["memory"].configure(
+                    text=f"● Memory — Session Buffer ({hist_count}/{hist_max})",
+                    fg=COLOR_TEXT_ACCENT,
+                )
+
+            # Voice Pill (Honest)
+            if "voice" in self.status_pills and self.status_pills["voice"].winfo_exists():
+                self.status_pills["voice"].configure(
+                    text="● Voice — Not Implemented", fg="#64748B"
+                )
+
+            # Knowledge Base Pill (Honest)
+            if "knowledge" in self.status_pills and self.status_pills["knowledge"].winfo_exists():
+                self.status_pills["knowledge"].configure(
+                    text="● Knowledge Base — Planned (Stage 2)", fg="#64748B"
+                )
+
+            # Network Pill
+            if "network" in self.status_pills and self.status_pills["network"].winfo_exists():
+                internet = diagnostics.get("internet", False)
+                if internet:
+                    self.status_pills["network"].configure(
+                        text="● Network — Local + Online", fg=COLOR_TEXT_SUCCESS
+                    )
+                elif ai_health:
+                    self.status_pills["network"].configure(
+                        text="● Network — Local Only (Offline)", fg=COLOR_TEXT_WARNING
+                    )
+                else:
+                    self.status_pills["network"].configure(
+                        text="● Network — Disconnected", fg=COLOR_TEXT_ERROR
+                    )
+
+        # 5. Update Diagnostics Drawer if mounted
+        if hasattr(self, "diagnostics_drawer") and self.diagnostics_drawer.winfo_exists():
+            self.diagnostics_drawer.update_diagnostics(diagnostics)
+
+    def _apply_status(self, status: Dict[str, Any]) -> None:
+        """Backward-compatible telemetry receiver for legacy test callers."""
+        if self._closing:
+            return
+
+        # If status already contains full diagnostics dictionary:
+        if "health_state" in status:
+            self._apply_diagnostics(status)
+            return
+
+        # Synthesize diagnostics structure from raw coordinator status
+        bridge = status.get("bridge", {})
+        is_running = bridge.get("is_running", False) or self.coordinator.is_running
+        bridge_obj = getattr(self.coordinator, "bridge", None)
+        pid = getattr(bridge_obj, "pid", None) if is_running and bridge_obj else None
+        ai_health = status.get("ai_health", False)
+        model = status.get("model", "qwen2.5-coder:3b")
+        model_avail = status.get("model_available", False)
+        hist_count = status.get("history_count", 0)
+
+        diag = {
+            "bridge": bridge,
+            "bridge_running": is_running,
+            "bridge_pid": pid,
+            "ai_health": ai_health,
+            "model": model,
+            "model_available": model_avail,
+            "is_inferring": getattr(self, "chat_view", None) and self.chat_view._busy,
+            "history_count": hist_count,
+            "history_max": 50,
+            "internet": True,
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+        }
+        health_state, health_fg, health_bg = self.calculate_overall_health(diag)
+        diag["health_state"] = health_state
+        diag["health_fg"] = health_fg
+        diag["health_bg"] = health_bg
+        self._apply_diagnostics(diag)
+
     def on_closing(self) -> None:
         if self._closing:
             return
         self._closing = True
+
+        # Cleanly cancel recurring diagnostics poll timer & queue processor
+        if self._diagnostics_poll_id is not None:
+            try:
+                self.root.after_cancel(self._diagnostics_poll_id)
+            except Exception:
+                pass
+            self._diagnostics_poll_id = None
+
+        if self._queue_poll_id is not None:
+            try:
+                self.root.after_cancel(self._queue_poll_id)
+            except Exception:
+                pass
+            self._queue_poll_id = None
+
         self.chat_view._closing = True
         if hasattr(self.chat_view, "cancel_animation"):
             self.chat_view.cancel_animation()

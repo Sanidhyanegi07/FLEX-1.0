@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from backend.app import AICoreVisualizer, FlexDesktopApp
+from backend.app import AICoreVisualizer, DiagnosticsDrawer, FlexDesktopApp
 from backend.coordinator import AICoordinator, CoordinatorChatResult, CoordinatorDispatchError
 
 
@@ -402,6 +402,214 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.app.ai_core._closing = True
         self.app.ai_core._animate()
         self.assertIsNone(self.app.ai_core._anim_timer_id)
+
+    # ── Stage 2B: System Diagnostics Drawer Tests ────────────────────────────
+
+    def test_diagnostics_drawer_initialization(self) -> None:
+        """Verifies that the diagnostics drawer is initialized and initially closed."""
+        self.assertIsNotNone(self.app.diagnostics_drawer)
+        self.assertIsInstance(self.app.diagnostics_drawer, DiagnosticsDrawer)
+        self.assertFalse(self.app._diagnostics_open)
+        self.assertFalse(self.app.diagnostics_drawer.winfo_ismapped())
+        self.assertIn("ai", self.app.status_pills)
+        self.assertIn("voice", self.app.status_pills)
+        self.assertIn("knowledge", self.app.status_pills)
+
+    def test_diagnostics_drawer_open_and_close(self) -> None:
+        """Verifies drawer open, close, and toggle behavior and button label updates."""
+        self.assertFalse(self.app._diagnostics_open)
+
+        # Open drawer
+        self.app.open_diagnostics_drawer()
+        self.assertTrue(self.app._diagnostics_open)
+        self.assertEqual(self.app.btn_toggle_diagnostics["text"], "▲ Close Diagnostics")
+
+        # Close drawer
+        self.app.close_diagnostics_drawer()
+        self.assertFalse(self.app._diagnostics_open)
+        self.assertEqual(self.app.btn_toggle_diagnostics["text"], "🔍 Diagnostics Drawer ▾")
+
+        # Toggle drawer
+        self.app.toggle_diagnostics_drawer()
+        self.assertTrue(self.app._diagnostics_open)
+        self.app.toggle_diagnostics_drawer()
+        self.assertFalse(self.app._diagnostics_open)
+
+    def test_calculate_overall_health_rules(self) -> None:
+        """Verifies overall health calculation for HEALTHY, DEGRADED, and OFFLINE scenarios."""
+        # 1. Nominal / Healthy
+        healthy_diag = {
+            "bridge_running": True,
+            "bridge": {"lifecycle": "FLEX_LIFECYCLE_IDLE", "last_error": "FLEX_STATE_OK"},
+            "ai_health": True,
+            "model_available": True,
+            "internet": True,
+        }
+        state, fg, bg = FlexDesktopApp.calculate_overall_health(healthy_diag)
+        self.assertEqual(state, "HEALTHY")
+
+        # 2. Degraded - Ollama offline
+        degraded_ollama = dict(healthy_diag, ai_health=False)
+        state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_ollama)
+        self.assertEqual(state, "DEGRADED")
+
+        # 3. Degraded - Model missing
+        degraded_model = dict(healthy_diag, model_available=False)
+        state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_model)
+        self.assertEqual(state, "DEGRADED")
+
+        # 4. Degraded - Internet offline (local-only mode)
+        degraded_net = dict(healthy_diag, internet=False)
+        state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_net)
+        self.assertEqual(state, "DEGRADED")
+
+        # 5. Degraded - C core state error
+        degraded_c_err = dict(
+            healthy_diag,
+            bridge={"lifecycle": "FLEX_LIFECYCLE_ERROR", "last_error": "FLEX_STATE_INVALID"},
+        )
+        state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_c_err)
+        self.assertEqual(state, "DEGRADED")
+
+        # 6. Offline - C Core stopped
+        offline_bridge = dict(healthy_diag, bridge_running=False)
+        state, _, _ = FlexDesktopApp.calculate_overall_health(offline_bridge)
+        self.assertEqual(state, "OFFLINE")
+
+    def test_subsystem_status_mapping_and_honest_indicators(self) -> None:
+        """Verifies that right sidebar pills accurately report honest statuses."""
+        diag = {
+            "bridge_running": True,
+            "bridge": {"lifecycle": "FLEX_LIFECYCLE_IDLE", "last_error": "FLEX_STATE_OK"},
+            "bridge_pid": 4321,
+            "ai_health": True,
+            "model": "qwen2.5-coder:3b",
+            "model_available": True,
+            "history_count": 5,
+            "history_max": 50,
+            "internet": True,
+            "health_state": "HEALTHY",
+            "health_fg": "#34D399",
+            "health_bg": "#064E3B",
+        }
+        self.app._apply_diagnostics(diag)
+
+        # Check Voice pill is honestly NOT IMPLEMENTED (muted color, not green)
+        voice_text = self.app.status_pills["voice"].cget("text")
+        self.assertIn("Not Implemented", voice_text)
+        self.assertNotEqual(str(self.app.status_pills["voice"].cget("fg")), "#34D399")
+
+        # Check Knowledge Base pill is honestly PLANNED (muted color, not green)
+        kb_text = self.app.status_pills["knowledge"].cget("text")
+        self.assertIn("Planned", kb_text)
+        self.assertNotEqual(str(self.app.status_pills["knowledge"].cget("fg")), "#34D399")
+
+        # Check Memory pill reflects session buffer turn count
+        mem_text = self.app.status_pills["memory"].cget("text")
+        self.assertIn("Session Buffer (5/50)", mem_text)
+
+        # Check AI Engine pill reflects model ready
+        ai_text = self.app.status_pills["ai"].cget("text")
+        self.assertIn("Local Model Ready", ai_text)
+
+        # Check Overall Health badge
+        health_text = self.app.badge_overall_health.cget("text")
+        self.assertIn("HEALTHY", health_text)
+
+    def test_diagnostics_drawer_telemetry_fields_update(self) -> None:
+        """Verifies that the diagnostics drawer cards update correctly from live data."""
+        self.app.open_diagnostics_drawer()
+
+        diag = {
+            "bridge_running": True,
+            "bridge": {
+                "lifecycle": "FLEX_LIFECYCLE_IDLE",
+                "active_operation": "FLEX_OPERATION_NONE",
+                "last_error": "FLEX_STATE_OK",
+            },
+            "bridge_pid": 9876,
+            "ai_health": True,
+            "model": "qwen2.5-coder:3b",
+            "model_available": True,
+            "is_inferring": False,
+            "history_count": 8,
+            "history_max": 50,
+            "internet": True,
+            "health_state": "HEALTHY",
+            "health_fg": "#34D399",
+            "health_bg": "#064E3B",
+            "timestamp": "12:34:56",
+        }
+        self.app.diagnostics_drawer.update_diagnostics(diag)
+
+        drawer = self.app.diagnostics_drawer
+        self.assertIn("PID 9876", drawer.lbl_c_status.cget("text"))
+        self.assertEqual(drawer.lbl_c_lifecycle.cget("text"), "FLEX_LIFECYCLE_IDLE")
+        self.assertEqual(drawer.lbl_c_op.cget("text"), "FLEX_OPERATION_NONE")
+        self.assertIn("ONLINE", drawer.lbl_ai_daemon.cget("text"))
+        self.assertEqual(drawer.lbl_ai_model.cget("text"), "qwen2.5-coder:3b")
+        self.assertIn("8 / 50", drawer.lbl_mem_buffer.cget("text"))
+        self.assertIn("Online", drawer.lbl_net_internet.cget("text"))
+        self.assertIn("NOT IMPLEMENTED", drawer.lbl_mod_voice.cget("text"))
+        self.assertIn("NOT IMPLEMENTED", drawer.lbl_mod_kb.cget("text"))
+        self.assertIn("HEALTHY", drawer.badge_health.cget("text"))
+        self.assertIn("12:34:56", drawer.lbl_timestamp.cget("text"))
+
+    def test_diagnostic_failures_and_missing_fields_handled_gracefully(self) -> None:
+        """Verifies that empty or incomplete diagnostic dictionaries do not raise exceptions."""
+        # Empty dict to _apply_diagnostics
+        self.app._apply_diagnostics({})
+        self.assertIn("OFFLINE", self.app.badge_overall_health.cget("text"))
+
+        # Empty dict to legacy _apply_status
+        self.app._apply_status({})
+        self.assertIsNotNone(self.app.last_diagnostics)
+
+    def test_no_conflicting_bridge_requests_during_active_chat(self) -> None:
+        """Verifies that background telemetry refresh does not send bridge commands while locked."""
+        mock_bridge = MagicMock()
+        mock_bridge.is_running = True
+        mock_bridge.pid = 5555
+        mock_bridge._lifecycle = "FLEX_LIFECYCLE_PROCESSING"
+        mock_bridge._active_operation = "FLEX_OPERATION_CHAT"
+
+        self.mock_coordinator.bridge = mock_bridge
+        self.mock_coordinator.is_running = True
+
+        # Simulate lock held by active chat turn (mock lock acquire returns False)
+        mock_lock = MagicMock()
+        mock_lock.acquire.return_value = False
+        orig_lock = self.mock_coordinator._lock
+        self.mock_coordinator._lock = mock_lock
+        try:
+            with patch.object(self.app.root, "after") as mock_after:
+                self.app._worker_refresh_status()
+
+                # bridge.get_status() MUST NOT be called while lock is held
+                mock_bridge.get_status.assert_not_called()
+                mock_after.assert_called_once()
+                args, _ = mock_after.call_args
+                self.assertEqual(args[0], 0)
+                self.assertEqual(args[1], self.app._apply_diagnostics)
+                diag = args[2]
+                self.assertTrue(diag["bridge"].get("busy", False))
+                self.assertEqual(diag["bridge"]["active_operation"], "FLEX_OPERATION_CHAT")
+        finally:
+            self.mock_coordinator._lock = orig_lock
+
+    def test_safe_refresh_scheduling_and_shutdown(self) -> None:
+        """Verifies that recurring diagnostics polling timer is tracked and cancelled on close."""
+        self.assertIsNotNone(self.app._diagnostics_poll_id)
+
+        # Triggering scheduled poll re-arms timer when not closing
+        with patch.object(self.app, "refresh_status"):
+            self.app._schedule_status_poll()
+            self.assertIsNotNone(self.app._diagnostics_poll_id)
+
+        # Shutdown cancels timer
+        self.app.on_closing()
+        self.assertIsNone(self.app._diagnostics_poll_id)
+        self.assertTrue(self.app._closing)
 
 
 if __name__ == "__main__":
