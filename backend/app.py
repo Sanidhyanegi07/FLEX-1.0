@@ -47,43 +47,55 @@ from .ai.exceptions import (
 logger = logging.getLogger(__name__)
 
 # Color Palette — Space-inspired dark theme
-COLOR_BG_ROOT = "#0B0E14"
-COLOR_BG_PANEL = "#131822"
-COLOR_BG_SIDEBAR = "#0F141F"
-COLOR_BG_SIDEBAR_ACTIVE = "#1E293B"
-COLOR_BG_SIDEBAR_HOVER = "#1A2333"
-COLOR_BG_CHAT = "#0F131C"
-COLOR_BG_INPUT = "#182030"
-COLOR_BG_CARD = "#192233"
-COLOR_BORDER = "#1E293B"
+# Color Palette — Space-inspired dark theme matching FLEX 1.0 celestial reference
+COLOR_BG_ROOT = "#0A0B10"           # Deep space obsidian
+COLOR_BG_PANEL = "#10121C"          # Spacecraft interior deck
+COLOR_BG_SIDEBAR = "#0F111A"        # Slate obsidian sidebar
+COLOR_BG_SIDEBAR_ACTIVE = "#1E1A33" # Cosmic violet highlight
+COLOR_BG_SIDEBAR_HOVER = "#171826"
+COLOR_BG_CHAT = "#0C0E17"           # Deep event-horizon backdrop
+COLOR_BG_INPUT = "#131522"          # Dark prompt pill deck
+COLOR_BG_CARD = "#141726"           # System card background
+COLOR_BORDER = "#1E2235"            # Subtle structural outline
+COLOR_BORDER_FOCUS = "#7C3AED"      # Neon violet glow
 
-COLOR_TEXT_PRIMARY = "#F1F5F9"
+COLOR_TEXT_PRIMARY = "#F8FAFC"
 COLOR_TEXT_MUTED = "#94A3B8"
-COLOR_TEXT_ACCENT = "#38BDF8"       # Electric Cyan
-COLOR_TEXT_USER = "#60A5FA"         # Pulsar Blue
+COLOR_TEXT_ACCENT = "#38BDF8"       # Cosmic Cyan
+COLOR_TEXT_VIOLET = "#A78BFA"       # Radiant Lavender
+COLOR_ACCENT_PURPLE = "#7C3AED"     # Deep Nebula Violet
+COLOR_TEXT_USER = "#C084FC"         # Pulsar Lavender
 COLOR_TEXT_ASSISTANT = "#F8FAFC"
-COLOR_TEXT_ERROR = "#F87171"        # Coral Red
+COLOR_TEXT_ERROR = "#F87171"        # Stellar Flare Red
 COLOR_TEXT_WARNING = "#FBBF24"      # Amber
-COLOR_TEXT_SUCCESS = "#34D399"      # Emerald Green
+COLOR_TEXT_SUCCESS = "#34D399"      # Emerald Orbit Green
 
-COLOR_BTN_PRIMARY = "#0284C7"
-COLOR_BTN_PRIMARY_HOVER = "#0369A1"
-COLOR_BTN_SECONDARY = "#243044"
-COLOR_BTN_SECONDARY_HOVER = "#334155"
+COLOR_BTN_PRIMARY = "#7C3AED"       # Cosmic Purple Button
+COLOR_BTN_PRIMARY_HOVER = "#6D28D9"
+COLOR_BTN_SECONDARY = "#1E2235"
+COLOR_BTN_SECONDARY_HOVER = "#2A3048"
 
 
 class AICoreVisualizer(tk.Canvas):
-    """Animated central AI Core orb for FLEX 1.0 (Stage 2A).
+    """Animated central AI Core (Cosmic Black Hole Singularity) for FLEX 1.0.
 
-    Renders a space-inspired circular reactor core with concentric pulsing rings,
-    rotating orbital particles, and dynamic visual states (IDLE, ATTENTIVE,
-    THINKING, RESPONDING, ERROR, OFFLINE).
+    Renders a celestial black hole event horizon surrounded by a dynamic
+    swirling accretion disk, rotating relativistic arcs, multi-layered
+    nebula glow, and Keplerian stardust orbits.
+
+    Responds dynamically to real chat lifecycle states:
+        - IDLE: Steady cosmic accretion swirl in deep violet, indigo, and cyan.
+        - ATTENTIVE: Accretion arcs illuminate in radiant electric cyan and lavender.
+        - THINKING: Fast relativistic vortex spin with deep magenta/purple flares.
+        - RESPONDING: Outward gravitational ripple wave flaring in emerald/cyan light.
+        - ERROR: Cosmic ember red alert perturbation with safe recovery to IDLE.
+        - OFFLINE: Quenched singularity with muted smoke accretion disk.
 
     Guarantees:
-        - Canvas drawing items are created once in __init__ and updated via coords/itemconfigure.
-        - Framerate is capped at ~25 FPS (40ms ticks) to keep CPU utilization under 1%.
-        - Animation loop is cancellable on unmap and safely terminated on application shutdown.
-        - Zero external graphics libraries (pure standard-library math and Tkinter).
+        - Canvas elements created once during initialization and updated via coords/itemconfigure.
+        - Framerate capped at ~25 FPS (40ms ticks) to keep CPU utilization under 1%.
+        - Dual mode: Hero presentation on startup/empty chat, sleek HUD when conversing.
+        - Strict timer tracking and safe cleanup on view switch and shutdown.
     """
 
     STATE_IDLE = "IDLE"
@@ -97,8 +109,9 @@ class AICoreVisualizer(tk.Canvas):
         self,
         parent: tk.Widget,
         root: tk.Tk,
-        height: int = 100,
+        height: int = 240,
         bg: str = COLOR_BG_ROOT,
+        app: Optional[Any] = None,
     ) -> None:
         super().__init__(
             parent,
@@ -108,9 +121,11 @@ class AICoreVisualizer(tk.Canvas):
             borderwidth=0,
         )
         self.root: tk.Tk = root
+        self.app: Optional[Any] = app
         self.state: str = self.STATE_IDLE
         self._is_active: bool = True
         self._closing: bool = False
+        self._compact_mode: bool = False
         self._anim_timer_id: Optional[str] = None
         self._attentive_reset_timer: Optional[str] = None
         self._ripple_reset_timer: Optional[str] = None
@@ -120,23 +135,114 @@ class AICoreVisualizer(tk.Canvas):
         self._ripple_active: bool = False
         self._ripple_progress: float = 0.0
 
+        # Precompute stardust particle parameters (16 particles in Keplerian orbits)
+        self._particle_meta: List[Dict[str, float]] = []
+        for i in range(16):
+            rx = 38.0 + (i * 4.6)
+            ry = rx * 0.82
+            speed = 0.7 + (16 - i) * 0.05
+            phase_off = i * (2.0 * math.pi / 16.0)
+            base_size = 2.0 if (i % 2 == 0) else 2.8
+            self._particle_meta.append({
+                "rx": rx,
+                "ry": ry,
+                "speed": speed,
+                "phase": phase_off,
+                "size": base_size,
+            })
+
         self._build_canvas_elements()
         self.bind("<Configure>", self._on_resize)
+        self.bind("<Button-1>", self._on_canvas_click)
         self._start_animation()
 
     def _build_canvas_elements(self) -> None:
-        # Pre-create all canvas drawing elements once to prevent object churn / memory growth
-        self._outer_ring = self.create_oval(0, 0, 0, 0, outline=COLOR_BORDER, width=1, dash=(3, 3))
-        self._resonance_ring = self.create_oval(0, 0, 0, 0, outline=COLOR_TEXT_ACCENT, width=2)
-        self._ripple_ring = self.create_oval(0, 0, 0, 0, outline="", width=1)
-        self._core_glow = self.create_oval(0, 0, 0, 0, fill=COLOR_BTN_PRIMARY, outline="")
-        self._core_center = self.create_oval(0, 0, 0, 0, fill=COLOR_TEXT_PRIMARY, outline="")
-        self._particles = [
-            self.create_oval(0, 0, 0, 0, fill=COLOR_TEXT_ACCENT, outline="") for _ in range(3)
-        ]
-        self._status_text = self.create_text(
-            0, 0, text="● CORE: READY", font=("Consolas", 8, "bold"), fill=COLOR_TEXT_ACCENT
+        # 1. Top HUD bar items
+        self._hud_title = self.create_text(
+            0, 0, text="FLEX CORE ●", font=("Segoe UI", 9, "bold"), fill="#64748B", anchor="w"
         )
+        self._hud_badge_box = self.create_rectangle(
+            0, 0, 0, 0, outline="#059669", width=1, fill="#064E3B"
+        )
+        self._hud_badge_text = self.create_text(
+            0, 0, text="● LOCAL AI ACTIVE", font=("Consolas", 8, "bold"), fill="#34D399"
+        )
+        # Compatibility reference for legacy test inspections
+        self._status_text = self._hud_badge_text
+
+        # 2. Accretion Halos (diffuse stepped luminance clouds)
+        self._halo_outer = self.create_oval(0, 0, 0, 0, fill="#121124", outline="")
+        self._halo_mid = self.create_oval(0, 0, 0, 0, fill="#1A173B", outline="")
+        self._halo_inner = self.create_oval(0, 0, 0, 0, fill="#2C1B5E", outline="")
+        self._halo_core = self.create_oval(0, 0, 0, 0, fill="#4A1D8A", outline="")
+
+        # 3. Accretion Spiral Arcs (rotating relativistic filaments)
+        self._arcs = [
+            self.create_arc(0, 0, 0, 0, outline="#6D28D9", width=2, style=tk.ARC, start=0, extent=105),
+            self.create_arc(0, 0, 0, 0, outline="#7C3AED", width=3, style=tk.ARC, start=60, extent=125),
+            self.create_arc(0, 0, 0, 0, outline="#8B5CF6", width=2, style=tk.ARC, start=140, extent=95),
+            self.create_arc(0, 0, 0, 0, outline="#A78BFA", width=3, style=tk.ARC, start=210, extent=115),
+            self.create_arc(0, 0, 0, 0, outline="#38BDF8", width=2, style=tk.ARC, start=275, extent=85),
+            self.create_arc(0, 0, 0, 0, outline="#C4B5FD", width=1, style=tk.ARC, start=320, extent=100),
+        ]
+
+        # 4. Outward Gravitational Ripple Ring (active during RESPONDING)
+        self._ripple_ring = self.create_oval(0, 0, 0, 0, outline="", width=2)
+
+        # 5. Stardust particles (16 particles orbiting in 3D perspective)
+        self._particles = [
+            self.create_oval(0, 0, 0, 0, fill="#C4B5FD", outline="") for _ in range(16)
+        ]
+
+        # 6. Gravitational Lensing Arcs (curving across the event horizon boundary)
+        self._lens_arc_1 = self.create_arc(0, 0, 0, 0, outline="#818CF8", width=2, style=tk.ARC, start=45, extent=75)
+        self._lens_arc_2 = self.create_arc(0, 0, 0, 0, outline="#A78BFA", width=2, style=tk.ARC, start=225, extent=75)
+
+        # 7. Photon Sphere Ring (bright boundary glow around the horizon)
+        self._photon_ring = self.create_oval(0, 0, 0, 0, outline="#E0E7FF", width=2)
+
+        # 8. Central Event Horizon (Singularity - pitch black gravitational sinkhole)
+        self._singularity = self.create_oval(0, 0, 0, 0, fill="#000000", outline="")
+
+        # 9. Hero Elements (displayed on canvas below the black hole in hero mode)
+        self._hero_title = self.create_text(
+            0, 0, text="Your intelligence. Your space.", font=("Segoe UI", 16, "bold"), fill="#F8FAFC", anchor="center"
+        )
+        self._hero_subtitle = self.create_text(
+            0, 0, text="Think freely. Build boldly. Ask FLEX.", font=("Segoe UI", 10), fill="#94A3B8", anchor="center"
+        )
+        self._talk_btn_box = self.create_rectangle(
+            0, 0, 0, 0, fill="#1E1A33", outline="#7C3AED", width=1
+        )
+        self._talk_btn_text = self.create_text(
+            0, 0, text="🎙  Talk to FLEX", font=("Segoe UI", 9, "bold"), fill="#F8FAFC", anchor="center"
+        )
+        self._hero_hint = self.create_text(
+            0, 0, text="Click the core or tap to start a voice conversation.", font=("Segoe UI", 8), fill="#64748B", anchor="center"
+        )
+
+    def set_compact_mode(self, compact: bool) -> None:
+        """Toggles between hero presentation mode and compact conversational HUD mode."""
+        if self._compact_mode == compact:
+            return
+        self._compact_mode = compact
+        target_height = 145 if compact else 240
+        self.configure(height=target_height)
+        if self.winfo_exists():
+            self._update_frame()
+
+    def _on_canvas_click(self, event: Any) -> None:
+        """Handles interactive clicks on the Talk to FLEX button or AI Core."""
+        w = self.winfo_width()
+        cx = (w // 2) if w > 50 else 250
+        cy = 65 if self._compact_mode else 95
+        dx = event.x - cx
+        dy = event.y - cy
+        dist = math.sqrt(dx * dx + dy * dy)
+        # Clicked near singularity or near the Talk to FLEX button:
+        if dist < 60 or (not self._compact_mode and 160 <= event.y <= 215 and abs(dx) < 80):
+            if self.app and hasattr(self.app, "switch_view"):
+                self.app.switch_view("voice")
 
     def _on_resize(self, event: Any) -> None:
         if not self._closing and self.winfo_exists():
@@ -231,15 +337,18 @@ class AICoreVisualizer(tk.Canvas):
         if not self.winfo_exists():
             return
         labels = {
-            self.STATE_IDLE: ("● CORE: READY", COLOR_TEXT_ACCENT),
-            self.STATE_ATTENTIVE: ("● CORE: ATTENTIVE", COLOR_TEXT_USER),
-            self.STATE_THINKING: ("● CORE: PROCESSING", "#818CF8"),
-            self.STATE_RESPONDING: ("● CORE: COMPLETE", COLOR_TEXT_SUCCESS),
-            self.STATE_ERROR: ("● CORE: NOTICE", COLOR_TEXT_ERROR),
-            self.STATE_OFFLINE: ("● CORE: OFFLINE", COLOR_TEXT_WARNING),
+            self.STATE_IDLE: ("● LOCAL AI ACTIVE", COLOR_TEXT_SUCCESS, "#064E3B", "#059669"),
+            self.STATE_ATTENTIVE: ("● ATTENTIVE", COLOR_TEXT_ACCENT, "#082F49", "#0284C7"),
+            self.STATE_THINKING: ("● CORE: PROCESSING", "#C084FC", "#3B0764", "#7C3AED"),
+            self.STATE_RESPONDING: ("● RESPONSE COMPLETE", COLOR_TEXT_SUCCESS, "#064E3B", "#10B981"),
+            self.STATE_ERROR: ("● ATTENTION REQUIRED", COLOR_TEXT_ERROR, "#450A0A", "#DC2626"),
+            self.STATE_OFFLINE: ("● SERVICE OFFLINE", COLOR_TEXT_MUTED, "#1E293B", "#475569"),
         }
-        text, color = labels.get(self.state, ("● CORE: READY", COLOR_TEXT_ACCENT))
-        self.itemconfigure(self._status_text, text=text, fill=color)
+        text, fg_col, bg_col, border_col = labels.get(
+            self.state, ("● LOCAL AI ACTIVE", COLOR_TEXT_SUCCESS, "#064E3B", "#059669")
+        )
+        self.itemconfigure(self._hud_badge_text, text=text, fill=fg_col)
+        self.itemconfigure(self._hud_badge_box, fill=bg_col, outline=border_col)
 
     def _start_animation(self) -> None:
         if self._anim_timer_id is None and not self._closing:
@@ -256,22 +365,22 @@ class AICoreVisualizer(tk.Canvas):
 
         # Advance motion phase based on state energy
         if self.state == self.STATE_THINKING:
-            phase_speed = 0.12  # Fast energetic spin
+            phase_speed = 0.12  # Relativistic energetic vortex spin
         elif self.state == self.STATE_ATTENTIVE:
-            phase_speed = 0.06
+            phase_speed = 0.055
         elif self.state == self.STATE_RESPONDING:
-            phase_speed = 0.05
-        elif self.state == self.STATE_ERROR:
             phase_speed = 0.04
+        elif self.state == self.STATE_ERROR:
+            phase_speed = 0.035
         elif self.state == self.STATE_OFFLINE:
-            phase_speed = 0.01  # Static / minimal crawl
+            phase_speed = 0.005  # Static / minimal crawl
         else:
-            phase_speed = 0.035  # Gentle idle breath
+            phase_speed = 0.03  # Steady, majestic cosmic swirl
 
         self._phase = (self._phase + phase_speed) % (2.0 * math.pi)
 
         if self._ripple_active:
-            self._ripple_progress = min(1.0, self._ripple_progress + 0.04)
+            self._ripple_progress = min(1.0, self._ripple_progress + 0.045)
 
         self._update_frame()
 
@@ -284,82 +393,164 @@ class AICoreVisualizer(tk.Canvas):
 
         w = self.winfo_width()
         cx = (w // 2) if w > 50 else 250
-        cy = 44
+        cy = 65 if self._compact_mode else 95
+        base_r = 24.0 if self._compact_mode else 38.0
 
-        # 1. Base ring radii
-        base_outer = 36.0
-        base_res = 26.0
-        base_core = 13.0
-
+        # State energy tuning
         if self.state == self.STATE_THINKING:
-            amp = 5.0
-            outline_color = "#818CF8"
-            core_color = "#4F46E5"
-            part_color = "#C7D2FE"
-        elif self.state == self.STATE_ATTENTIVE:
-            amp = 4.0
-            outline_color = COLOR_TEXT_USER
-            core_color = "#2563EB"
-            part_color = "#93C5FD"
-        elif self.state == self.STATE_RESPONDING:
-            amp = 3.5
-            outline_color = COLOR_TEXT_SUCCESS
-            core_color = "#059669"
-            part_color = "#6EE7B7"
-        elif self.state == self.STATE_ERROR:
             amp = 6.0
-            outline_color = COLOR_TEXT_ERROR
-            core_color = "#DC2626"
-            part_color = "#FCA5A5"
+            halo_outer_c = "#2E1065"
+            halo_mid_c = "#4C1D95"
+            halo_inner_c = "#7C3AED"
+            halo_core_c = "#A855F7"
+            photon_c = "#E9D5FF"
+            part_c = "#F472B6"
+            lens_c = "#C084FC"
+            arc_colors = ["#9333EA", "#A855F7", "#C084FC", "#E879F9", "#38BDF8", "#F472B6"]
+        elif self.state == self.STATE_ATTENTIVE:
+            amp = 4.5
+            halo_outer_c = "#141738"
+            halo_mid_c = "#1E255E"
+            halo_inner_c = "#2E3B8C"
+            halo_core_c = "#3B82F6"
+            photon_c = "#93C5FD"
+            part_c = "#38BDF8"
+            lens_c = "#60A5FA"
+            arc_colors = ["#2563EB", "#3B82F6", "#60A5FA", "#38BDF8", "#93C5FD", "#BFDBFE"]
+        elif self.state == self.STATE_RESPONDING:
+            amp = 4.0
+            halo_outer_c = "#062C24"
+            halo_mid_c = "#064E3B"
+            halo_inner_c = "#047857"
+            halo_core_c = "#10B981"
+            photon_c = "#A7F3D0"
+            part_c = "#34D399"
+            lens_c = "#6EE7B7"
+            arc_colors = ["#059669", "#10B981", "#34D399", "#6EE7B7", "#A7F3D0", "#38BDF8"]
+        elif self.state == self.STATE_ERROR:
+            amp = 7.0
+            halo_outer_c = "#450A0A"
+            halo_mid_c = "#7F1D1D"
+            halo_inner_c = "#991B1B"
+            halo_core_c = "#DC2626"
+            photon_c = "#FECACA"
+            part_c = "#F87171"
+            lens_c = "#EF4444"
+            arc_colors = ["#B91C1C", "#DC2626", "#EF4444", "#F87171", "#FCA5A5", "#FBBF24"]
         elif self.state == self.STATE_OFFLINE:
             amp = 1.0
-            outline_color = COLOR_TEXT_MUTED
-            core_color = "#334155"
-            part_color = "#475569"
+            halo_outer_c = "#0F172A"
+            halo_mid_c = "#1E293B"
+            halo_inner_c = "#334155"
+            halo_core_c = "#475569"
+            photon_c = "#64748B"
+            part_c = "#475569"
+            lens_c = "#334155"
+            arc_colors = ["#1E293B", "#334155", "#475569", "#64748B", "#475569", "#334155"]
         else:  # IDLE
-            amp = 3.0
-            outline_color = COLOR_TEXT_ACCENT
-            core_color = COLOR_BTN_PRIMARY
-            part_color = COLOR_TEXT_ACCENT
+            amp = 3.2
+            halo_outer_c = "#121124"
+            halo_mid_c = "#1A173B"
+            halo_inner_c = "#2C1B5E"
+            halo_core_c = "#4A1D8A"
+            photon_c = "#E0E7FF"
+            part_c = "#C4B5FD"
+            lens_c = "#818CF8"
+            arc_colors = ["#6D28D9", "#7C3AED", "#8B5CF6", "#A78BFA", "#38BDF8", "#C4B5FD"]
 
         breath = math.sin(self._phase) * amp
-        r_outer = base_outer + (breath * 0.5)
-        r_res = base_res + breath
-        r_core = base_core + (breath * 0.25)
+        r_sing = max(16.0, base_r + (breath * 0.35))
+        r_photon = r_sing + 3.0 + (breath * 0.15)
 
-        # 2. Update outer ring
-        self.coords(self._outer_ring, cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer)
+        # 1. Update diffuse accretion halos
+        r_core = r_sing + (18.0 if self._compact_mode else 26.0) + breath
+        r_inner = r_sing + (34.0 if self._compact_mode else 48.0) + (breath * 1.2)
+        r_mid = r_sing + (52.0 if self._compact_mode else 72.0) + (breath * 1.4)
+        r_outer = r_sing + (72.0 if self._compact_mode else 98.0) + (breath * 1.6)
 
-        # 3. Update resonance ring
-        self.coords(self._resonance_ring, cx - r_res, cy - r_res, cx + r_res, cy + r_res)
-        self.itemconfigure(self._resonance_ring, outline=outline_color)
+        self.coords(self._halo_outer, cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer)
+        self.itemconfigure(self._halo_outer, fill=halo_outer_c)
 
-        # 4. Update ripple ring (flaring on response/complete)
+        self.coords(self._halo_mid, cx - r_mid, cy - r_mid, cx + r_mid, cy + r_mid)
+        self.itemconfigure(self._halo_mid, fill=halo_mid_c)
+
+        self.coords(self._halo_inner, cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner)
+        self.itemconfigure(self._halo_inner, fill=halo_inner_c)
+
+        self.coords(self._halo_core, cx - r_core, cy - r_core, cx + r_core, cy + r_core)
+        self.itemconfigure(self._halo_core, fill=halo_core_c)
+
+        # 2. Update accretion arcs (differential rotation speeds)
+        arc_radii = [r_inner + 12, r_inner + 4, r_core + 14, r_core + 6, r_photon + 10, r_photon + 4]
+        arc_speeds = [0.8, 1.1, 1.3, 1.6, 2.0, 1.7]
+        base_angles = [0.0, 60.0, 140.0, 210.0, 275.0, 320.0]
+
+        for i, arc_id in enumerate(self._arcs):
+            ar = arc_radii[i] if not self._compact_mode else (arc_radii[i] * 0.72)
+            cur_start = (self._phase * arc_speeds[i] * 180.0 / math.pi + base_angles[i]) % 360.0
+            self.coords(arc_id, cx - ar, cy - ar, cx + ar, cy + ar)
+            self.itemconfigure(arc_id, start=cur_start, outline=arc_colors[i])
+
+        # 3. Update stardust particles (elliptical 3D orbit)
+        scale_p = 0.68 if self._compact_mode else 1.0
+        for i, p_id in enumerate(self._particles):
+            meta = self._particle_meta[i]
+            theta = (self._phase * meta["speed"] + meta["phase"]) % (2.0 * math.pi)
+            px = cx + (meta["rx"] * scale_p * math.cos(theta))
+            py = cy + (meta["ry"] * scale_p * math.sin(theta))
+            sz = meta["size"] * scale_p * (1.2 if math.sin(theta) > 0 else 0.8)
+            cur_p_color = part_c if math.sin(theta) > 0 else "#6D28D9"
+            self.coords(p_id, px - sz, py - sz, px + sz, py + sz)
+            self.itemconfigure(p_id, fill=cur_p_color)
+
+        # 4. Outward Ripple Wave
         if self._ripple_active and self._ripple_progress > 0:
-            rip_r = base_res + (self._ripple_progress * 22.0)
+            rip_r = r_photon + (self._ripple_progress * (60.0 if self._compact_mode else 95.0))
             self.coords(self._ripple_ring, cx - rip_r, cy - rip_r, cx + rip_r, cy + rip_r)
             self.itemconfigure(self._ripple_ring, outline=COLOR_TEXT_SUCCESS)
         else:
-            self.coords(self._ripple_ring, -10, -10, -10, -10)
+            self.coords(self._ripple_ring, -100, -100, -100, -100)
             self.itemconfigure(self._ripple_ring, outline="")
 
-        # 5. Update core glow and center
-        self.coords(self._core_glow, cx - r_core, cy - r_core, cx + r_core, cy + r_core)
-        self.itemconfigure(self._core_glow, fill=core_color)
+        # 5. Gravitational Lensing Arcs
+        r_lens = r_photon + 6.0
+        l_start1 = (self._phase * 1.2 * 180.0 / math.pi + 45.0) % 360.0
+        l_start2 = (self._phase * 1.2 * 180.0 / math.pi + 225.0) % 360.0
+        self.coords(self._lens_arc_1, cx - r_lens, cy - r_lens, cx + r_lens, cy + r_lens)
+        self.itemconfigure(self._lens_arc_1, start=l_start1, outline=lens_c)
+        self.coords(self._lens_arc_2, cx - r_lens, cy - r_lens, cx + r_lens, cy + r_lens)
+        self.itemconfigure(self._lens_arc_2, start=l_start2, outline=lens_c)
 
-        self.coords(self._core_center, cx - 3, cy - 3, cx + 3, cy + 3)
+        # 6. Photon Sphere & Singularity
+        self.coords(self._photon_ring, cx - r_photon, cy - r_photon, cx + r_photon, cy + r_photon)
+        self.itemconfigure(self._photon_ring, outline=photon_c)
 
-        # 6. Update orbital particles
-        orbit_radius = (r_outer + r_res) * 0.5
-        for i, p_id in enumerate(self._particles):
-            theta = self._phase + (i * (2.0 * math.pi / 3.0))
-            px = cx + (orbit_radius * math.cos(theta))
-            py = cy + (orbit_radius * math.sin(theta) * 0.75)  # slight elliptical tilt
-            self.coords(p_id, px - 2.5, py - 2.5, px + 2.5, py + 2.5)
-            self.itemconfigure(p_id, fill=part_color)
+        self.coords(self._singularity, cx - r_sing, cy - r_sing, cx + r_sing, cy + r_sing)
+        self.itemconfigure(self._singularity, fill="#000000")
 
-        # 7. Update status text position
-        self.coords(self._status_text, cx, 86)
+        # 7. Top HUD Elements
+        self.coords(self._hud_title, 24, 18)
+        self.coords(self._hud_badge_box, cx - 80, 7, cx + 80, 27)
+        self.coords(self._hud_badge_text, cx, 17)
+
+        # 8. Hero Elements
+        if not self._compact_mode:
+            y_title = cy + r_sing + 38
+            y_sub = y_title + 22
+            y_btn = y_sub + 24
+            y_hint = y_btn + 24
+
+            self.coords(self._hero_title, cx, y_title)
+            self.coords(self._hero_subtitle, cx, y_sub)
+            self.coords(self._talk_btn_box, cx - 65, y_btn - 12, cx + 65, y_btn + 12)
+            self.coords(self._talk_btn_text, cx, y_btn)
+            self.coords(self._hero_hint, cx, y_hint)
+        else:
+            self.coords(self._hero_title, -500, -500)
+            self.coords(self._hero_subtitle, -500, -500)
+            self.coords(self._talk_btn_box, -500, -500, -500, -500)
+            self.coords(self._talk_btn_text, -500, -500)
+            self.coords(self._hero_hint, -500, -500)
 
     def pause(self) -> None:
         """Pauses animation loop when view is unmapped or hidden."""
@@ -419,17 +610,18 @@ class ChatView(tk.Frame):
         self._display_welcome_banner()
 
     def _build_ui(self) -> None:
-        # Central Animated AI Core Ribbon (Stage 2A)
+        # Central Animated AI Core (Cosmic Black Hole Singularity - Stage 2A)
         self.ai_core = AICoreVisualizer(
             self,
             root=self.root,
-            height=100,
+            height=240,
             bg=COLOR_BG_ROOT,
+            app=self.app,
         )
-        self.ai_core.pack(side=tk.TOP, fill=tk.X, padx=16, pady=(6, 0))
+        self.ai_core.pack(side=tk.TOP, fill=tk.X, padx=12, pady=(4, 0))
 
         # Conversation History Display
-        chat_container = tk.Frame(self, bg=COLOR_BG_ROOT, padx=16, pady=8)
+        chat_container = tk.Frame(self, bg=COLOR_BG_ROOT, padx=12, pady=4)
         chat_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         self.chat_display = tk.Text(
@@ -496,24 +688,24 @@ class ChatView(tk.Frame):
         self.progress_bar.pack(side=tk.TOP, fill=tk.X, padx=16)
 
         # Input & Control Deck
-        bottom_deck = tk.Frame(self, bg=COLOR_BG_PANEL, padx=16, pady=12)
+        bottom_deck = tk.Frame(self, bg=COLOR_BG_ROOT, padx=16, pady=10)
         bottom_deck.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Status text row
-        status_row = tk.Frame(bottom_deck, bg=COLOR_BG_PANEL)
-        status_row.pack(side=tk.TOP, fill=tk.X, pady=(0, 8))
+        status_row = tk.Frame(bottom_deck, bg=COLOR_BG_ROOT)
+        status_row.pack(side=tk.TOP, fill=tk.X, pady=(0, 6))
 
         self.status_lbl = tk.Label(
             status_row,
             text="FLEX 1.0 System Ready",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 8),
             fg=COLOR_TEXT_MUTED,
-            bg=COLOR_BG_PANEL,
+            bg=COLOR_BG_ROOT,
         )
         self.status_lbl.pack(side=tk.LEFT)
 
         # Action Buttons on Right of Status Row
-        btn_box = tk.Frame(status_row, bg=COLOR_BG_PANEL)
+        btn_box = tk.Frame(status_row, bg=COLOR_BG_ROOT)
         btn_box.pack(side=tk.RIGHT)
 
         self.btn_refresh = tk.Button(
@@ -525,67 +717,89 @@ class ChatView(tk.Frame):
             activebackground=COLOR_BTN_SECONDARY_HOVER,
             activeforeground=COLOR_TEXT_PRIMARY,
             relief=tk.FLAT,
-            padx=10,
+            padx=8,
             pady=2,
             command=self._on_refresh_clicked,
             cursor="hand2",
         )
-        self.btn_refresh.pack(side=tk.LEFT, padx=4)
+        self.btn_refresh.pack(side=tk.LEFT, padx=3)
 
         self.btn_clear = tk.Button(
             btn_box,
-            text="Clear Conversation",
+            text="Clear",
             font=("Segoe UI", 8),
             fg=COLOR_TEXT_PRIMARY,
             bg=COLOR_BTN_SECONDARY,
             activebackground=COLOR_BTN_SECONDARY_HOVER,
             activeforeground=COLOR_TEXT_PRIMARY,
             relief=tk.FLAT,
-            padx=10,
+            padx=8,
             pady=2,
             command=self.clear_conversation,
             cursor="hand2",
         )
-        self.btn_clear.pack(side=tk.LEFT, padx=4)
+        self.btn_clear.pack(side=tk.LEFT, padx=3)
 
-        # Text input & Send button row
-        input_row = tk.Frame(bottom_deck, bg=COLOR_BG_PANEL)
-        input_row.pack(side=tk.BOTTOM, fill=tk.X)
+        # Floating Input Pill Container (matching reference image)
+        input_pill = tk.Frame(
+            bottom_deck,
+            bg=COLOR_BG_INPUT,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            padx=8,
+            pady=4,
+        )
+        input_pill.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.txt_input = tk.Text(
-            input_row,
+            input_pill,
             bg=COLOR_BG_INPUT,
             fg=COLOR_TEXT_PRIMARY,
             insertbackground=COLOR_TEXT_ACCENT,
             font=("Segoe UI", 10),
-            height=3,
+            height=2,
             relief=tk.FLAT,
-            padx=10,
-            pady=8,
+            padx=8,
+            pady=6,
             wrap=tk.WORD,
         )
-        self.txt_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        self.txt_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
         self.txt_input.bind("<Return>", self._handle_enter_key)
         self.txt_input.bind("<Shift-Return>", lambda e: None)
         self.txt_input.bind("<KeyPress>", self._on_input_keypress, add="+")
         self.txt_input.focus_set()
 
+        self.btn_attach = tk.Button(
+            input_pill,
+            text="📎",
+            font=("Segoe UI", 11),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_INPUT,
+            activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=6,
+            pady=2,
+            cursor="hand2",
+            command=lambda: self.status_lbl.configure(text="Attachments: Planned for Stage 2 Knowledge Base.", fg=COLOR_TEXT_WARNING),
+        )
+        self.btn_attach.pack(side=tk.RIGHT, padx=(0, 4))
+
         self.btn_send = tk.Button(
-            input_row,
-            text="SEND\n➤",
-            font=("Segoe UI", 10, "bold"),
+            input_pill,
+            text="➤",
+            font=("Segoe UI", 11, "bold"),
             fg=COLOR_TEXT_PRIMARY,
             bg=COLOR_BTN_PRIMARY,
             activebackground=COLOR_BTN_PRIMARY_HOVER,
             activeforeground=COLOR_TEXT_PRIMARY,
             relief=tk.FLAT,
-            padx=18,
-            pady=10,
+            padx=12,
+            pady=4,
             command=self.send_message,
             cursor="hand2",
-            width=8,
         )
-        self.btn_send.pack(side=tk.RIGHT, fill=tk.Y)
+        self.btn_send.pack(side=tk.RIGHT)
 
     def _on_input_keypress(self, event: Any) -> None:
         # Ignore modifier keys (Shift, Control, Alt)
@@ -649,6 +863,7 @@ class ChatView(tk.Frame):
 
         self._busy = True
         if hasattr(self, "ai_core"):
+            self.ai_core.set_compact_mode(True)
             self.ai_core.set_state(AICoreVisualizer.STATE_THINKING)
 
         self.btn_send.configure(
@@ -767,7 +982,7 @@ class ChatView(tk.Frame):
             pass
         try:
             self.btn_send.configure(
-                text="SEND\n➤", bg=COLOR_BTN_PRIMARY, state=tk.NORMAL
+                text="➤", bg=COLOR_BTN_PRIMARY, state=tk.NORMAL
             )
         except Exception:
             pass
@@ -783,6 +998,7 @@ class ChatView(tk.Frame):
         self.chat_display.configure(state=tk.DISABLED)
         self._display_welcome_banner()
         if hasattr(self, "ai_core"):
+            self.ai_core.set_compact_mode(False)
             self.ai_core.set_state(AICoreVisualizer.STATE_IDLE)
         self.status_lbl.configure(
             text="Conversation history cleared. Buffer reset.", fg=COLOR_TEXT_MUTED
@@ -1050,11 +1266,11 @@ class FlexDesktopApp:
         )
         self.badge_op.pack(side=tk.LEFT, padx=5)
 
-        # Workspace Container (Sidebar + Center View Container)
+        # Workspace Container (3-Column Layout: Left Nav + Center View + Right Status)
         workspace = tk.Frame(self.root, bg=COLOR_BG_ROOT)
         workspace.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Left Navigation Sidebar
+        # ── Left Navigation Sidebar ───────────────────────────────────────────
         self.sidebar_frame = tk.Frame(
             workspace,
             bg=COLOR_BG_SIDEBAR,
@@ -1065,22 +1281,54 @@ class FlexDesktopApp:
         self.sidebar_frame.pack(side=tk.LEFT, fill=tk.Y)
         self.sidebar_frame.pack_propagate(False)
 
-        nav_header = tk.Label(
-            self.sidebar_frame,
-            text="NAVIGATION",
-            font=("Segoe UI", 8, "bold"),
-            fg="#64748B",
-            bg=COLOR_BG_SIDEBAR,
-            padx=16,
-            pady=10,
-            anchor="w",
+        # Brand Header (FLEX 1.0 + Logo)
+        brand_row = tk.Frame(self.sidebar_frame, bg=COLOR_BG_SIDEBAR, padx=16, pady=10)
+        brand_row.pack(fill=tk.X)
+
+        brand_logo = tk.Label(
+            brand_row,
+            text=" F ",
+            font=("Segoe UI", 11, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_PRIMARY,
+            padx=4,
+            pady=1,
+            relief=tk.FLAT,
         )
-        nav_header.pack(fill=tk.X)
+        brand_logo.pack(side=tk.LEFT, padx=(0, 8))
+
+        brand_title = tk.Label(
+            brand_row,
+            text="FLEX 1.0",
+            font=("Segoe UI", 11, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR,
+        )
+        brand_title.pack(side=tk.LEFT)
+
+        # Prominent New Chat Button (Pill with Purple Glow Border)
+        btn_new_chat = tk.Button(
+            self.sidebar_frame,
+            text="+ New Chat",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground="#2C1B5E",
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            command=lambda: self.switch_view("new_chat"),
+        )
+        btn_new_chat.pack(fill=tk.X, padx=10, pady=(0, 8))
+        self.nav_buttons["new_chat"] = btn_new_chat
 
         # Navigation Action Items
         nav_items = [
             ("home", "💬  Home"),
-            ("new_chat", "✨  New Chat"),
             ("voice", "🎙️  Voice Studio"),
             ("memory", "🧠  Memory"),
             ("knowledge", "📚  Knowledge Base"),
@@ -1101,12 +1349,39 @@ class FlexDesktopApp:
                 relief=tk.FLAT,
                 anchor="w",
                 padx=16,
-                pady=7,
+                pady=6,
                 cursor="hand2",
                 command=lambda k=key: self.switch_view(k),
             )
             btn.pack(fill=tk.X, padx=6, pady=1)
             self.nav_buttons[key] = btn
+
+        # Recent Chats Section (matching reference design)
+        rc_header = tk.Label(
+            self.sidebar_frame,
+            text="Recent Chats",
+            font=("Segoe UI", 8, "bold"),
+            fg="#64748B",
+            bg=COLOR_BG_SIDEBAR,
+            padx=16,
+            anchor="w",
+        )
+        rc_header.pack(fill=tk.X, pady=(12, 4))
+
+        recent_chats = ["Explain APIs", "Debug Java Code", "My Project Ideas"]
+        for rc_title in recent_chats:
+            rc_lbl = tk.Label(
+                self.sidebar_frame,
+                text=rc_title,
+                font=("Segoe UI", 8),
+                fg=COLOR_TEXT_MUTED,
+                bg=COLOR_BG_SIDEBAR,
+                anchor="w",
+                padx=16,
+                pady=3,
+                cursor="hand2",
+            )
+            rc_lbl.pack(fill=tk.X)
 
         # Sidebar Spacer
         spacer = tk.Frame(self.sidebar_frame, bg=COLOR_BG_SIDEBAR)
@@ -1126,9 +1401,9 @@ class FlexDesktopApp:
 
         prof_title = tk.Label(
             self.profile_frame,
-            text="👤  Local Session",
+            text="● Local AI Ready",
             font=("Segoe UI", 9, "bold"),
-            fg=COLOR_TEXT_PRIMARY,
+            fg=COLOR_TEXT_SUCCESS,
             bg=COLOR_BG_CARD,
             anchor="w",
         )
@@ -1154,9 +1429,169 @@ class FlexDesktopApp:
         )
         prof_note.pack(fill=tk.X)
 
-        # Dynamic View Container
+        # ── Right Sidebar (System Status & Quick Actions) ─────────────────────
+        self.right_sidebar = tk.Frame(
+            workspace,
+            bg=COLOR_BG_SIDEBAR,
+            width=220,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.right_sidebar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.right_sidebar.pack_propagate(False)
+
+        # 1. User Profile Card
+        prof_card = tk.Frame(
+            self.right_sidebar,
+            bg=COLOR_BG_CARD,
+            padx=12,
+            pady=10,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        prof_card.pack(fill=tk.X, padx=10, pady=(12, 8))
+
+        avatar_lbl = tk.Label(
+            prof_card, text="👤", font=("Segoe UI", 16), fg=COLOR_TEXT_VIOLET, bg=COLOR_BG_CARD
+        )
+        avatar_lbl.pack(pady=(0, 2))
+
+        welcome_title = tk.Label(
+            prof_card,
+            text="Welcome to FLEX",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_CARD,
+        )
+        welcome_title.pack()
+
+        welcome_sub = tk.Label(
+            prof_card,
+            text="Your personal AI workspace",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_CARD,
+        )
+        welcome_sub.pack(pady=(1, 6))
+
+        btn_signin = tk.Button(
+            prof_card,
+            text="Sign In",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER,
+            relief=tk.FLAT,
+            padx=14,
+            pady=3,
+            cursor="hand2",
+            command=lambda: self.switch_view("settings"),
+        )
+        btn_signin.pack(fill=tk.X, pady=(0, 4))
+
+        lbl_create = tk.Label(
+            prof_card,
+            text="Create Account",
+            font=("Segoe UI", 7, "underline"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_CARD,
+            cursor="hand2",
+        )
+        lbl_create.pack()
+
+        # 2. System Status Panel
+        status_hdr = tk.Label(
+            self.right_sidebar,
+            text="SYSTEM STATUS",
+            font=("Segoe UI", 8, "bold"),
+            fg="#64748B",
+            bg=COLOR_BG_SIDEBAR,
+            padx=12,
+            anchor="w",
+        )
+        status_hdr.pack(fill=tk.X, pady=(6, 4))
+
+        status_items = [
+            ("● AI Engine — Local Model Ready", COLOR_TEXT_SUCCESS),
+            ("● Memory — Active", COLOR_TEXT_SUCCESS),
+            ("● Voice — Ready", COLOR_TEXT_SUCCESS),
+            ("● Knowledge Base — Connected", COLOR_TEXT_SUCCESS),
+            ("● Internet — Available", COLOR_TEXT_SUCCESS),
+        ]
+        for st_text, st_col in status_items:
+            pill = tk.Label(
+                self.right_sidebar,
+                text=st_text,
+                font=("Consolas", 7),
+                fg=st_col,
+                bg=COLOR_BG_CARD,
+                padx=8,
+                pady=4,
+                anchor="w",
+                highlightthickness=1,
+                highlightbackground=COLOR_BORDER,
+            )
+            pill.pack(fill=tk.X, padx=10, pady=2)
+
+        # 3. Quick Actions Panel
+        qa_hdr = tk.Label(
+            self.right_sidebar,
+            text="QUICK ACTIONS",
+            font=("Segoe UI", 8, "bold"),
+            fg="#64748B",
+            bg=COLOR_BG_SIDEBAR,
+            padx=12,
+            anchor="w",
+        )
+        qa_hdr.pack(fill=tk.X, pady=(8, 3))
+
+        qa_items = [
+            ("Start Voice Chat", "voice"),
+            ("Open My Files", "projects"),
+            ("View Memory", "memory"),
+        ]
+        for qa_text, qa_target in qa_items:
+            qa_btn = tk.Button(
+                self.right_sidebar,
+                text=qa_text,
+                font=("Segoe UI", 8),
+                fg=COLOR_TEXT_MUTED,
+                bg=COLOR_BG_SIDEBAR,
+                activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+                activeforeground=COLOR_TEXT_PRIMARY,
+                relief=tk.FLAT,
+                anchor="w",
+                padx=12,
+                pady=3,
+                cursor="hand2",
+                command=lambda t=qa_target: self.switch_view(t),
+            )
+            qa_btn.pack(fill=tk.X, padx=8, pady=1)
+
+        # 4. Bottom Tagline
+        spacer_r = tk.Frame(self.right_sidebar, bg=COLOR_BG_SIDEBAR)
+        spacer_r.pack(fill=tk.BOTH, expand=True)
+
+        star_lbl = tk.Label(
+            self.right_sidebar, text="✦", font=("Segoe UI", 14), fg=COLOR_TEXT_VIOLET, bg=COLOR_BG_SIDEBAR
+        )
+        star_lbl.pack()
+
+        tagline_lbl = tk.Label(
+            self.right_sidebar,
+            text="Built for privacy. Designed for intelligence.",
+            font=("Segoe UI", 7, "italic"),
+            fg="#475569",
+            bg=COLOR_BG_SIDEBAR,
+            wraplength=180,
+            justify="center",
+            pady=6,
+        )
+        tagline_lbl.pack()
+
+        # ── Dynamic View Container (Center) ──────────────────────────────────
         self.view_container = tk.Frame(workspace, bg=COLOR_BG_ROOT)
-        self.view_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.view_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Instantiate Primary ChatView (Home)
         self.chat_view = ChatView(
