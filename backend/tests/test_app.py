@@ -1225,6 +1225,56 @@ class TestFlexDesktopAppStage2CMemoryView(unittest.TestCase):
         self.assertIsNone(mem_view.selected_cid)
         self.assertEqual(mem_view.btn_open.cget("state"), tk.DISABLED)
 
+    def test_cancel_rename_and_cancel_delete_preserve_state(self) -> None:
+        """Verifies cancelling rename or delete preserves the conversation and messages unchanged."""
+        cid = self.storage.create_conversation("Safe Title")
+        self.storage.save_message(cid, role="user", content="Keep me safe")
+
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        # Cancel rename
+        with patch("tkinter.simpledialog.askstring", return_value=None):
+            mem_view._on_rename_clicked()
+        self.assertEqual(self.storage.get_conversation(cid).title, "Safe Title")
+
+        # Cancel delete
+        with patch("tkinter.messagebox.askyesno", return_value=False):
+            mem_view._on_delete_clicked()
+        self.assertIsNotNone(self.storage.get_conversation(cid))
+        self.assertEqual(len(self.storage.get_messages(cid)), 1)
+        self.assertIn(cid, mem_view._card_widgets)
+
+    def test_delete_active_conversation_resets_active_state(self) -> None:
+        """Verifies deleting the active conversation safely resets coordinator active conversation."""
+        cid = self.storage.create_conversation("Active Topic")
+        self.storage.save_message(cid, role="user", content="Active content")
+
+        self.mock_coordinator.active_conversation_id = cid
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        with patch("tkinter.messagebox.askyesno", return_value=True):
+            mem_view._on_delete_clicked()
+
+        self.assertIsNone(self.storage.get_conversation(cid))
+        # Coordinator new conversation was requested or active conversation changed
+        self.assertTrue(
+            self.mock_coordinator.active_conversation_id != cid
+            or self.mock_coordinator.create_new_conversation.called
+        )
+
+    def test_degraded_in_memory_fallback_in_memory_view(self) -> None:
+        """Verifies MemoryView honestly reports IN-MEMORY FALLBACK when storage is degraded."""
+        mem_view: MemoryView = self.app.views["memory"]
+        self.storage.is_degraded = True
+        mem_view.refresh()
+
+        badge_text = mem_view.badge_storage.cget("text")
+        self.assertIn("IN-MEMORY FALLBACK", badge_text)
+
 
 if __name__ == "__main__":
     unittest.main()

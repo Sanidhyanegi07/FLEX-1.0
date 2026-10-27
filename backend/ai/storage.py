@@ -224,14 +224,15 @@ class SQLiteConversationStorage:
 
         return conn
 
-    def _quarantine_and_fallback(self, corrupt_path: str, error: Exception) -> None:
+    def _quarantine_and_fallback(self, corrupt_path: Union[str, Path], error: Exception) -> None:
         """Preserves a corrupt database by copying it aside and activates in-memory fallback."""
         quarantine_path: Optional[str] = None
-        if corrupt_path != ":memory:" and os.path.exists(corrupt_path):
+        corrupt_str = str(corrupt_path)
+        if corrupt_str != ":memory:" and os.path.exists(corrupt_str):
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            quarantine_path = f"{corrupt_path}.corrupt.{timestamp}"
+            quarantine_path = f"{corrupt_str}.corrupt.{timestamp}"
             try:
-                shutil.copy2(corrupt_path, quarantine_path)
+                shutil.copy2(corrupt_str, quarantine_path)
                 logger.warning(
                     "Corrupt database preserved to quarantine: %s", quarantine_path
                 )
@@ -241,7 +242,7 @@ class SQLiteConversationStorage:
             # Quarantine WAL and SHM sidecars before closing connection,
             # as SQLite may unlink or truncate the WAL file during connection cleanup.
             for sidecar_ext in ("-wal", "-shm"):
-                sidecar_path = corrupt_path + sidecar_ext
+                sidecar_path = f"{corrupt_str}{sidecar_ext}"
                 if os.path.exists(sidecar_path):
                     try:
                         shutil.copy2(sidecar_path, f"{quarantine_path}{sidecar_ext}")

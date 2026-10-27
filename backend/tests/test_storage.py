@@ -20,6 +20,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 from backend.ai.storage import (
     CURRENT_SCHEMA_VERSION,
@@ -296,6 +297,22 @@ class TestSQLiteStorageUnit(unittest.TestCase):
             storage.save_message(cid, role="user", content="Temporary message")
             msgs = storage.get_messages(cid)
             self.assertEqual(len(msgs), 1)
+        finally:
+            storage.close()
+
+    def test_corruption_quarantine_with_path_object(self) -> None:
+        """Verifies that a corrupt database supplied as a pathlib.Path is quarantined without TypeError."""
+        corrupt_path = Path(self.temp_dir) / "corrupt_path_obj.db"
+        corrupt_path.write_bytes(b"CORRUPTED DB CONTENT PATH OBJECT TEST")
+
+        storage = SQLiteConversationStorage(db_path=corrupt_path)
+        try:
+            self.assertTrue(storage.is_degraded)
+            self.assertIsNotNone(storage.storage_error)
+            self.assertEqual(storage.db_path, ":memory:")
+            self.assertTrue(corrupt_path.exists())
+            quarantined = [f for f in os.listdir(self.temp_dir) if "corrupt_path_obj.db.corrupt" in f]
+            self.assertTrue(len(quarantined) >= 1)
         finally:
             storage.close()
 
