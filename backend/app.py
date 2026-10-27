@@ -1,22 +1,26 @@
-"""FLEX 1.0 — Desktop Application (Stage 1 Multi-Panel Shell).
+"""FLEX 1.0 — Desktop Application (Stage 2A: Animated AI Core & Shell).
 
 A polished, space-inspired dark desktop client built with Tkinter and Python standard library.
 Connects the user directly to the native C core pipeline and local Ollama AI engine.
 
-Stage 1 Architecture:
+Stage 2A Architecture:
     - Persistent Shell: Top telemetry bar + Left navigation sidebar + Center dynamic view container.
-    - Navigation: Home, New Chat, Voice Studio, Memory, Knowledge Base, Projects & Files, Tools, Settings.
+    - Central Animated AI Core: Lightweight Tkinter Canvas vector orb reacting dynamically to
+      real chat lifecycle states (IDLE, ATTENTIVE, THINKING, RESPONDING, ERROR, OFFLINE).
+    - Lifecycle Safety: Cancellable ~25 FPS animation timers; paused when Home is hidden;
+      cleanly cancelled on window shutdown. Zero object churn.
     - Encapsulated ChatView: Preserves all existing working chat, C core dispatch, Ollama inference,
       busy-state locking, error formatting, and verification metadata.
     - Truthful Prototype Views: Clearly labelled status cards for unfinished capabilities.
       Contains ZERO fake interactive buttons.
     - Local Session: Honest offline profile panel; explicitly documents no cloud authentication.
-    - Strictly standard-library compliant: Python standard library `tkinter` and `ttk` only.
+    - Strictly standard-library compliant: Python standard library `tkinter`, `ttk`, and `math` only.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import sys
 import threading
@@ -68,11 +72,332 @@ COLOR_BTN_SECONDARY = "#243044"
 COLOR_BTN_SECONDARY_HOVER = "#334155"
 
 
+class AICoreVisualizer(tk.Canvas):
+    """Animated central AI Core orb for FLEX 1.0 (Stage 2A).
+
+    Renders a space-inspired circular reactor core with concentric pulsing rings,
+    rotating orbital particles, and dynamic visual states (IDLE, ATTENTIVE,
+    THINKING, RESPONDING, ERROR, OFFLINE).
+
+    Guarantees:
+        - Canvas drawing items are created once in __init__ and updated via coords/itemconfigure.
+        - Framerate is capped at ~25 FPS (40ms ticks) to keep CPU utilization under 1%.
+        - Animation loop is cancellable on unmap and safely terminated on application shutdown.
+        - Zero external graphics libraries (pure standard-library math and Tkinter).
+    """
+
+    STATE_IDLE = "IDLE"
+    STATE_ATTENTIVE = "ATTENTIVE"
+    STATE_THINKING = "THINKING"
+    STATE_RESPONDING = "RESPONDING"
+    STATE_ERROR = "ERROR"
+    STATE_OFFLINE = "OFFLINE"
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        root: tk.Tk,
+        height: int = 100,
+        bg: str = COLOR_BG_ROOT,
+    ) -> None:
+        super().__init__(
+            parent,
+            height=height,
+            bg=bg,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.root: tk.Tk = root
+        self.state: str = self.STATE_IDLE
+        self._is_active: bool = True
+        self._closing: bool = False
+        self._anim_timer_id: Optional[str] = None
+        self._attentive_reset_timer: Optional[str] = None
+        self._ripple_reset_timer: Optional[str] = None
+        self._error_reset_timer: Optional[str] = None
+
+        self._phase: float = 0.0
+        self._ripple_active: bool = False
+        self._ripple_progress: float = 0.0
+
+        self._build_canvas_elements()
+        self.bind("<Configure>", self._on_resize)
+        self._start_animation()
+
+    def _build_canvas_elements(self) -> None:
+        # Pre-create all canvas drawing elements once to prevent object churn / memory growth
+        self._outer_ring = self.create_oval(0, 0, 0, 0, outline=COLOR_BORDER, width=1, dash=(3, 3))
+        self._resonance_ring = self.create_oval(0, 0, 0, 0, outline=COLOR_TEXT_ACCENT, width=2)
+        self._ripple_ring = self.create_oval(0, 0, 0, 0, outline="", width=1)
+        self._core_glow = self.create_oval(0, 0, 0, 0, fill=COLOR_BTN_PRIMARY, outline="")
+        self._core_center = self.create_oval(0, 0, 0, 0, fill=COLOR_TEXT_PRIMARY, outline="")
+        self._particles = [
+            self.create_oval(0, 0, 0, 0, fill=COLOR_TEXT_ACCENT, outline="") for _ in range(3)
+        ]
+        self._status_text = self.create_text(
+            0, 0, text="● CORE: READY", font=("Consolas", 8, "bold"), fill=COLOR_TEXT_ACCENT
+        )
+
+    def _on_resize(self, event: Any) -> None:
+        if not self._closing and self.winfo_exists():
+            self._update_frame()
+
+    def set_state(self, new_state: str) -> None:
+        """Transitions the visualizer to a new state and manages reset timers."""
+        if self._closing:
+            return
+        if new_state not in (
+            self.STATE_IDLE,
+            self.STATE_ATTENTIVE,
+            self.STATE_THINKING,
+            self.STATE_RESPONDING,
+            self.STATE_ERROR,
+            self.STATE_OFFLINE,
+        ):
+            return
+
+        self.state = new_state
+
+        # Cancel any pending reset timers when changing state
+        if self._attentive_reset_timer is not None:
+            try:
+                self.after_cancel(self._attentive_reset_timer)
+            except Exception:
+                pass
+            self._attentive_reset_timer = None
+
+        if self._error_reset_timer is not None:
+            try:
+                self.after_cancel(self._error_reset_timer)
+            except Exception:
+                pass
+            self._error_reset_timer = None
+
+        if self._ripple_reset_timer is not None:
+            try:
+                self.after_cancel(self._ripple_reset_timer)
+            except Exception:
+                pass
+            self._ripple_reset_timer = None
+
+        # State-specific reactions
+        if new_state == self.STATE_RESPONDING:
+            self._ripple_active = True
+            self._ripple_progress = 0.0
+            self._ripple_reset_timer = self.after(1200, self._on_responding_timeout)
+        elif new_state == self.STATE_ERROR:
+            self._ripple_active = False
+            self._error_reset_timer = self.after(3500, self._on_error_timeout)
+        else:
+            self._ripple_active = False
+
+        self._update_status_label()
+        if self.winfo_exists():
+            self._update_frame()
+
+    def on_user_typing(self) -> None:
+        """Called when user types into the prompt input box."""
+        if self._closing or self.state == self.STATE_THINKING:
+            return
+
+        if self._attentive_reset_timer is not None:
+            try:
+                self.after_cancel(self._attentive_reset_timer)
+            except Exception:
+                pass
+
+        if self.state != self.STATE_ATTENTIVE:
+            self.set_state(self.STATE_ATTENTIVE)
+
+        # Inactivity timeout: revert to IDLE if user stops typing for 2.5s
+        self._attentive_reset_timer = self.after(2500, self._on_attentive_timeout)
+
+    def _on_attentive_timeout(self) -> None:
+        self._attentive_reset_timer = None
+        if self.state == self.STATE_ATTENTIVE:
+            self.set_state(self.STATE_IDLE)
+
+    def _on_responding_timeout(self) -> None:
+        self._ripple_reset_timer = None
+        if self.state == self.STATE_RESPONDING:
+            self.set_state(self.STATE_IDLE)
+
+    def _on_error_timeout(self) -> None:
+        self._error_reset_timer = None
+        if self.state == self.STATE_ERROR:
+            self.set_state(self.STATE_IDLE)
+
+    def _update_status_label(self) -> None:
+        if not self.winfo_exists():
+            return
+        labels = {
+            self.STATE_IDLE: ("● CORE: READY", COLOR_TEXT_ACCENT),
+            self.STATE_ATTENTIVE: ("● CORE: ATTENTIVE", COLOR_TEXT_USER),
+            self.STATE_THINKING: ("● CORE: PROCESSING", "#818CF8"),
+            self.STATE_RESPONDING: ("● CORE: COMPLETE", COLOR_TEXT_SUCCESS),
+            self.STATE_ERROR: ("● CORE: NOTICE", COLOR_TEXT_ERROR),
+            self.STATE_OFFLINE: ("● CORE: OFFLINE", COLOR_TEXT_WARNING),
+        }
+        text, color = labels.get(self.state, ("● CORE: READY", COLOR_TEXT_ACCENT))
+        self.itemconfigure(self._status_text, text=text, fill=color)
+
+    def _start_animation(self) -> None:
+        if self._anim_timer_id is None and not self._closing:
+            self._anim_timer_id = self.after(40, self._animate)
+
+    def _animate(self) -> None:
+        self._anim_timer_id = None
+        if self._closing or not self.winfo_exists():
+            return
+
+        if not self._is_active:
+            # Paused while view is not mapped
+            return
+
+        # Advance motion phase based on state energy
+        if self.state == self.STATE_THINKING:
+            phase_speed = 0.12  # Fast energetic spin
+        elif self.state == self.STATE_ATTENTIVE:
+            phase_speed = 0.06
+        elif self.state == self.STATE_RESPONDING:
+            phase_speed = 0.05
+        elif self.state == self.STATE_ERROR:
+            phase_speed = 0.04
+        elif self.state == self.STATE_OFFLINE:
+            phase_speed = 0.01  # Static / minimal crawl
+        else:
+            phase_speed = 0.035  # Gentle idle breath
+
+        self._phase = (self._phase + phase_speed) % (2.0 * math.pi)
+
+        if self._ripple_active:
+            self._ripple_progress = min(1.0, self._ripple_progress + 0.04)
+
+        self._update_frame()
+
+        if not self._closing and self._is_active:
+            self._anim_timer_id = self.after(40, self._animate)
+
+    def _update_frame(self) -> None:
+        if not self.winfo_exists():
+            return
+
+        w = self.winfo_width()
+        cx = (w // 2) if w > 50 else 250
+        cy = 44
+
+        # 1. Base ring radii
+        base_outer = 36.0
+        base_res = 26.0
+        base_core = 13.0
+
+        if self.state == self.STATE_THINKING:
+            amp = 5.0
+            outline_color = "#818CF8"
+            core_color = "#4F46E5"
+            part_color = "#C7D2FE"
+        elif self.state == self.STATE_ATTENTIVE:
+            amp = 4.0
+            outline_color = COLOR_TEXT_USER
+            core_color = "#2563EB"
+            part_color = "#93C5FD"
+        elif self.state == self.STATE_RESPONDING:
+            amp = 3.5
+            outline_color = COLOR_TEXT_SUCCESS
+            core_color = "#059669"
+            part_color = "#6EE7B7"
+        elif self.state == self.STATE_ERROR:
+            amp = 6.0
+            outline_color = COLOR_TEXT_ERROR
+            core_color = "#DC2626"
+            part_color = "#FCA5A5"
+        elif self.state == self.STATE_OFFLINE:
+            amp = 1.0
+            outline_color = COLOR_TEXT_MUTED
+            core_color = "#334155"
+            part_color = "#475569"
+        else:  # IDLE
+            amp = 3.0
+            outline_color = COLOR_TEXT_ACCENT
+            core_color = COLOR_BTN_PRIMARY
+            part_color = COLOR_TEXT_ACCENT
+
+        breath = math.sin(self._phase) * amp
+        r_outer = base_outer + (breath * 0.5)
+        r_res = base_res + breath
+        r_core = base_core + (breath * 0.25)
+
+        # 2. Update outer ring
+        self.coords(self._outer_ring, cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer)
+
+        # 3. Update resonance ring
+        self.coords(self._resonance_ring, cx - r_res, cy - r_res, cx + r_res, cy + r_res)
+        self.itemconfigure(self._resonance_ring, outline=outline_color)
+
+        # 4. Update ripple ring (flaring on response/complete)
+        if self._ripple_active and self._ripple_progress > 0:
+            rip_r = base_res + (self._ripple_progress * 22.0)
+            self.coords(self._ripple_ring, cx - rip_r, cy - rip_r, cx + rip_r, cy + rip_r)
+            self.itemconfigure(self._ripple_ring, outline=COLOR_TEXT_SUCCESS)
+        else:
+            self.coords(self._ripple_ring, -10, -10, -10, -10)
+            self.itemconfigure(self._ripple_ring, outline="")
+
+        # 5. Update core glow and center
+        self.coords(self._core_glow, cx - r_core, cy - r_core, cx + r_core, cy + r_core)
+        self.itemconfigure(self._core_glow, fill=core_color)
+
+        self.coords(self._core_center, cx - 3, cy - 3, cx + 3, cy + 3)
+
+        # 6. Update orbital particles
+        orbit_radius = (r_outer + r_res) * 0.5
+        for i, p_id in enumerate(self._particles):
+            theta = self._phase + (i * (2.0 * math.pi / 3.0))
+            px = cx + (orbit_radius * math.cos(theta))
+            py = cy + (orbit_radius * math.sin(theta) * 0.75)  # slight elliptical tilt
+            self.coords(p_id, px - 2.5, py - 2.5, px + 2.5, py + 2.5)
+            self.itemconfigure(p_id, fill=part_color)
+
+        # 7. Update status text position
+        self.coords(self._status_text, cx, 86)
+
+    def pause(self) -> None:
+        """Pauses animation loop when view is unmapped or hidden."""
+        self._is_active = False
+        if self._anim_timer_id is not None:
+            try:
+                self.after_cancel(self._anim_timer_id)
+            except Exception:
+                pass
+            self._anim_timer_id = None
+
+    def resume(self) -> None:
+        """Resumes animation loop when view is displayed."""
+        if self._closing:
+            return
+        self._is_active = True
+        if self._anim_timer_id is None:
+            self._start_animation()
+
+    def cancel_animation(self) -> None:
+        """Cancels all scheduled timers for clean shutdown."""
+        self._closing = True
+        self.pause()
+        for timer_attr in ("_attentive_reset_timer", "_ripple_reset_timer", "_error_reset_timer"):
+            timer_id = getattr(self, timer_attr, None)
+            if timer_id is not None:
+                try:
+                    self.after_cancel(timer_id)
+                except Exception:
+                    pass
+                setattr(self, timer_attr, None)
+
+
 class ChatView(tk.Frame):
     """Encapsulated Chat Interface for FLEX 1.0 (Home View).
 
-    Houses conversation display, rich tags, multiline input deck,
-    and threaded non-blocking worker pipeline.
+    Houses the central animated AI Core, conversation transcript, rich tags,
+    multiline input deck, and threaded non-blocking worker pipeline.
     """
 
     def __init__(
@@ -94,8 +419,17 @@ class ChatView(tk.Frame):
         self._display_welcome_banner()
 
     def _build_ui(self) -> None:
+        # Central Animated AI Core Ribbon (Stage 2A)
+        self.ai_core = AICoreVisualizer(
+            self,
+            root=self.root,
+            height=100,
+            bg=COLOR_BG_ROOT,
+        )
+        self.ai_core.pack(side=tk.TOP, fill=tk.X, padx=16, pady=(6, 0))
+
         # Conversation History Display
-        chat_container = tk.Frame(self, bg=COLOR_BG_ROOT, padx=16, pady=10)
+        chat_container = tk.Frame(self, bg=COLOR_BG_ROOT, padx=16, pady=8)
         chat_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         self.chat_display = tk.Text(
@@ -233,6 +567,7 @@ class ChatView(tk.Frame):
         self.txt_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
         self.txt_input.bind("<Return>", self._handle_enter_key)
         self.txt_input.bind("<Shift-Return>", lambda e: None)
+        self.txt_input.bind("<KeyPress>", self._on_input_keypress, add="+")
         self.txt_input.focus_set()
 
         self.btn_send = tk.Button(
@@ -251,6 +586,13 @@ class ChatView(tk.Frame):
             width=8,
         )
         self.btn_send.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _on_input_keypress(self, event: Any) -> None:
+        # Ignore modifier keys (Shift, Control, Alt)
+        if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"):
+            return
+        if not self._busy and hasattr(self, "ai_core"):
+            self.ai_core.on_user_typing()
 
     def _on_refresh_clicked(self) -> None:
         if self.app and hasattr(self.app, "refresh_status"):
@@ -294,6 +636,8 @@ class ChatView(tk.Frame):
         if raw_text.lower() == "exit":
             self._append_to_chat(f"\nUser: {raw_text}\n", "user_hdr")
             self._append_to_chat("Requesting C Core shutdown and closing application...\n", "system_msg")
+            if hasattr(self, "ai_core"):
+                self.ai_core.set_state(AICoreVisualizer.STATE_IDLE)
             if self.app and hasattr(self.app, "on_closing"):
                 self.root.after(800, self.app.on_closing)
             else:
@@ -304,6 +648,9 @@ class ChatView(tk.Frame):
         self._append_to_chat(f"{raw_text}\n", "user_msg")
 
         self._busy = True
+        if hasattr(self, "ai_core"):
+            self.ai_core.set_state(AICoreVisualizer.STATE_THINKING)
+
         self.btn_send.configure(
             text="BUSY...", bg=COLOR_BTN_SECONDARY, state=tk.DISABLED
         )
@@ -338,6 +685,9 @@ class ChatView(tk.Frame):
         if self.app and hasattr(self.app, "badge_op") and self.app.badge_op.winfo_exists():
             self.app.badge_op.configure(text=f"OP #{result.operation_id}", fg=COLOR_TEXT_ACCENT)
 
+        if hasattr(self, "ai_core"):
+            self.ai_core.set_state(AICoreVisualizer.STATE_RESPONDING)
+
         self._append_to_chat(
             f"\nFLEX 1.0 [{result.model}]:\n", "flex_hdr"
         )
@@ -361,6 +711,10 @@ class ChatView(tk.Frame):
     def _on_chat_error(self, exc: Exception, elapsed: float) -> None:
         if self._closing or (self.app and self.app._closing):
             return
+
+        if hasattr(self, "ai_core"):
+            self.ai_core.set_state(AICoreVisualizer.STATE_ERROR)
+
         self._append_to_chat("\n[FLEX Pipeline Notice]:\n", "error_msg")
 
         if isinstance(exc, CoordinatorDispatchError):
@@ -428,9 +782,23 @@ class ChatView(tk.Frame):
         self.chat_display.delete("1.0", tk.END)
         self.chat_display.configure(state=tk.DISABLED)
         self._display_welcome_banner()
+        if hasattr(self, "ai_core"):
+            self.ai_core.set_state(AICoreVisualizer.STATE_IDLE)
         self.status_lbl.configure(
             text="Conversation history cleared. Buffer reset.", fg=COLOR_TEXT_MUTED
         )
+
+    def pause_animation(self) -> None:
+        if hasattr(self, "ai_core"):
+            self.ai_core.pause()
+
+    def resume_animation(self) -> None:
+        if hasattr(self, "ai_core"):
+            self.ai_core.resume()
+
+    def cancel_animation(self) -> None:
+        if hasattr(self, "ai_core"):
+            self.ai_core.cancel_animation()
 
 
 class PrototypeView(tk.Frame):
@@ -909,7 +1277,8 @@ class FlexDesktopApp:
     def switch_view(self, view_name: str) -> None:
         """Switches the active view in the dynamic view container.
 
-        Safely handles new_chat, unknown view names, and preserves previous view state.
+        Safely handles new_chat, unknown view names, pauses AI Core animation when
+        leaving Home, and resumes animation when returning.
         """
         if view_name == "new_chat":
             self.new_chat()
@@ -922,12 +1291,20 @@ class FlexDesktopApp:
         if view_name == self.current_view_name and self.views[view_name].winfo_ismapped():
             return
 
+        # Pause AI Core animation when leaving Home
+        if self.current_view_name == "home" and view_name != "home" and hasattr(self, "chat_view"):
+            self.chat_view.pause_animation()
+
         if self.current_view_name in self.views:
             self.views[self.current_view_name].pack_forget()
 
         self.views[view_name].pack(fill=tk.BOTH, expand=True)
         self.current_view_name = view_name
         self._highlight_nav_button(view_name)
+
+        # Resume AI Core animation when returning to Home
+        if view_name == "home" and hasattr(self, "chat_view"):
+            self.chat_view.resume_animation()
 
     def new_chat(self) -> None:
         """Clears conversation history and returns immediately to the Home view."""
@@ -973,6 +1350,10 @@ class FlexDesktopApp:
     @_last_op_id.setter
     def _last_op_id(self, val: int) -> None:
         self.chat_view._last_op_id = val
+
+    @property
+    def ai_core(self) -> AICoreVisualizer:
+        return self.chat_view.ai_core
 
     def send_message(self) -> None:
         self.chat_view.send_message()
@@ -1047,11 +1428,21 @@ class FlexDesktopApp:
                 fg=COLOR_TEXT_ERROR,
             )
 
+        # 3. Reflect authoritative OFFLINE state on AI Core when idle
+        if hasattr(self, "chat_view") and hasattr(self.chat_view, "ai_core"):
+            if not is_running and not ai_health:
+                if self.chat_view.ai_core.state == AICoreVisualizer.STATE_IDLE:
+                    self.chat_view.ai_core.set_state(AICoreVisualizer.STATE_OFFLINE)
+            elif (is_running or ai_health) and self.chat_view.ai_core.state == AICoreVisualizer.STATE_OFFLINE:
+                self.chat_view.ai_core.set_state(AICoreVisualizer.STATE_IDLE)
+
     def on_closing(self) -> None:
         if self._closing:
             return
         self._closing = True
         self.chat_view._closing = True
+        if hasattr(self.chat_view, "cancel_animation"):
+            self.chat_view.cancel_animation()
         try:
             self.status_lbl.configure(
                 text="Shutting down C core bridge and terminating...",

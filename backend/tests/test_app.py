@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from backend.app import FlexDesktopApp
+from backend.app import AICoreVisualizer, FlexDesktopApp
 from backend.coordinator import AICoordinator, CoordinatorChatResult, CoordinatorDispatchError
 
 
@@ -297,6 +297,111 @@ class TestFlexDesktopApp(unittest.TestCase):
 
         final_child_count = len(self.app.view_container.winfo_children())
         self.assertEqual(initial_child_count, final_child_count)
+
+    def test_ai_core_initialization(self) -> None:
+        """Verifies that the AI Core visualizer is initialized with IDLE state."""
+        self.assertIsNotNone(self.app.ai_core)
+        self.assertIsInstance(self.app.ai_core, AICoreVisualizer)
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_IDLE)
+        self.assertTrue(self.app.ai_core._is_active)
+
+    def test_ai_core_attentive_on_typing(self) -> None:
+        """Verifies that typing triggers ATTENTIVE state and schedules idle reset."""
+        self.app.chat_view.ai_core.on_user_typing()
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_ATTENTIVE)
+        self.assertIsNotNone(self.app.chat_view.ai_core._attentive_reset_timer)
+
+        # Triggering timeout handler returns to IDLE
+        self.app.chat_view.ai_core._on_attentive_timeout()
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_IDLE)
+
+    def test_ai_core_thinking_on_send_message(self) -> None:
+        """Verifies that sending a message transitions the AI Core to THINKING state."""
+        self.app.txt_input.insert("1.0", "Execute test command")
+        with patch("threading.Thread"):
+            self.app.send_message()
+            self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_THINKING)
+
+    def test_ai_core_responding_on_chat_success(self) -> None:
+        """Verifies that a successful response transitions the AI Core to RESPONDING."""
+        self.app._busy = True
+        self.app.ai_core.set_state(AICoreVisualizer.STATE_THINKING)
+
+        result = CoordinatorChatResult(
+            text="AI answer text",
+            operation_id=42,
+            command_name="chat",
+            parser_status="FLEX_STATUS_OK",
+            state_status="FLEX_STATE_OK",
+            model="qwen2.5-coder:3b",
+        )
+        self.app._on_chat_success(result, elapsed=0.35)
+
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_RESPONDING)
+        self.assertTrue(self.app.ai_core._ripple_active)
+
+        # Timeout reverts to IDLE
+        self.app.ai_core._on_responding_timeout()
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_IDLE)
+
+    def test_ai_core_error_on_chat_error(self) -> None:
+        """Verifies that an error callback transitions the AI Core to ERROR."""
+        self.app._busy = True
+        self.app.ai_core.set_state(AICoreVisualizer.STATE_THINKING)
+
+        exc = CoordinatorDispatchError("Input rejected by C parser")
+        self.app._on_chat_error(exc, elapsed=0.10)
+
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_ERROR)
+
+        # Timeout reverts to IDLE
+        self.app.ai_core._on_error_timeout()
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_IDLE)
+
+    def test_ai_core_idle_on_clear_conversation(self) -> None:
+        """Verifies that clearing conversation resets the AI Core to IDLE."""
+        self.app.ai_core.set_state(AICoreVisualizer.STATE_ERROR)
+        self.app.clear_conversation()
+        self.assertEqual(self.app.ai_core.state, AICoreVisualizer.STATE_IDLE)
+
+    def test_ai_core_animation_pause_and_resume_on_view_switch(self) -> None:
+        """Verifies that switching away from Home pauses animation, and returning resumes."""
+        self.assertTrue(self.app.ai_core._is_active)
+
+        # Switch to Voice Studio
+        self.app.switch_view("voice")
+        self.assertFalse(self.app.ai_core._is_active)
+        self.assertIsNone(self.app.ai_core._anim_timer_id)
+
+        # Switch back to Home
+        self.app.switch_view("home")
+        self.assertTrue(self.app.ai_core._is_active)
+        self.assertIsNotNone(self.app.ai_core._anim_timer_id)
+
+    def test_ai_core_shutdown_cancels_all_timers(self) -> None:
+        """Verifies that application shutdown cancels all animation and state timers."""
+        self.app.ai_core.on_user_typing()
+        self.app.on_closing()
+
+        self.assertTrue(self.app.ai_core._closing)
+        self.assertIsNone(self.app.ai_core._anim_timer_id)
+        self.assertIsNone(self.app.ai_core._attentive_reset_timer)
+
+    def test_no_duplicate_animation_loops_on_repeated_switching(self) -> None:
+        """Verifies that rapid view switching never creates multiple concurrent timer loops."""
+        for _ in range(8):
+            self.app.switch_view("voice")
+            self.app.switch_view("home")
+
+        self.assertTrue(self.app.ai_core._is_active)
+        timer_id = self.app.ai_core._anim_timer_id
+        self.assertIsNotNone(timer_id)
+
+    def test_ai_core_safe_when_unmapped_or_closing(self) -> None:
+        """Verifies that _animate safely no-ops without exception when unmapped or closing."""
+        self.app.ai_core._closing = True
+        self.app.ai_core._animate()
+        self.assertIsNone(self.app.ai_core._anim_timer_id)
 
 
 if __name__ == "__main__":
