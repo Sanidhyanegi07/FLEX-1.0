@@ -218,53 +218,13 @@ class WorkspaceFileInfo:
         }
 
 
-class WorkspaceSettings:
+from .config import SettingsManager
+
+
+class WorkspaceSettings(SettingsManager):
     """Thread-safe persistent settings storage for workspace configuration."""
+    pass
 
-    def __init__(self, settings_path: Optional[str] = None) -> None:
-        self.settings_path: str = settings_path or get_default_settings_path()
-        self._lock = threading.RLock()
-
-    def get_last_workspace(self) -> Optional[str]:
-        """Loads the last selected workspace path from settings."""
-        with self._lock:
-            data = self._read_settings()
-            path = data.get("last_workspace_path")
-            if isinstance(path, str) and path.strip():
-                return path.strip()
-            return None
-
-    def set_last_workspace(self, workspace_path: Optional[str]) -> None:
-        """Saves the last selected workspace path to settings."""
-        with self._lock:
-            data = self._read_settings()
-            if workspace_path is None:
-                data.pop("last_workspace_path", None)
-            else:
-                data["last_workspace_path"] = str(workspace_path).strip()
-            self._write_settings(data)
-
-    def _read_settings(self) -> Dict[str, Any]:
-        if not os.path.exists(self.settings_path):
-            return {}
-        try:
-            with open(self.settings_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as exc:
-            logger.warning("Failed to load settings from %s: %s", self.settings_path, exc)
-            return {}
-
-    def _write_settings(self, data: Dict[str, Any]) -> None:
-        try:
-            settings_dir = os.path.dirname(self.settings_path)
-            if settings_dir:
-                os.makedirs(settings_dir, exist_ok=True)
-            temp_path = f"{self.settings_path}.tmp"
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            os.replace(temp_path, self.settings_path)
-        except Exception as exc:
-            logger.error("Failed to write settings to %s: %s", self.settings_path, exc)
 
 
 class WorkspaceManager:

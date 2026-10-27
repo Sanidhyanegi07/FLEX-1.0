@@ -551,5 +551,153 @@ class TestOllamaProviderHealthAndDiscovery(unittest.TestCase):
         self.assertFalse(self.provider.is_model_available("qwen2.5-coder:3b"))
 
 
+class TestOllamaConfigStage2E(unittest.TestCase):
+    """Tests for Stage 2E OllamaConfig extensions (temperature, num_ctx, serialization)."""
+
+    def test_temperature_validation_and_options_injection(self) -> None:
+        """Valid temperatures are stored and mirrored in options dict."""
+        cfg = OllamaConfig(temperature=0.85)
+        self.assertAlmostEqual(cfg.temperature, 0.85)
+        self.assertAlmostEqual(cfg.options["temperature"], 0.85)
+
+        # Extreme valid values
+        cfg_min = OllamaConfig(temperature=0.0)
+        self.assertAlmostEqual(cfg_min.temperature, 0.0)
+        cfg_max = OllamaConfig(temperature=2.0)
+        self.assertAlmostEqual(cfg_max.temperature, 2.0)
+
+        # Invalid values raise AIValidationError
+        with self.assertRaises(AIValidationError):
+            OllamaConfig(temperature=-0.1)
+        with self.assertRaises(AIValidationError):
+            OllamaConfig(temperature=2.1)
+
+    def test_num_ctx_validation_and_options_injection(self) -> None:
+        """Valid num_ctx is validated and mirrored in options dict."""
+        cfg = OllamaConfig(num_ctx=8192)
+        self.assertEqual(cfg.num_ctx, 8192)
+        self.assertEqual(cfg.options["num_ctx"], 8192)
+
+        # None leaves options without num_ctx
+        cfg_none = OllamaConfig(num_ctx=None)
+        self.assertIsNone(cfg_none.num_ctx)
+        self.assertNotIn("num_ctx", cfg_none.options)
+
+        # Invalid values raise AIValidationError
+        with self.assertRaises(AIValidationError):
+            OllamaConfig(num_ctx=100)
+        with self.assertRaises(AIValidationError):
+            OllamaConfig(num_ctx=200000)
+
+    def test_to_dict_and_from_dict_roundtrip(self) -> None:
+        """Serializes and deserializes cleanly without losing fields."""
+        orig = OllamaConfig(
+            base_url="http://192.168.1.100:11434",
+            model="starcoder2:7b",
+            timeout=40.0,
+            temperature=0.4,
+            num_ctx=16384,
+        )
+        d = orig.to_dict()
+        self.assertEqual(d["base_url"], "http://192.168.1.100:11434")
+        self.assertEqual(d["model"], "starcoder2:7b")
+        self.assertEqual(d["timeout"], 40.0)
+        self.assertAlmostEqual(d["temperature"], 0.4)
+        self.assertEqual(d["num_ctx"], 16384)
+
+        restored = OllamaConfig.from_dict(d)
+        self.assertEqual(restored.base_url, orig.base_url)
+        self.assertEqual(restored.model, orig.model)
+        self.assertEqual(restored.timeout, orig.timeout)
+        self.assertAlmostEqual(restored.temperature, orig.temperature)
+        self.assertEqual(restored.num_ctx, orig.num_ctx)
+
+
+class TestOllamaProviderStage2EDiscoveryAndConnectivity(unittest.TestCase):
+    """Tests for Stage 2E list_models() and test_connection() implementations."""
+
+    def setUp(self) -> None:
+        self.provider = OllamaProvider()
+
+    @patch("backend.ai.ollama_provider.urlopen")
+    def test_list_models_success(self, mock_urlopen: MagicMock) -> None:
+        """list_models() extracts tag names from /api/tags response."""
+        payload = {
+            "models": [
+                {"name": "qwen2.5-coder:3b", "size": 1900000000},
+                {"name": "llama3.2:1b", "size": 1300000000},
+            ]
+        }
+        mock_urlopen.return_value = FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
+
+        models = self.provider.list_models(url="http://127.0.0.1:11434", timeout=5.0)
+        self.assertEqual(models, ["llama3.2:1b", "qwen2.5-coder:3b"])
+
+    @patch("backend.ai.ollama_provider.urlopen")
+    def test_list_models_empty_or_network_failure(self, mock_urlopen: MagicMock) -> None:
+        """Network failure in list_models returns an empty list without raising."""
+        mock_urlopen.side_effect = URLError(ConnectionRefusedError("Offline"))
+        models = self.provider.list_models(url="http://127.0.0.1:11434")
+        self.assertEqual(models, [])
+
+    @patch("backend.ai.ollama_provider.urlopen")
+    def test_test_connection_success(self, mock_urlopen: MagicMock) -> None:
+        """test_connection() queries /api/version and returns status and version string."""
+        payload = {"version": "0.4.1"}
+        mock_urlopen.return_value = FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
+
+        connected, msg, version = self.provider.test_connection(url="http://127.0.0.1:11434", timeout=3.0)
+        self.assertTrue(connected)
+        self.assertIn("v0.4.1", msg)
+        self.assertEqual(version, "0.4.1")
+
+    @patch("backend.ai.ollama_provider.urlopen")
+    def test_test_connection_refused(self, mock_urlopen: MagicMock) -> None:
+        """test_connection() handles ConnectionRefusedError with human-friendly message."""
+        mock_urlopen.side_effect = URLError(ConnectionRefusedError("Connection refused"))
+
+        connected, msg, version = self.provider.test_connection(url="http://127.0.0.1:11434", timeout=2.0)
+        self.assertFalse(connected)
+        self.assertIn("Connection refused", msg)
+        self.assertIsNone(version)
+
+    @patch("backend.ai.ollama_provider.urlopen")
+    def test_test_connection_timeout(self, mock_urlopen: MagicMock) -> None:
+        """test_connection() handles TimeoutError with clear guidance."""
+        mock_urlopen.side_effect = TimeoutError("Timed out")
+
+        connected, msg, version = self.provider.test_connection(url="http://10.0.0.99:11434", timeout=1.0)
+        self.assertFalse(connected)
+        self.assertIn("timed out", msg.lower())
+        self.assertIsNone(version)
+
+    @patch("backend.ai.ollama_provider.urlopen")
+    def test_chat_payload_includes_temperature_and_num_ctx(self, mock_urlopen: MagicMock) -> None:
+        """Inference request includes temperature and num_ctx in payload options."""
+        cfg = OllamaConfig(
+            model="qwen2.5-coder:3b",
+            temperature=0.35,
+            num_ctx=8192,
+        )
+        provider = OllamaProvider(config=cfg)
+
+        chat_resp = {
+            "model": "qwen2.5-coder:3b",
+            "message": {"role": "assistant", "content": "Hello!"},
+            "done": True,
+        }
+        mock_urlopen.return_value = FakeHTTPResponse(json.dumps(chat_resp).encode("utf-8"))
+
+        provider.generate("Hi")
+
+        # Verify request body
+        self.assertTrue(mock_urlopen.called)
+        req = mock_urlopen.call_args[0][0]
+        data = json.loads(req.data.decode("utf-8"))
+        self.assertIn("options", data)
+        self.assertAlmostEqual(data["options"]["temperature"], 0.35)
+        self.assertEqual(data["options"]["num_ctx"], 8192)
+
+
 if __name__ == "__main__":
     unittest.main()

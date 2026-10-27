@@ -115,6 +115,7 @@ class AICoordinator:
         auto_start: bool = True,
         storage: Optional[SQLiteConversationStorage] = None,
         active_conversation_id: Optional[str] = None,
+        config: Optional[OllamaConfig] = None,
     ) -> None:
         """Initializes the coordinator with required subsystems.
 
@@ -126,9 +127,16 @@ class AICoordinator:
             auto_start: If True, launches the bridge subprocess immediately if not already running.
             storage: Optional SQLiteConversationStorage for persistent conversation memory.
             active_conversation_id: Optional initial conversation ID to activate.
+            config: Optional OllamaConfig to initialize provider with when provider is None.
         """
         self.bridge: FlexBridgeClient = bridge if bridge is not None else FlexBridgeClient()
-        self.provider: LLMProvider = provider if provider is not None else OllamaProvider()
+        if provider is not None:
+            self.provider: LLMProvider = provider
+        elif config is not None:
+            self.provider = OllamaProvider(config=config)
+        else:
+            self.provider = OllamaProvider()
+
         self.history: InMemoryConversationHistory = (
             history if history is not None else InMemoryConversationHistory()
         )
@@ -139,6 +147,7 @@ class AICoordinator:
         self._active_conversation_id: Optional[str] = active_conversation_id
         self.last_storage_status: str = "MEMORY_ONLY"
         self.last_storage_error: Optional[str] = None
+        self._config: Optional[OllamaConfig] = config or getattr(self.provider, "config", None)
 
         self._lock: threading.RLock = threading.RLock()
 
@@ -159,6 +168,11 @@ class AICoordinator:
 
         if auto_start and not self.bridge.is_running:
             self.start()
+
+    @property
+    def config(self) -> Optional[OllamaConfig]:
+        """Returns the active provider configuration if available."""
+        return getattr(self.provider, "config", None) or self._config
 
     @property
     def is_running(self) -> bool:
@@ -284,8 +298,12 @@ class AICoordinator:
                 }
 
             ai_health = self.check_ollama_health()
-            cfg_model = getattr(self.provider, "config", None)
-            model_name = getattr(cfg_model, "model", "qwen2.5-coder:3b")
+            cfg = getattr(self.provider, "config", None)
+            model_name = getattr(cfg, "model", "qwen2.5-coder:3b")
+            base_url = getattr(cfg, "base_url", "http://127.0.0.1:11434")
+            timeout_sec = getattr(cfg, "timeout", 30.0)
+            temperature = getattr(cfg, "temperature", 0.2)
+            num_ctx = getattr(cfg, "num_ctx", None)
             model_avail = self.check_model_available(model_name) if ai_health else False
 
             storage_enabled = self.storage is not None
@@ -296,12 +314,35 @@ class AICoordinator:
                 "ai_health": ai_health,
                 "model_available": model_avail,
                 "model": model_name,
+                "base_url": base_url,
+                "timeout": timeout_sec,
+                "temperature": temperature,
+                "num_ctx": num_ctx,
                 "history_count": len(self.history.get_messages()),
                 "active_conversation_id": self._active_conversation_id,
                 "storage_enabled": storage_enabled,
                 "storage_degraded": storage_degraded,
                 "storage_status": self.last_storage_status,
             }
+
+    def update_ai_config(self, new_config: OllamaConfig) -> None:
+        """Updates the AI provider configuration at runtime in a thread-safe manner.
+
+        Applies immediately to subsequent inference requests without restarting the C bridge.
+        """
+        with self._lock:
+            self._config = new_config
+            try:
+                self.provider.config = new_config
+            except (AttributeError, TypeError):
+                pass
+            logger.info(
+                "Updated AI configuration: model=%s, url=%s, timeout=%.1f, temp=%.2f",
+                new_config.model,
+                new_config.base_url,
+                new_config.timeout,
+                getattr(new_config, "temperature", 0.2),
+            )
 
     def dispatch_command(self, command: str, timeout: Optional[float] = None) -> Dict[str, Any]:
         """Dispatches an arbitrary raw command string directly to the C bridge.

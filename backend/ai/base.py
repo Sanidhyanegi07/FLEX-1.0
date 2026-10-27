@@ -91,6 +91,8 @@ class LLMResponse:
 class LLMProvider(ABC):
     """Abstract provider interface for local or remote LLM runtimes."""
 
+    config: Optional[Any] = None
+
     @abstractmethod
     def generate(
         self,
@@ -142,3 +144,25 @@ class LLMProvider(ABC):
                   Must never raise an exception.
         """
         pass
+
+    @abstractmethod
+    def list_models(self) -> List[str]:
+        """Queries and returns a list of installed models available on the host.
+
+        Returns:
+            List[str]: List of model tags. Must never raise an exception; returns [] on failure.
+        """
+        pass
+
+    def test_connection(self, url: Optional[str] = None, timeout: float = 3.0) -> Tuple[bool, str, Optional[str]]:
+        """Tests reachability to the inference server and reports diagnostic details.
+
+        Args:
+            url: Optional endpoint URL override.
+            timeout: Network timeout in seconds.
+
+        Returns:
+            Tuple[bool, str, Optional[str]]: (connected, message, version_or_details)
+        """
+        healthy = self.check_health()
+        return (healthy, "Service reachable" if healthy else "Service unreachable", None)

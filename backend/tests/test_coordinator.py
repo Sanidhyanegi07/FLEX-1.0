@@ -270,6 +270,20 @@ class TestAICoordinatorUnit(unittest.TestCase):
         self.assertEqual(status["model"], "qwen2.5-coder:3b")
         self.assertEqual(status["bridge"]["lifecycle"], "FLEX_LIFECYCLE_IDLE")
 
+    def test_update_ai_config_without_bridge_restart(self) -> None:
+        """Verifies dynamic AI configuration updates propagate to provider without restarting bridge."""
+        from backend.ai.config import OllamaConfig
+        new_cfg = OllamaConfig(
+            base_url="http://10.0.0.5:11434",
+            model="codellama:7b",
+            timeout=50.0,
+            temperature=0.8,
+            num_ctx=8192,
+        )
+        self.coordinator.update_ai_config(new_cfg)
+        self.assertEqual(self.coordinator.config, new_cfg)
+        self.assertEqual(self.coordinator.provider.config, new_cfg)
+
 
 class TestAICoordinatorLiveIntegration(unittest.TestCase):
     """End-to-end integration test with real flex_bridge.exe and live local Ollama."""

@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from backend.ai.config import OllamaConfig
 from backend.ai.storage import SQLiteConversationStorage
 from backend.app import (
     AICoreVisualizer,
@@ -33,7 +34,9 @@ from backend.app import (
     MemoryView,
     ProjectsView,
     PrototypeView,
+    SettingsView,
 )
+from backend.config import SettingsManager
 from backend.coordinator import AICoordinator, CoordinatorChatResult, CoordinatorDispatchError
 from backend.workspace import WorkspaceManager
 
@@ -253,8 +256,8 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.assertIs(self.app.chat_view.coordinator, self.mock_coordinator)
 
     def test_prototype_views_have_no_fake_interactive_controls(self) -> None:
-        # Note: memory (Stage 2C) and projects (Stage 2D) are functional views, not prototype views.
-        prototype_keys = ["voice", "knowledge", "tools", "settings"]
+        # Note: memory (Stage 2C), projects (Stage 2D), and settings (Stage 2E) are functional views, not prototype views.
+        prototype_keys = ["voice", "knowledge", "tools"]
 
         def check_widget_for_fake_controls(widget: tk.Widget) -> None:
             self.assertNotIsInstance(
@@ -1486,6 +1489,153 @@ class TestFlexDesktopAppStage2DProjectsView(unittest.TestCase):
         self.assertIn("WORKSPACE CONTEXT", workspace_context)
         self.assertIn("main.c", workspace_context)
         self.assertIn("int main() { return 0; }", workspace_context)
+
+
+class TestFlexDesktopAppStage2ESettingsView(unittest.TestCase):
+    """Integration and GUI tests for SettingsView and SettingsManager (Stage 2E)."""
+
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.temp_dir = tempfile.mkdtemp()
+        self.settings_path = Path(self.temp_dir) / "test_settings.json"
+        self.settings_manager = SettingsManager(settings_file=self.settings_path)
+
+        self.mock_coordinator = MagicMock(spec=AICoordinator)
+        self.mock_coordinator.is_running = True
+        self.mock_coordinator.provider = MagicMock()
+        self.mock_coordinator.provider.config = OllamaConfig(
+            base_url="http://127.0.0.1:11434",
+            model="qwen2.5-coder:3b",
+            timeout=30.0,
+            temperature=0.2,
+            num_ctx=4096,
+        )
+
+        self.app = FlexDesktopApp(
+            root=self.root,
+            coordinator=self.mock_coordinator,
+            settings_manager=self.settings_manager,
+        )
+        self.settings_view: SettingsView = self.app.views["settings"]
+
+    def tearDown(self) -> None:
+        try:
+            self.app.on_closing()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_settings_view_is_functional_and_mounted(self) -> None:
+        """SettingsView is registered as a SettingsView instance, not a PrototypeView."""
+        self.assertIn("settings", self.app.views)
+        self.assertIsInstance(self.settings_view, SettingsView)
+        self.assertNotIsInstance(self.settings_view, PrototypeView)
+
+    def test_fields_populate_from_settings_manager(self) -> None:
+        """Entry controls match settings_manager configuration."""
+        self.assertEqual(self.settings_view.ent_url.get(), "http://127.0.0.1:11434")
+        self.assertEqual(self.settings_view.combo_model.get(), "qwen2.5-coder:3b")
+        self.assertEqual(self.settings_view.ent_timeout.get(), "30")
+        self.assertEqual(self.settings_view.ent_temp.get(), "0.2")
+        self.assertEqual(self.settings_view.ent_num_ctx.get(), "4096")
+
+    def test_save_valid_settings_updates_disk_and_coordinator(self) -> None:
+        """Saving valid settings persists to disk and invokes coordinator.update_ai_config()."""
+        # Change fields
+        self.settings_view.ent_url.delete(0, tk.END)
+        self.settings_view.ent_url.insert(0, "http://192.168.1.10:11434")
+        self.settings_view.combo_model.set("deepseek-coder:6.7b")
+        self.settings_view.ent_temp.delete(0, tk.END)
+        self.settings_view.ent_temp.insert(0, "0.5")
+
+        self.settings_view._on_save_clicked()
+
+        # Check banner and status
+        self.assertIn("Settings saved", self.settings_view.lbl_banner.cget("text"))
+        self.assertIn("SAVED", self.settings_view.badge_status.cget("text"))
+
+        # Check persistence on disk
+        persisted_cfg = self.settings_manager.get_ollama_config()
+        self.assertEqual(persisted_cfg.base_url, "http://192.168.1.10:11434")
+        self.assertEqual(persisted_cfg.model, "deepseek-coder:6.7b")
+        self.assertAlmostEqual(persisted_cfg.temperature, 0.5)
+
+        # Check coordinator received updated config
+        self.mock_coordinator.update_ai_config.assert_called_once()
+        passed_cfg = self.mock_coordinator.update_ai_config.call_args[0][0]
+        self.assertEqual(passed_cfg.model, "deepseek-coder:6.7b")
+
+    def test_save_invalid_settings_shows_banner_error(self) -> None:
+        """Invalid inputs block save and display human-friendly validation banner."""
+        self.settings_view.ent_url.delete(0, tk.END)
+        self.settings_view.ent_url.insert(0, "invalid-url-scheme")
+        self.settings_view.ent_temp.delete(0, tk.END)
+        self.settings_view.ent_temp.insert(0, "99.9")
+
+        self.settings_view._on_save_clicked()
+
+        self.assertIn("Validation failed", self.settings_view.lbl_banner.cget("text"))
+        self.assertIn("ERROR", self.settings_view.badge_status.cget("text"))
+        self.mock_coordinator.update_ai_config.assert_not_called()
+
+    def test_reset_settings_restores_defaults_and_preserves_workspace(self) -> None:
+        """Resetting settings restores defaults and preserves last_workspace_path."""
+        self.settings_manager.set_last_workspace_path(r"C:\Important\Project")
+        self.settings_view.combo_model.set("temporary-model:latest")
+        self.settings_view._on_save_clicked()
+
+        with patch("tkinter.messagebox.askyesno", return_value=True):
+            self.settings_view._on_reset_clicked()
+
+        self.assertEqual(self.settings_view.combo_model.get(), "qwen2.5-coder:3b")
+        self.assertIn("Reset to defaults completed", self.settings_view.lbl_banner.cget("text"))
+
+        # Verify last_workspace_path was preserved
+        self.assertEqual(self.settings_manager.get_last_workspace_path(), r"C:\Important\Project")
+
+    def test_test_connection_async_flow(self) -> None:
+        """Asynchronous connection test triggers probe and updates status badge."""
+        self.settings_view._provider = MagicMock()
+        self.settings_view._provider.test_connection.return_value = (
+            True, "Online (Ollama v0.4.1)", "0.4.1"
+        )
+
+        self.settings_view._on_test_connection_clicked()
+
+        # Wait briefly for thread execution
+        if self.settings_view._active_test_thread:
+            self.settings_view._active_test_thread.join(timeout=1.0)
+        self.settings_view.process_pending_events()
+        self.root.update()
+
+        self.assertIn("Online", self.settings_view.lbl_connection_status.cget("text"))
+        self.assertEqual(self.settings_view.btn_test.cget("state"), tk.NORMAL)
+
+    def test_refresh_models_async_flow(self) -> None:
+        """Asynchronous model scan triggers list_models and updates dropdown values."""
+        self.settings_view._provider = MagicMock()
+        self.settings_view._provider.list_models.return_value = [
+            "codellama:7b",
+            "qwen2.5-coder:3b",
+        ]
+
+        self.settings_view._on_refresh_models_clicked()
+
+        if self.settings_view._active_models_thread:
+            self.settings_view._active_models_thread.join(timeout=1.0)
+        self.settings_view.process_pending_events()
+        self.root.update()
+
+        self.assertEqual(
+            list(self.settings_view.combo_model["values"]),
+            ["codellama:7b", "qwen2.5-coder:3b"],
+        )
+        self.assertEqual(self.settings_view.btn_refresh_models.cget("state"), tk.NORMAL)
 
 
 if __name__ == "__main__":

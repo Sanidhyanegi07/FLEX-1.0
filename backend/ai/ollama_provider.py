@@ -298,6 +298,102 @@ class OllamaProvider(LLMProvider):
 
         return False
 
+    def list_models(self, url: Optional[str] = None, timeout: float = 4.0) -> List[str]:
+        """Queries and returns a list of installed models from `/api/tags`.
+
+        Never raises an unhandled exception; returns an empty list on failure.
+
+        Args:
+            url: Optional base URL override.
+            timeout: Network timeout in seconds (default 4.0).
+
+        Returns:
+            List[str]: List of model name strings (e.g. ['qwen2.5-coder:3b']).
+        """
+        base_url = (url or self.config.base_url).strip().rstrip("/")
+        req_url = f"{base_url}/api/tags"
+        req = Request(req_url, headers={"Accept": "application/json"}, method="GET")
+
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                status_code = getattr(resp, "status", 200)
+                if status_code != 200:
+                    return []
+                raw_data = resp.read()
+                data = json.loads(raw_data.decode("utf-8"))
+        except Exception as e:
+            logger.debug("Failed to list models from %s: %s", req_url, e)
+            return []
+
+        if not isinstance(data, dict):
+            return []
+
+        models_data = data.get("models")
+        if not isinstance(models_data, list):
+            return []
+
+        model_names: List[str] = []
+        for item in models_data:
+            if isinstance(item, dict) and "name" in item:
+                name = str(item["name"]).strip()
+                if name and name not in model_names:
+                    model_names.append(name)
+
+        model_names.sort(key=str.lower)
+        return model_names
+
+    def test_connection(
+        self,
+        url: Optional[str] = None,
+        timeout: float = 3.0,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Tests reachability to the Ollama service and reports diagnostic details.
+
+        Queries `/api/version` with the specified timeout.
+        Never raises an unhandled exception.
+
+        Args:
+            url: Optional base URL override. Defaults to self.config.base_url.
+            timeout: Timeout in seconds for the probe.
+
+        Returns:
+            Tuple[bool, str, Optional[str]]:
+                - connected (bool): True if server reachable and returns valid version.
+                - message (str): Detailed user-facing status message.
+                - version (Optional[str]): Version string if connected, else None.
+        """
+        raw_url = (url or self.config.base_url).strip().rstrip("/")
+        if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
+            return (False, "Invalid URL scheme: Must start with http:// or https://", None)
+
+        endpoint = f"{raw_url}/api/version"
+        req = Request(endpoint, headers={"Accept": "application/json"}, method="GET")
+
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                status_code = getattr(resp, "status", 200)
+                if status_code == 200:
+                    raw_data = resp.read()
+                    data = json.loads(raw_data.decode("utf-8"))
+                    if isinstance(data, dict) and "version" in data:
+                        ver = str(data["version"]).strip()
+                        return (True, f"Connected (Ollama v{ver})", ver)
+                    return (True, "Connected (Ollama version unknown)", None)
+                return (False, f"Server responded with HTTP {status_code}", None)
+        except HTTPError as e:
+            return (False, f"HTTP Error {e.code}: {e.reason}", None)
+        except URLError as e:
+            reason_str = str(e.reason).lower()
+            if isinstance(e.reason, socket.timeout) or "timed out" in reason_str:
+                return (False, f"Connection timed out after {timeout:.1f}s", None)
+            if "refused" in reason_str or "10061" in reason_str or "111" in reason_str:
+                return (False, "Connection refused: Ollama daemon is not running", None)
+            return (False, f"Unreachable: {e.reason}", None)
+        except (socket.timeout, TimeoutError):
+            return (False, f"Connection timed out after {timeout:.1f}s", None)
+        except Exception as e:
+            return (False, f"Connection failed: {e}", None)
+
     def _resolve_timeout(self, timeout_override: Optional[float]) -> float:
         """Resolves request timeout, validating explicit override if provided."""
         if timeout_override is not None:

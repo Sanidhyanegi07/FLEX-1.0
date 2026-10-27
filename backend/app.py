@@ -40,13 +40,23 @@ from .coordinator import (
     CoordinatorLifecycleError,
     CoordinatorStateError,
 )
+from .ai.config import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    DEFAULT_NUM_CTX,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TIMEOUT,
+    OllamaConfig,
+)
 from .ai.exceptions import (
     AIModelNotFoundError,
     AIServiceUnavailableError,
     AITimeoutError,
     FLEXAIError,
 )
+from .ai.ollama_provider import OllamaProvider
 from .ai.storage import SQLiteConversationStorage
+from .config import SettingsManager
 from .workspace import WorkspaceManager, is_binary_file
 
 logger = logging.getLogger(__name__)
@@ -2861,6 +2871,709 @@ class ProjectsView(tk.Frame):
         self.txt_preview.configure(state=tk.DISABLED)
 
 
+class SettingsView(tk.Frame):
+    """FLEX 1.0 — Settings & Ollama Model Configuration View (Stage 2E).
+
+    Provides an interactive, space-themed configuration panel for:
+        - Ollama server endpoint (base URL) with non-blocking connection testing.
+        - Installed model discovery (/api/tags) and dynamic model selection.
+        - Inference parameters: temperature (0.0 - 2.0), context window (512 - 131072), timeout.
+        - Persistent settings synchronization via centralized SettingsManager.
+        - Runtime coordinator updates without restarting the C bridge.
+        - Safe reset to defaults with explicit confirmation, preserving workspace path.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        settings_manager: Optional[SettingsManager] = None,
+        coordinator: Optional[AICoordinator] = None,
+        app: Optional["FlexDesktopApp"] = None,
+    ) -> None:
+        super().__init__(parent, bg=COLOR_BG_ROOT)
+        self.settings_manager: SettingsManager = (
+            settings_manager if settings_manager is not None else SettingsManager()
+        )
+        self.coordinator: Optional[AICoordinator] = coordinator
+        self.app: Optional["FlexDesktopApp"] = app
+        self._provider: OllamaProvider = OllamaProvider(config=self.settings_manager.get_ollama_config())
+
+        self._active_test_thread: Optional[threading.Thread] = None
+        self._active_models_thread: Optional[threading.Thread] = None
+        self._test_token: int = 0
+        self._models_token: int = 0
+        self._has_unsaved_changes: bool = False
+        self._discovered_models: List[str] = []
+        self._closing: bool = False
+        self._settings_queue: queue.Queue = queue.Queue()
+        self._queue_poll_id: Optional[str] = None
+
+        self._build_ui()
+        self.load_from_settings()
+        self._queue_poll_id = self.after(50, self._process_queue)
+
+    def _build_ui(self) -> None:
+        # 1. Header Toolbar
+        header_frame = tk.Frame(self, bg=COLOR_BG_ROOT, padx=18, pady=10)
+        header_frame.pack(side=tk.TOP, fill=tk.X)
+
+        title_box = tk.Frame(header_frame, bg=COLOR_BG_ROOT)
+        title_box.pack(side=tk.LEFT)
+
+        lbl_title = tk.Label(
+            title_box,
+            text="⚙️ SETTINGS & MODEL CONFIGURATION",
+            font=("Segoe UI", 12, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_ROOT,
+        )
+        lbl_title.pack(anchor="w")
+
+        lbl_sub = tk.Label(
+            title_box,
+            text="Configure local Ollama endpoint, model selection, and inference parameters.",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_ROOT,
+        )
+        lbl_sub.pack(anchor="w")
+
+        toolbar_right = tk.Frame(header_frame, bg=COLOR_BG_ROOT)
+        toolbar_right.pack(side=tk.RIGHT)
+
+        self.badge_status = tk.Label(
+            toolbar_right,
+            text="● SAVED",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_SUCCESS,
+            bg=COLOR_BG_CARD,
+            padx=8,
+            pady=3,
+            relief=tk.FLAT,
+        )
+        self.badge_status.pack(side=tk.LEFT, padx=(0, 4))
+
+        # Divider line
+        tk.Frame(self, bg=COLOR_BORDER, height=1).pack(fill=tk.X)
+
+        # 2. Main Two-Column Container
+        content_frame = tk.Frame(self, bg=COLOR_BG_ROOT, padx=14, pady=10)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+
+        left_col = tk.Frame(content_frame, bg=COLOR_BG_ROOT)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+
+        right_col = tk.Frame(content_frame, bg=COLOR_BG_ROOT)
+        right_col.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(8, 0))
+
+        # ── Card 1: Server Connection (Left Col) ──────────────────────────────
+        card_server = tk.Frame(
+            left_col,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=12,
+            pady=10,
+        )
+        card_server.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(
+            card_server,
+            text="SERVER CONNECTION (OLLAMA)",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            card_server,
+            text="HTTP endpoint where local Ollama daemon is listening.",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w", pady=(1, 6))
+
+        tk.Label(
+            card_server,
+            text="OLLAMA BASE URL",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        url_input_box = tk.Frame(card_server, bg=COLOR_BG_PANEL)
+        url_input_box.pack(fill=tk.X, pady=(2, 6))
+
+        self.ent_url = tk.Entry(
+            url_input_box,
+            font=("Consolas", 9),
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.ent_url.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+        self.ent_url.bind("<KeyRelease>", self._on_field_changed)
+
+        self.btn_test = tk.Button(
+            url_input_box,
+            text="⚡ Test Connection",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER_FOCUS,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            command=self._on_test_connection_clicked,
+        )
+        self.btn_test.pack(side=tk.LEFT, padx=(6, 0))
+
+        self.lbl_connection_status = tk.Label(
+            card_server,
+            text="● Status: Not tested",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_connection_status.pack(anchor="w", pady=(0, 6))
+
+        tk.Label(
+            card_server,
+            text="REQUEST TIMEOUT (SECONDS)",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            card_server,
+            text="Maximum duration to wait for Ollama inference responses (1.0 to 600.0s).",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w", pady=(1, 2))
+
+        self.ent_timeout = tk.Entry(
+            card_server,
+            font=("Consolas", 9),
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.ent_timeout.pack(fill=tk.X, ipady=3, pady=(2, 4))
+        self.ent_timeout.bind("<KeyRelease>", self._on_field_changed)
+
+        # ── Card 2: Local Model Discovery (Left Col) ──────────────────────────
+        card_model = tk.Frame(
+            left_col,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=12,
+            pady=10,
+        )
+        card_model.pack(fill=tk.X)
+
+        tk.Label(
+            card_model,
+            text="LOCAL MODEL SELECTION",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            card_model,
+            text="Select an installed model. Models must be pulled locally via 'ollama pull <name>'.",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w", pady=(1, 6))
+
+        tk.Label(
+            card_model,
+            text="ACTIVE MODEL TAG",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        model_box = tk.Frame(card_model, bg=COLOR_BG_PANEL)
+        model_box.pack(fill=tk.X, pady=(2, 6))
+
+        self.combo_model = ttk.Combobox(
+            model_box,
+            font=("Consolas", 9),
+            style="Projects.Treeview",  # Standard ttk styling
+        )
+        self.combo_model.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        self.combo_model.bind("<<ComboboxSelected>>", self._on_field_changed)
+        self.combo_model.bind("<KeyRelease>", self._on_field_changed)
+
+        self.btn_refresh_models = tk.Button(
+            model_box,
+            text="⟳ Refresh",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_SIDEBAR_ACTIVE,
+            activebackground=COLOR_BORDER_FOCUS,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER_FOCUS,
+            command=self._on_refresh_models_clicked,
+        )
+        self.btn_refresh_models.pack(side=tk.LEFT, padx=(6, 0))
+
+        self.lbl_model_status = tk.Label(
+            card_model,
+            text="● Model Status: Ready",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_model_status.pack(anchor="w")
+
+        # ── Card 3: Inference Parameters (Right Col) ──────────────────────────
+        card_params = tk.Frame(
+            right_col,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=12,
+            pady=10,
+        )
+        card_params.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(
+            card_params,
+            text="INFERENCE PARAMETERS",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            card_params,
+            text="Generation hyperparameters passed directly to the local model runtime.",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w", pady=(1, 6))
+
+        tk.Label(
+            card_params,
+            text="TEMPERATURE (0.0 to 2.0)",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            card_params,
+            text="0.0 = deterministic/coding; 0.2 = default; 0.7 = creative; 2.0 = maximal randomness.",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w", pady=(1, 2))
+
+        self.ent_temp = tk.Entry(
+            card_params,
+            font=("Consolas", 9),
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.ent_temp.pack(fill=tk.X, ipady=3, pady=(2, 6))
+        self.ent_temp.bind("<KeyRelease>", self._on_field_changed)
+
+        tk.Label(
+            card_params,
+            text="CONTEXT WINDOW SIZE (NUM_CTX)",
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        tk.Label(
+            card_params,
+            text="Maximum context token budget (512 to 131072 tokens). Default: 4096.",
+            font=("Segoe UI", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w", pady=(1, 2))
+
+        self.ent_num_ctx = tk.Entry(
+            card_params,
+            font=("Consolas", 9),
+            bg=COLOR_BG_CARD,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+        )
+        self.ent_num_ctx.pack(fill=tk.X, ipady=3, pady=(2, 4))
+        self.ent_num_ctx.bind("<KeyRelease>", self._on_field_changed)
+
+        # ── Card 4: Actions & Storage State (Right Col) ────────────────────────
+        card_actions = tk.Frame(
+            right_col,
+            bg=COLOR_BG_PANEL,
+            highlightthickness=1,
+            highlightbackground=COLOR_BORDER,
+            padx=12,
+            pady=10,
+        )
+        card_actions.pack(fill=tk.X)
+
+        tk.Label(
+            card_actions,
+            text="ACTIONS & PERSISTENCE",
+            font=("Segoe UI", 9, "bold"),
+            fg=COLOR_TEXT_ACCENT,
+            bg=COLOR_BG_PANEL,
+        ).pack(anchor="w")
+
+        self.lbl_file_path = tk.Label(
+            card_actions,
+            text=f"Store: {self.settings_manager.settings_path}",
+            font=("Consolas", 7),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+        )
+        self.lbl_file_path.pack(anchor="w", pady=(2, 6))
+
+        self.lbl_banner = tk.Label(
+            card_actions,
+            text="",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_SUCCESS,
+            bg=COLOR_BG_PANEL,
+            anchor="w",
+            wraplength=380,
+            justify=tk.LEFT,
+        )
+        self.lbl_banner.pack(anchor="w", pady=(0, 6))
+
+        btn_box = tk.Frame(card_actions, bg=COLOR_BG_PANEL)
+        btn_box.pack(fill=tk.X)
+
+        self.btn_save = tk.Button(
+            btn_box,
+            text="💾 Save Settings",
+            font=("Segoe UI", 8, "bold"),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_PRIMARY,
+            activebackground=COLOR_BTN_PRIMARY_HOVER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=self._on_save_clicked,
+        )
+        self.btn_save.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_reset = tk.Button(
+            btn_box,
+            text="↺ Reset to Defaults",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_PRIMARY,
+            bg=COLOR_BTN_SECONDARY,
+            activebackground=COLOR_BTN_SECONDARY_HOVER,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+            command=self._on_reset_clicked,
+        )
+        self.btn_reset.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_reload = tk.Button(
+            btn_box,
+            text="⟲ Discard Changes",
+            font=("Segoe UI", 8),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_PANEL,
+            activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=6,
+            pady=4,
+            cursor="hand2",
+            command=self.load_from_settings,
+        )
+        self.btn_reload.pack(side=tk.LEFT)
+
+    # ── State Synchronization ─────────────────────────────────────────────────
+
+    def load_from_settings(self) -> None:
+        """Loads configuration from SettingsManager and populates GUI entry widgets."""
+        cfg = self.settings_manager.get_ollama_config()
+
+        # Update entry fields
+        self.ent_url.delete(0, tk.END)
+        self.ent_url.insert(0, cfg.base_url)
+
+        self.combo_model.set(cfg.model)
+
+        self.ent_timeout.delete(0, tk.END)
+        timeout_val = cfg.timeout
+        timeout_str = f"{timeout_val:.0f}" if timeout_val == int(timeout_val) else f"{timeout_val}"
+        self.ent_timeout.insert(0, timeout_str)
+
+        self.ent_temp.delete(0, tk.END)
+        self.ent_temp.insert(0, str(cfg.temperature))
+
+        self.ent_num_ctx.delete(0, tk.END)
+        self.ent_num_ctx.insert(0, str(cfg.num_ctx if cfg.num_ctx is not None else DEFAULT_NUM_CTX))
+
+        self._has_unsaved_changes = False
+        self.badge_status.configure(text="● SAVED", fg=COLOR_TEXT_SUCCESS)
+        self.lbl_banner.configure(text="Active settings loaded.", fg=COLOR_TEXT_MUTED)
+        self._update_model_status_badge()
+
+    def refresh(self) -> None:
+        """Called whenever the Settings view is brought to the foreground."""
+        if not self.winfo_exists():
+            return
+        if not self._has_unsaved_changes:
+            self.load_from_settings()
+
+    def _process_queue(self) -> None:
+        """Processes background worker results safely on the main GUI thread."""
+        try:
+            self.process_pending_events()
+        except Exception as exc:
+            logger.debug("Error processing settings queue: %s", exc)
+        finally:
+            if not self._closing and self.winfo_exists():
+                try:
+                    self._queue_poll_id = self.after(50, self._process_queue)
+                except Exception:
+                    pass
+
+    def process_pending_events(self) -> None:
+        """Flushes all queued background worker results immediately on the main thread."""
+        while not self._settings_queue.empty():
+            item = self._settings_queue.get_nowait()
+            action = item[0]
+            if action == "test_results":
+                _, token, connected, msg, version = item
+                self._apply_test_results(token, connected, msg, version)
+            elif action == "models_results":
+                _, token, models = item
+                self._apply_models_results(token, models)
+
+    def _on_field_changed(self, event=None) -> None:
+        """Tracks unsaved modifications in entry controls."""
+        self._has_unsaved_changes = True
+        self.badge_status.configure(text="● UNSAVED CHANGES", fg=COLOR_TEXT_WARNING)
+        self._update_model_status_badge()
+
+    def _update_model_status_badge(self) -> None:
+        """Updates the label describing whether the selected model tag is known to Ollama."""
+        selected_model = self.combo_model.get().strip()
+        if not selected_model:
+            self.lbl_model_status.configure(text="● No model specified", fg=COLOR_TEXT_WARNING)
+            return
+
+        if self._discovered_models:
+            if selected_model in self._discovered_models or f"{selected_model}:latest" in self._discovered_models:
+                self.lbl_model_status.configure(text=f"● Model '{selected_model}' verified locally", fg=COLOR_TEXT_SUCCESS)
+            else:
+                self.lbl_model_status.configure(
+                    text=f"● '{selected_model}' not found in local Ollama tags (run: ollama pull {selected_model})",
+                    fg=COLOR_TEXT_WARNING,
+                )
+        else:
+            self.lbl_model_status.configure(text=f"● Active model: {selected_model}", fg=COLOR_TEXT_MUTED)
+
+    # ── Asynchronous Operations ───────────────────────────────────────────────
+
+    def _on_test_connection_clicked(self) -> None:
+        """Initiates an asynchronous connection test to the entered server URL."""
+        target_url = self.ent_url.get().strip()
+        self._test_token += 1
+        token = self._test_token
+
+        self.btn_test.configure(state=tk.DISABLED, text="Testing...")
+        self.lbl_connection_status.configure(text="● Testing reachability...", fg=COLOR_TEXT_ACCENT)
+
+        thread = threading.Thread(
+            target=self._worker_test_connection,
+            args=(token, target_url),
+            daemon=True,
+            name="Settings-TestConnectionThread",
+        )
+        self._active_test_thread = thread
+        thread.start()
+
+    def _worker_test_connection(self, token: int, target_url: str) -> None:
+        """Worker thread executing HTTP /api/version probe."""
+        connected, msg, version = self._provider.test_connection(url=target_url, timeout=3.5)
+        self._settings_queue.put(("test_results", token, connected, msg, version))
+
+    def _apply_test_results(self, token: int, connected: bool, message: str, version: Optional[str]) -> None:
+        """Main thread callback applying test results."""
+        if not self.winfo_exists() or token != self._test_token:
+            return
+
+        self.btn_test.configure(state=tk.NORMAL, text="⚡ Test Connection")
+        if connected:
+            self.lbl_connection_status.configure(text=f"● {message}", fg=COLOR_TEXT_SUCCESS)
+        else:
+            self.lbl_connection_status.configure(text=f"● {message}", fg=COLOR_TEXT_ERROR)
+
+    def _on_refresh_models_clicked(self) -> None:
+        """Initiates an asynchronous model discovery query from the Ollama endpoint."""
+        target_url = self.ent_url.get().strip()
+        self._models_token += 1
+        token = self._models_token
+
+        self.btn_refresh_models.configure(state=tk.DISABLED, text="Scanning...")
+        self.lbl_model_status.configure(text="● Querying local models from Ollama daemon...", fg=COLOR_TEXT_ACCENT)
+
+        thread = threading.Thread(
+            target=self._worker_list_models,
+            args=(token, target_url),
+            daemon=True,
+            name="Settings-ListModelsThread",
+        )
+        self._active_models_thread = thread
+        thread.start()
+
+    def _worker_list_models(self, token: int, target_url: str) -> None:
+        """Worker thread querying /api/tags."""
+        models = self._provider.list_models(url=target_url, timeout=4.5)
+        self._settings_queue.put(("models_results", token, models))
+
+    def _apply_models_results(self, token: int, models: List[str]) -> None:
+        """Main thread callback updating the combobox dropdown."""
+        if not self.winfo_exists() or token != self._models_token:
+            return
+
+        self.btn_refresh_models.configure(state=tk.NORMAL, text="⟳ Refresh")
+        self._discovered_models = list(models)
+
+        if models:
+            self.combo_model["values"] = models
+            current = self.combo_model.get().strip()
+            if not current:
+                self.combo_model.set(models[0])
+            self._update_model_status_badge()
+        else:
+            self.lbl_model_status.configure(
+                text="● No models found. Verify daemon is running or pull with 'ollama pull <model>'.",
+                fg=COLOR_TEXT_WARNING,
+            )
+
+    # ── Save & Reset Actions ──────────────────────────────────────────────────
+
+    def _on_save_clicked(self) -> None:
+        """Validates inputs, saves configuration, and updates active AI Coordinator."""
+        raw_url = self.ent_url.get()
+        raw_model = self.combo_model.get()
+        raw_timeout = self.ent_timeout.get()
+        raw_temp = self.ent_temp.get()
+        raw_num_ctx = self.ent_num_ctx.get()
+
+        is_valid, config, errors = SettingsManager.validate_ollama_settings(
+            raw_url, raw_model, raw_timeout, raw_temp, raw_num_ctx
+        )
+
+        if not is_valid or config is None:
+            err_msg = "Validation failed:\n• " + "\n• ".join(errors)
+            self.lbl_banner.configure(text=err_msg, fg=COLOR_TEXT_ERROR)
+            self.badge_status.configure(text="● ERROR", fg=COLOR_TEXT_ERROR)
+            return
+
+        try:
+            # 1. Persist to centralized settings.json
+            self.settings_manager.set_ollama_config(config)
+
+            # 2. Update active AI coordinator
+            if self.coordinator is not None and hasattr(self.coordinator, "update_ai_config"):
+                self.coordinator.update_ai_config(config)
+
+            # 3. Update provider reference
+            self._provider.config = config
+
+            # 4. Refresh desktop status diagnostics
+            if self.app is not None and hasattr(self.app, "refresh_status"):
+                self.app.refresh_status()
+
+            self._has_unsaved_changes = False
+            self.badge_status.configure(text="● SAVED", fg=COLOR_TEXT_SUCCESS)
+            self.lbl_banner.configure(
+                text=f"✓ Settings saved. Active model set to '{config.model}' at {config.base_url}.",
+                fg=COLOR_TEXT_SUCCESS,
+            )
+            self._update_model_status_badge()
+        except Exception as exc:
+            self.lbl_banner.configure(text=f"Error saving settings: {exc}", fg=COLOR_TEXT_ERROR)
+            self.badge_status.configure(text="● ERROR", fg=COLOR_TEXT_ERROR)
+
+    def _on_reset_clicked(self) -> None:
+        """Resets AI parameters to defaults after user confirmation."""
+        confirm = messagebox.askyesno(
+            "Reset Settings",
+            "Reset all Ollama server and model configuration to built-in defaults?\n\n"
+            "(Your saved project workspace directory will remain intact).",
+            parent=self,
+        )
+        if not confirm:
+            return
+
+        try:
+            default_cfg = self.settings_manager.reset_ollama_config()
+
+            if self.coordinator is not None and hasattr(self.coordinator, "update_ai_config"):
+                self.coordinator.update_ai_config(default_cfg)
+
+            self._provider.config = default_cfg
+            self.load_from_settings()
+
+            if self.app is not None and hasattr(self.app, "refresh_status"):
+                self.app.refresh_status()
+
+            self.lbl_banner.configure(text="✓ Reset to defaults completed.", fg=COLOR_TEXT_SUCCESS)
+        except Exception as exc:
+            self.lbl_banner.configure(text=f"Error resetting settings: {exc}", fg=COLOR_TEXT_ERROR)
+
+    def destroy(self) -> None:
+        """Safely terminates polling timers before widget destruction."""
+        self._closing = True
+        if self._queue_poll_id is not None:
+            try:
+                self.after_cancel(self._queue_poll_id)
+            except Exception:
+                pass
+            self._queue_poll_id = None
+        super().destroy()
+
+
 class DiagnosticsDrawer(tk.Frame):
     """Collapsible System Diagnostics Drawer for FLEX 1.0 (Stage 2B).
 
@@ -3124,10 +3837,13 @@ class DiagnosticsDrawer(tk.Frame):
         model_avail = data.get("model_available", False)
         is_inferring = data.get("is_inferring", False)
 
+        base_url = data.get("base_url") or "http://127.0.0.1:11434"
+        clean_endpoint = base_url.replace("http://", "").replace("https://", "").rstrip("/")
+
         if ai_health:
-            self.lbl_ai_daemon.configure(text="● ONLINE (127.0.0.1:11434)", fg=COLOR_TEXT_SUCCESS)
+            self.lbl_ai_daemon.configure(text=f"● ONLINE ({clean_endpoint})", fg=COLOR_TEXT_SUCCESS)
         else:
-            self.lbl_ai_daemon.configure(text="● OFFLINE (ollama serve)", fg=COLOR_TEXT_ERROR)
+            self.lbl_ai_daemon.configure(text=f"● OFFLINE ({clean_endpoint})", fg=COLOR_TEXT_ERROR)
 
         self.lbl_ai_model.configure(text=model, fg=COLOR_TEXT_PRIMARY)
 
@@ -3168,9 +3884,9 @@ class DiagnosticsDrawer(tk.Frame):
         # Card 4: Network
         internet = data.get("internet", False)
         if ai_health:
-            self.lbl_net_local.configure(text="● Reachable (localhost:11434)", fg=COLOR_TEXT_SUCCESS)
+            self.lbl_net_local.configure(text=f"● Reachable ({clean_endpoint})", fg=COLOR_TEXT_SUCCESS)
         else:
-            self.lbl_net_local.configure(text="● Unreachable", fg=COLOR_TEXT_ERROR)
+            self.lbl_net_local.configure(text=f"● Unreachable ({clean_endpoint})", fg=COLOR_TEXT_ERROR)
 
         if internet:
             self.lbl_net_internet.configure(text="● Online (DNS probe)", fg=COLOR_TEXT_SUCCESS)
@@ -3194,12 +3910,17 @@ class FlexDesktopApp:
         coordinator: Optional[AICoordinator] = None,
         storage: Optional[SQLiteConversationStorage] = None,
         workspace_manager: Optional[WorkspaceManager] = None,
+        settings_manager: Optional[SettingsManager] = None,
     ) -> None:
         self.root: tk.Tk = root
         self.root.title("FLEX 1.0 — Core C + Local AI Desktop")
         self.root.geometry("1080x740")
         self.root.minsize(880, 580)
         self.root.configure(bg=COLOR_BG_ROOT)
+
+        self.settings_manager: SettingsManager = (
+            settings_manager if settings_manager is not None else SettingsManager()
+        )
 
         if storage is not None:
             self.storage: Optional[SQLiteConversationStorage] = storage
@@ -3217,7 +3938,8 @@ class FlexDesktopApp:
         if coordinator is not None:
             self.coordinator = coordinator
         else:
-            self.coordinator = AICoordinator(auto_start=True, storage=self.storage)
+            initial_cfg = self.settings_manager.get_ollama_config()
+            self.coordinator = AICoordinator(auto_start=True, storage=self.storage, config=initial_cfg)
 
         self.workspace_manager: WorkspaceManager = (
             workspace_manager if workspace_manager is not None else WorkspaceManager()
@@ -3768,19 +4490,11 @@ class FlexDesktopApp:
                     "All command verification is performed automatically in the Home chat view.",
                 ],
             ),
-            "settings": PrototypeView(
+            "settings": SettingsView(
                 self.view_container,
-                title="Settings & Configuration",
-                icon="⚙️",
-                badge_text="● STATUS: PLANNED FOR STAGE 4",
-                badge_color=COLOR_TEXT_WARNING,
-                description="Configuration panel for local Ollama endpoints, LLM model selection, inference temperature, and visual theme options.",
-                status_explanation="The application currently uses configured defaults (qwen2.5-coder:3b at http://127.0.0.1:11434). A persistent configuration file editor is planned for Stage 4.",
-                unavailable_features=[
-                    "Persistent settings file (config.json) writer is not implemented in Stage 1.",
-                    "Live model switcher dropdown is not active.",
-                    "Theme and font customization are not persistent.",
-                ],
+                coordinator=self.coordinator,
+                settings_manager=self.settings_manager,
+                app=self,
             ),
         }
 
@@ -3838,6 +4552,10 @@ class FlexDesktopApp:
         # Refresh ProjectsView when switching to Projects
         if view_name == "projects" and "projects" in self.views and hasattr(self.views["projects"], "refresh"):
             self.views["projects"].refresh()
+
+        # Refresh SettingsView when switching to Settings
+        if view_name == "settings" and "settings" in self.views and hasattr(self.views["settings"], "load_from_settings"):
+            self.views["settings"].load_from_settings()
 
         # Resume AI Core animation, focus composer, and refresh attachments when returning to Home
         if view_name == "home" and hasattr(self, "chat_view"):
@@ -4269,6 +4987,12 @@ class FlexDesktopApp:
             is_inferring = bool(getattr(self, "chat_view", None) and self.chat_view._busy)
             bridge_pid = getattr(bridge_obj, "pid", None) if is_bridge_running and bridge_obj else None
 
+            base_url = "http://127.0.0.1:11434"
+            if cfg_model and hasattr(cfg_model, "base_url"):
+                base_url = str(cfg_model.base_url)
+            elif hasattr(self.coordinator, "config") and hasattr(self.coordinator.config, "base_url"):
+                base_url = str(self.coordinator.config.base_url)
+
             diagnostics = {
                 "bridge": bridge_status,
                 "bridge_running": is_bridge_running,
@@ -4276,6 +5000,7 @@ class FlexDesktopApp:
                 "ai_health": ai_health,
                 "model": model_name,
                 "model_available": model_avail,
+                "base_url": base_url,
                 "is_inferring": is_inferring,
                 "history_count": history_count,
                 "history_max": history_max,
@@ -4470,6 +5195,16 @@ class FlexDesktopApp:
         model = status.get("model", "qwen2.5-coder:3b")
         model_avail = status.get("model_available", False)
         hist_count = status.get("history_count", 0)
+        base_url = status.get("base_url")
+        if not base_url:
+            provider = getattr(self.coordinator, "provider", None)
+            cfg = getattr(provider, "config", None) if provider else None
+            if cfg and hasattr(cfg, "base_url"):
+                base_url = str(cfg.base_url)
+            elif hasattr(self.coordinator, "config") and hasattr(self.coordinator.config, "base_url"):
+                base_url = str(self.coordinator.config.base_url)
+            else:
+                base_url = "http://127.0.0.1:11434"
 
         diag = {
             "bridge": bridge,
@@ -4478,6 +5213,7 @@ class FlexDesktopApp:
             "ai_health": ai_health,
             "model": model,
             "model_available": model_avail,
+            "base_url": base_url,
             "is_inferring": getattr(self, "chat_view", None) and self.chat_view._busy,
             "history_count": hist_count,
             "history_max": 50,
@@ -4513,6 +5249,15 @@ class FlexDesktopApp:
         self.chat_view._closing = True
         if hasattr(self.chat_view, "cancel_animation"):
             self.chat_view.cancel_animation()
+        if hasattr(self, "views"):
+            for v in self.views.values():
+                if hasattr(v, "_closing"):
+                    v._closing = True
+                if hasattr(v, "destroy") and v != self.chat_view:
+                    try:
+                        v.destroy()
+                    except Exception:
+                        pass
         try:
             self.status_lbl.configure(
                 text="Shutting down C core bridge and terminating...",
