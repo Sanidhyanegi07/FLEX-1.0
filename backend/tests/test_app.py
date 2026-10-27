@@ -572,14 +572,38 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.assertIn("12:34:56", drawer.lbl_timestamp.cget("text"))
 
     def test_diagnostic_failures_and_missing_fields_handled_gracefully(self) -> None:
-        """Verifies that empty or incomplete diagnostic dictionaries do not raise exceptions."""
-        # Empty dict to _apply_diagnostics
+        """Verifies that empty, malformed, or incomplete diagnostic data do not raise exceptions."""
+        # 1. Empty dict to _apply_diagnostics
         self.app._apply_diagnostics({})
         self.assertIn("OFFLINE", self.app.badge_overall_health.cget("text"))
 
-        # Empty dict to legacy _apply_status
+        # 2. Empty dict to legacy _apply_status
         self.app._apply_status({})
         self.assertIsNotNone(self.app.last_diagnostics)
+
+        # 3. None inputs safely ignored without exceptions
+        self.app._apply_diagnostics(None)  # type: ignore[arg-type]
+        self.app._apply_status(None)       # type: ignore[arg-type]
+        state_none, _, _ = FlexDesktopApp.calculate_overall_health(None)  # type: ignore[arg-type]
+        self.assertEqual(state_none, "OFFLINE")
+
+        # 4. Malformed bridge=None in diagnostics
+        malformed_bridge = {
+            "bridge_running": True,
+            "bridge": None,
+            "ai_health": True,
+            "model_available": True,
+        }
+        state_malformed, _, _ = FlexDesktopApp.calculate_overall_health(malformed_bridge)
+        self.assertEqual(state_malformed, "OFFLINE")
+        self.app._apply_diagnostics(malformed_bridge)
+        self.app.diagnostics_drawer.update_diagnostics(malformed_bridge)
+
+        # 5. Non-dict bridge string
+        str_bridge = {"bridge_running": True, "bridge": "invalid_string"}
+        state_str, _, _ = FlexDesktopApp.calculate_overall_health(str_bridge)
+        self.assertEqual(state_str, "OFFLINE")
+        self.app._apply_diagnostics(str_bridge)
 
     def test_no_conflicting_bridge_requests_during_active_chat(self) -> None:
         """Verifies that background telemetry refresh does not send bridge commands while locked."""

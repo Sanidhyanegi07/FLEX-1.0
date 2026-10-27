@@ -1413,8 +1413,9 @@ class DiagnosticsDrawer(tk.Frame):
         self.lbl_timestamp.configure(text=f"Last check: {ts}")
 
         # Card 1: C Core
-        bridge = data.get("bridge", {})
-        bridge_running = data.get("bridge_running", False)
+        bridge_raw = data.get("bridge")
+        bridge = bridge_raw if isinstance(bridge_raw, dict) else {}
+        bridge_running = bool(data.get("bridge_running", False))
         pid = data.get("bridge_pid")
         lifecycle = bridge.get("lifecycle", "FLEX_LIFECYCLE_UNKNOWN")
         active_op = bridge.get("active_operation", "FLEX_OPERATION_NONE")
@@ -2259,15 +2260,22 @@ class FlexDesktopApp:
         Returns:
             Tuple[state_label, text_color, bg_color]
         """
-        bridge_running = bool(diagnostics.get("bridge_running", False))
-        bridge = diagnostics.get("bridge", {})
-        lifecycle = bridge.get("lifecycle", "FLEX_LIFECYCLE_UNKNOWN")
+        if not isinstance(diagnostics, dict):
+            return ("OFFLINE", COLOR_TEXT_ERROR, "#450A0A")
+
+        bridge_raw = diagnostics.get("bridge")
+        bridge = bridge_raw if isinstance(bridge_raw, dict) else {}
+        bridge_running = bool(diagnostics.get("bridge_running", False) and bridge.get("is_running", True))
+        lifecycle = str(bridge.get("lifecycle", "FLEX_LIFECYCLE_UNKNOWN"))
         last_error = bridge.get("last_error", "FLEX_STATE_OK")
         ai_health = bool(diagnostics.get("ai_health", False))
         model_available = bool(diagnostics.get("model_available", False))
 
-        if not bridge_running:
+        if not bridge_running or not bridge:
             return ("OFFLINE", COLOR_TEXT_ERROR, "#450A0A")
+
+        if "error" in bridge:
+            return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
 
         if lifecycle == "FLEX_LIFECYCLE_ERROR" or (last_error not in ("FLEX_STATE_OK", "") and last_error is not None):
             return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
@@ -2441,15 +2449,16 @@ class FlexDesktopApp:
 
     def _apply_diagnostics(self, diagnostics: Dict[str, Any]) -> None:
         """Applies fresh diagnostic telemetry to all UI components."""
-        if self._closing:
+        if self._closing or not isinstance(diagnostics, dict):
             return
 
         self.last_diagnostics = diagnostics
 
         # 1. Update legacy Top Bar Badges for test and backward compatibility
-        bridge = diagnostics.get("bridge", {})
-        is_running = diagnostics.get("bridge_running", False)
-        lifecycle = bridge.get("lifecycle", "UNKNOWN")
+        bridge_raw = diagnostics.get("bridge")
+        bridge = bridge_raw if isinstance(bridge_raw, dict) else {}
+        is_running = bool(diagnostics.get("bridge_running", False))
+        lifecycle = str(bridge.get("lifecycle", "UNKNOWN"))
         pid = diagnostics.get("bridge_pid")
 
         if is_running:
@@ -2568,7 +2577,7 @@ class FlexDesktopApp:
 
     def _apply_status(self, status: Dict[str, Any]) -> None:
         """Backward-compatible telemetry receiver for legacy test callers."""
-        if self._closing:
+        if self._closing or not isinstance(status, dict):
             return
 
         # If status already contains full diagnostics dictionary:
@@ -2577,8 +2586,9 @@ class FlexDesktopApp:
             return
 
         # Synthesize diagnostics structure from raw coordinator status
-        bridge = status.get("bridge", {})
-        is_running = bridge.get("is_running", False) or self.coordinator.is_running
+        bridge_raw = status.get("bridge")
+        bridge = bridge_raw if isinstance(bridge_raw, dict) else {}
+        is_running = bool(bridge.get("is_running", False)) or self.coordinator.is_running
         bridge_obj = getattr(self.coordinator, "bridge", None)
         pid = getattr(bridge_obj, "pid", None) if is_running and bridge_obj else None
         ai_health = status.get("ai_health", False)
