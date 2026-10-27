@@ -114,6 +114,62 @@ class TestFlexDesktopApp(unittest.TestCase):
         """Verifies clean closing of coordinator and window destruction."""
         self.app.on_closing()
         self.mock_coordinator.close.assert_called_once()
+        self.assertTrue(self.app._closing)
+
+    def test_multiple_messages_ignored_when_busy(self) -> None:
+        """Verifies that sending a second message while busy is safely ignored."""
+        self.app._busy = True
+        self.app.txt_input.insert("1.0", "Second message")
+
+        with patch("threading.Thread") as mock_thread:
+            self.app.send_message()
+            mock_thread.assert_not_called()
+
+    def test_on_chat_error_ollama_unavailable(self) -> None:
+        """Verifies graceful handling when Ollama daemon is unreachable."""
+        from backend.ai import AIServiceUnavailableError
+
+        self.app._busy = True
+        exc = AIServiceUnavailableError("Connection refused on 127.0.0.1:11434")
+        self.app._on_chat_error(exc, elapsed=0.05)
+
+        self.assertFalse(self.app._busy)
+        chat_content = self.app.chat_display.get("1.0", tk.END)
+        self.assertIn("Local Ollama daemon is unreachable", chat_content)
+        self.assertIn("ollama serve", chat_content)
+
+    def test_on_chat_error_model_missing(self) -> None:
+        """Verifies graceful handling when requested model is not found."""
+        from backend.ai import AIModelNotFoundError
+
+        self.app._busy = True
+        exc = AIModelNotFoundError("Model 'qwen2.5-coder:3b' not found in local library")
+        self.app._on_chat_error(exc, elapsed=0.08)
+
+        self.assertFalse(self.app._busy)
+        chat_content = self.app.chat_display.get("1.0", tk.END)
+        self.assertIn("Requested model was not found in local Ollama storage", chat_content)
+
+    def test_closing_during_active_request(self) -> None:
+        """Verifies that closing the application during an active turn exits cleanly."""
+        self.app._busy = True
+        self.app.on_closing()
+
+        self.assertTrue(self.app._closing)
+        self.mock_coordinator.close.assert_called_once()
+
+        # Late-arriving worker callback must safely no-op without raising
+        result = CoordinatorChatResult(
+            text="Late text",
+            operation_id=99,
+            command_name="chat",
+            parser_status="FLEX_STATUS_OK",
+            state_status="FLEX_STATE_OK",
+            model="qwen2.5-coder:3b",
+        )
+        self.app._on_chat_success(result, elapsed=1.0)
+        self.app._on_chat_error(RuntimeError("Late error"), elapsed=1.0)
+        self.app._apply_status({})
 
 
 if __name__ == "__main__":

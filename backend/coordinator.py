@@ -147,9 +147,13 @@ class AICoordinator:
 
     def close(self, timeout: float = 2.0) -> None:
         """Closes the underlying C bridge subprocess cleanly."""
-        with self._lock:
+        acquired = self._lock.acquire(timeout=min(timeout, 1.0))
+        try:
             if self.bridge.is_running:
                 self.bridge.close(timeout=timeout)
+        finally:
+            if acquired:
+                self._lock.release()
 
     def __enter__(self) -> "AICoordinator":
         self.start()

@@ -75,6 +75,7 @@ class FlexDesktopApp:
             coordinator if coordinator is not None else AICoordinator(auto_start=True)
         )
         self._busy: bool = False
+        self._closing: bool = False
         self._last_op_id: int = 0
 
         self._setup_styles()
@@ -400,12 +401,16 @@ class FlexDesktopApp:
         try:
             result = self.coordinator.send_chat(text)
             elapsed = time.time() - start_time
-            self.root.after(0, self._on_chat_success, result, elapsed)
+            if not self._closing:
+                self.root.after(0, self._on_chat_success, result, elapsed)
         except Exception as exc:
             elapsed = time.time() - start_time
-            self.root.after(0, self._on_chat_error, exc, elapsed)
+            if not self._closing:
+                self.root.after(0, self._on_chat_error, exc, elapsed)
 
     def _on_chat_success(self, result: CoordinatorChatResult, elapsed: float) -> None:
+        if self._closing:
+            return
         self._last_op_id = result.operation_id
         self.badge_op.configure(text=f"OP #{result.operation_id}", fg=COLOR_TEXT_ACCENT)
 
@@ -431,6 +436,8 @@ class FlexDesktopApp:
         self.refresh_status()
 
     def _on_chat_error(self, exc: Exception, elapsed: float) -> None:
+        if self._closing:
+            return
         self._append_to_chat("\n[FLEX Pipeline Notice]:\n", "error_msg")
 
         if isinstance(exc, CoordinatorDispatchError):
@@ -504,6 +511,8 @@ class FlexDesktopApp:
             logger.debug("Telemetry refresh error: %s", e)
 
     def _apply_status(self, status: Dict[str, Any]) -> None:
+        if self._closing:
+            return
         # 1. Bridge Status
         bridge = status.get("bridge", {})
         is_running = bridge.get("is_running", False) or self.coordinator.is_running
@@ -543,13 +552,22 @@ class FlexDesktopApp:
             )
 
     def on_closing(self) -> None:
-        self.status_lbl.configure(text="Shutting down C core bridge and terminating...", fg=COLOR_TEXT_WARNING)
+        if self._closing:
+            return
+        self._closing = True
+        try:
+            self.status_lbl.configure(text="Shutting down C core bridge and terminating...", fg=COLOR_TEXT_WARNING)
+        except Exception:
+            pass
         try:
             self.coordinator.close(timeout=1.0)
         except Exception as e:
             logger.debug("Error during coordinator close: %s", e)
         finally:
-            self.root.destroy()
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
 
 
 def main() -> None:

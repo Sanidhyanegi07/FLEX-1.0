@@ -99,7 +99,7 @@ Open PowerShell at the project root and run the aggregate build and test script:
 ```powershell
 .\build_test.ps1
 ```
-**Talking Point**: *"Our automated pipeline compiles the C11 core with GCC `-std=c11 -Wall -Wextra -Werror -pedantic`, executes 541 C unit assertions, validates 74 IPC bridge protocol tests, and runs 104 Python unit and integration tests with zero failures."*
+**Talking Point**: *"Our automated pipeline compiles the C11 core with GCC `-std=c11 -Wall -Wextra -Werror -pedantic`, executes 541 C unit assertions, validates 74 IPC bridge protocol tests, and runs 108 Python unit and integration tests with zero failures."*
 
 ### Step 2: Ensure Local Ollama Service is Active
 Check or launch Ollama in a separate terminal:
