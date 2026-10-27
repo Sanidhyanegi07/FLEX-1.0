@@ -15,8 +15,23 @@ from .core_bridge import (
     utf8_byte_length,
 )
 
+from .coordinator import (
+    AICoordinator,
+    CoordinatorChatResult,
+    CoordinatorDispatchError,
+    CoordinatorError,
+    CoordinatorLifecycleError,
+    CoordinatorStateError,
+)
+
 __all__ = [
+    "AICoordinator",
     "BRIDGE_MAX_LINE_BYTES",
+    "CoordinatorChatResult",
+    "CoordinatorDispatchError",
+    "CoordinatorError",
+    "CoordinatorLifecycleError",
+    "CoordinatorStateError",
     "DEFAULT_TIMEOUT",
     "FLEX_MAX_COMMAND_LEN",
     "FLEX_MAX_INPUT_BYTES",
@@ -29,3 +44,4 @@ __all__ = [
     "resolve_bridge_path",
     "utf8_byte_length",
 ]
+

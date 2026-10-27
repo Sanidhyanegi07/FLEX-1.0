@@ -193,6 +193,16 @@ int main(void)
             line_buf[--len] = '\0';
         }
 
+        char *action_line = line_buf;
+        /* Strip leading UTF-8 BOM (0xEF, 0xBB, 0xBF) if present (e.g. from Windows/PowerShell pipes) */
+        if (len >= 3 &&
+            (unsigned char)action_line[0] == 0xEF &&
+            (unsigned char)action_line[1] == 0xBB &&
+            (unsigned char)action_line[2] == 0xBF) {
+            action_line += 3;
+            len -= 3;
+        }
+
         /* Skip empty lines */
         if (len == 0) {
             print_json_error("EMPTY_REQUEST", "Request line is empty");
@@ -200,18 +210,18 @@ int main(void)
         }
 
         /* Parse action */
-        if (strncmp(line_buf, "DISPATCH", 8) == 0) {
-            if (line_buf[8] != '\t') {
+        if (strncmp(action_line, "DISPATCH", 8) == 0) {
+            if (action_line[8] != '\t') {
                 print_json_error("MALFORMED_REQUEST", "DISPATCH requires <TAB> separator before command");
                 continue;
             }
-            const char *command = line_buf + 9;
+            const char *command = action_line + 9;
             handle_dispatch(&state, command);
-        } else if (strcmp(line_buf, "FINISH") == 0) {
+        } else if (strcmp(action_line, "FINISH") == 0) {
             handle_finish(&state);
-        } else if (strcmp(line_buf, "STATUS") == 0) {
+        } else if (strcmp(action_line, "STATUS") == 0) {
             handle_status(&state);
-        } else if (strcmp(line_buf, "RESET_ERROR") == 0) {
+        } else if (strcmp(action_line, "RESET_ERROR") == 0) {
             handle_reset_error(&state);
         } else {
             print_json_error("UNKNOWN_ACTION", "Supported actions: DISPATCH, FINISH, STATUS, RESET_ERROR");

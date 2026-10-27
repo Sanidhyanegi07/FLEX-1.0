@@ -5,8 +5,8 @@
 FLEX 1.0 is designed as a hybrid native-core assistant system. The foundational core is implemented in portable, strict C11 (`core-c/`) for deterministic state tracking, command syntax normalization, and memory safety without dynamic heap allocations. Communicating over a line-based standard input/output (IPC) bridge, the Python client (`backend/core_bridge.py`) manages the native process lifecycle and provides a robust, Pythonic interface for higher-level application components.
 
 > [!NOTE]
-> **Stage 1E.4 Scope Notice**:
-> Command dispatch currently confirms syntactic parsing and orchestrator state transitions in the C core. Command execution does **not** currently perform AI inference, local model generation, voice synthesis/capture, or database storage. Those components belong to subsequent development stages.
+> **Stage 1F Completed Scope**:
+> Command dispatch is fully integrated into the live AI inference pipeline. Dispatched chat commands transition the C core from `IDLE` to `PROCESSING`, trigger local Ollama inference (`qwen2.5-coder:3b`), and guarantee valid C state cleanup back to `IDLE` via `backend/coordinator.py`. The system is controllable via the desktop client (`main.py` / `backend/app.py`).
 
 ---
 
@@ -14,8 +14,14 @@ FLEX 1.0 is designed as a hybrid native-core assistant system. The foundational 
 
 ```mermaid
 graph TD
+    subgraph PresentationLayer ["Desktop Presentation Layer"]
+        DesktopApp["Desktop App (main.py / backend/app.py)"]
+    end
+
     subgraph PythonLayer ["Python Backend Layer"]
-        App["Application / Orchestration"]
+        Coord["AICoordinator (backend/coordinator.py)"]
+        History["InMemoryConversationHistory (backend/ai/history.py)"]
+        Ollama["OllamaProvider (backend/ai/ollama_provider.py)"]
         Client["FlexBridgeClient (backend/core_bridge.py)"]
         ReaderOut["Stdout Reader Thread (Queue)"]
         ReaderErr["Stderr Reader Thread (Diagnostics)"]
@@ -32,7 +38,15 @@ graph TD
         StateManager["state_manager.c (Lifecycle & Ops)"]
     end
 
-    App -->|"dispatch(), finish(), get_status()"| Client
+    subgraph LocalAI ["Local Inference Daemon"]
+        OllamaDaemon["Ollama Service (http://127.0.0.1:11434)"]
+    end
+
+    DesktopApp -->|"send_chat()"| Coord
+    Coord -->|"dispatch(), finish()"| Client
+    Coord -->|"generate()"| Ollama
+    Ollama -->|"HTTP POST /api/chat"| OllamaDaemon
+    Coord -->|"add_message()"| History
     Client -->|"stdin (DISPATCH\t<cmd>\n)"| BridgeMain
     BridgeMain -->|"Calls flex_dispatch_command()"| Orchestrator
     Orchestrator -->|"Parses input"| Parser
@@ -41,7 +55,8 @@ graph TD
     JSONEsc -->|"stdout (JSON\n)"| ReaderOut
     BridgeMain -->|"stderr (Diagnostics\n)"| ReaderErr
     ReaderOut -->|"queue.get()"| Client
-    Client -->|"Returns Dict"| App
+    Client -->|"Returns Dict"| Coord
+    Coord -->|"CoordinatorChatResult"| DesktopApp
 ```
 
 ### Module Responsibilities
@@ -51,8 +66,12 @@ graph TD
 | **Command Parser** | C11 ([`core-c/src/command_parser.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/command_parser.c)) | Validates command verbs, trims whitespace, extracts arguments, normalizes command names, and enforces bounds (`FLEX_MAX_INPUT_LEN = 1024`). Zero dynamic heap allocations. |
 | **State Manager** | C11 ([`core-c/src/state_manager.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/state_manager.c)) | Enforces the application lifecycle (`IDLE`, `PROCESSING`, `STOPPING`), tracks the active operation (`NONE`, `CHAT`, `VOICE`, `MEMORY`), assigns monotonic 64-bit operation IDs, and protects against invalid transitions. |
 | **Orchestrator** | C11 ([`core-c/src/orchestrator.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/orchestrator.c)) | Combines parser and state manager into an atomic dispatch routine. Evaluates syntax first; transitions state only if syntax is valid and state permits. Rejects concurrent operations while busy. |
-| **Bridge Executable** | C11 ([`core-c/src/bridge_main.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/bridge_main.c)) | Standalone executable (`flex_bridge.exe`). Reads line-based requests from `stdin`, runs orchestrator actions, drains oversized lines, serializes responses to JSON on `stdout`, and isolates diagnostics to `stderr`. |
+| **Bridge Executable** | C11 ([`core-c/src/bridge_main.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/bridge_main.c)) | Standalone executable (`flex_bridge.exe`). Reads line-based requests from `stdin`, runs orchestrator actions, drains oversized lines, strips UTF-8 BOM, serializes responses to JSON on `stdout`, and isolates diagnostics to `stderr`. |
 | **Bridge Client** | Python ([`backend/core_bridge.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/core_bridge.py)) | Manages the persistent subprocess (`subprocess.Popen`), runs background reader threads, enforces bounded timeouts, decodes JSON responses, and exposes clean Python APIs and context managers. |
+| **AI Coordinator** | Python ([`backend/coordinator.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/coordinator.py)) | Guarantees C dispatch succeeds before AI inference begins, enforces thread-safe RLock serialization, guarantees C state cleanup via `finally`, and preserves primary inference errors. |
+| **Ollama Provider** | Python ([`backend/ai/ollama_provider.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/ai/ollama_provider.py)) | Performs local LLM chat completions (`qwen2.5-coder:3b`) using Python standard library `urllib.request`. Zero third-party dependencies. |
+| **Desktop Application** | Python ([`backend/app.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/app.py), [`main.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/main.py)) | Space-inspired dark desktop GUI (Tkinter) featuring live C Core + Ollama telemetry, background worker threads, and live C operation metadata tags. |
+
 
 ---
 
