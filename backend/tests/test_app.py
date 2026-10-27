@@ -1275,6 +1275,38 @@ class TestFlexDesktopAppStage2CMemoryView(unittest.TestCase):
         badge_text = mem_view.badge_storage.cget("text")
         self.assertIn("IN-MEMORY FALLBACK", badge_text)
 
+    def test_rename_conversation_rejects_empty_whitespace_title(self) -> None:
+        """Verifies whitespace or empty titles are rejected with a warning and preserved unchanged."""
+        cid = self.storage.create_conversation("Original Title")
+        self.storage.save_message(cid, role="user", content="Test message")
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+        mem_view.select_conversation(cid)
+
+        with patch("tkinter.simpledialog.askstring", return_value="   "), \
+             patch("tkinter.messagebox.showwarning") as mock_warn:
+            mem_view._on_rename_clicked()
+            mock_warn.assert_called_once()
+
+        self.assertEqual(self.storage.get_conversation(cid).title, "Original Title")
+
+    def test_search_stale_token_ignored(self) -> None:
+        """Verifies stale background search results with outdated tokens do not overwrite current view."""
+        c1 = self.storage.create_conversation("Current Topic")
+        self.storage.save_message(c1, role="user", content="Hello")
+        c2 = self.storage.create_conversation("Old Stale Topic")
+        self.storage.save_message(c2, role="user", content="World")
+
+        mem_view: MemoryView = self.app.views["memory"]
+        mem_view.refresh()
+
+        # Current search token is set to 10
+        mem_view._search_token = 10
+        stale_records = [self.storage.get_conversation(c2)]
+        # Result from older search (token 9) should be rejected
+        mem_view._apply_search_results(token=9, convs=stale_records)
+        self.assertEqual(len(mem_view._card_widgets), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

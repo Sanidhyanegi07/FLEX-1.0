@@ -1358,6 +1358,8 @@ class MemoryView(tk.Frame):
         self._search_query: str = ""
         self._card_widgets: Dict[str, tk.Frame] = {}
         self._search_has_focus: bool = False
+        self._search_token: int = 0
+        self._search_timer: Optional[str] = None
 
         self._build_ui()
 
@@ -1378,14 +1380,14 @@ class MemoryView(tk.Frame):
         )
         lbl_title.pack(anchor="w")
 
-        lbl_sub = tk.Label(
+        self.lbl_sub = tk.Label(
             title_box,
             text="Persistent SQLite Conversation History & Context Recall (Stage 2C)",
             font=("Segoe UI", 8),
             fg=COLOR_TEXT_MUTED,
             bg=COLOR_BG_PANEL,
         )
-        lbl_sub.pack(anchor="w")
+        self.lbl_sub.pack(anchor="w")
 
         # Telemetry & Status Badges (Right side of header)
         badges_box = tk.Frame(header_frame, bg=COLOR_BG_PANEL)
@@ -1723,9 +1725,62 @@ class MemoryView(tk.Frame):
             self._search_query = val.strip()
         else:
             self._search_query = ""
-        self._populate_conversation_list()
+
+        if self._search_timer is not None:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
+
+        self._search_timer = self.after(100, self._trigger_async_search)
+
+    def _trigger_async_search(self) -> None:
+        self._search_timer = None
+        self._search_token += 1
+        token = self._search_token
+        query = self._search_query
+
+        def worker() -> None:
+            storage = self.storage or getattr(self.coordinator, "storage", None)
+            if storage is None:
+                results: List[ConversationRecord] = []
+            else:
+                try:
+                    if query:
+                        results = storage.search_conversations(query, limit=50, filter_empty=True)
+                    else:
+                        all_c = storage.list_conversations(limit=50)
+                        results = [
+                            c for c in all_c
+                            if storage.get_message_count(c.id) > 0 or c.title != "New Chat"
+                        ]
+                except Exception as exc:
+                    logger.error("Error during background search: %s", exc)
+                    results = []
+
+            # Only post if token still matches (prevents stale search races)
+            if self.winfo_exists() and token == self._search_token:
+                try:
+                    self.after(0, lambda: self._apply_search_results(token, results))
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_search_results(self, token: int, convs: List[ConversationRecord]) -> None:
+        if not self.winfo_exists() or token != self._search_token:
+            return
+        self._render_cards_and_detail(convs)
 
     def _clear_search(self) -> None:
+        if self._search_timer is not None:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
+        self._search_token += 1
         self.search_entry.delete(0, tk.END)
         self._search_query = ""
         self._on_search_focus_out()
@@ -1747,13 +1802,21 @@ class MemoryView(tk.Frame):
         if storage is None:
             self.badge_storage.configure(text="● EPHEMERAL MODE", fg=COLOR_TEXT_ERROR)
             self.badge_metrics.configure(text="Storage Uninitialized")
+            if hasattr(self, "lbl_sub") and self.lbl_sub.winfo_exists():
+                self.lbl_sub.configure(text="Ephemeral in-memory session (No SQLite persistence configured)")
             self._populate_empty_list("No persistent storage configured (Ephemeral Mode).")
             return
 
+        db_path = getattr(storage, "db_path", "conversations.db")
         if getattr(storage, "is_degraded", False):
             self.badge_storage.configure(text="● IN-MEMORY FALLBACK", fg=COLOR_TEXT_WARNING)
+            if hasattr(self, "lbl_sub") and self.lbl_sub.winfo_exists():
+                err_msg = getattr(storage, "storage_error", "Degraded")
+                self.lbl_sub.configure(text=f"Degraded In-Memory Fallback ({err_msg})")
         else:
             self.badge_storage.configure(text="● SQLITE ACTIVE (WAL)", fg=COLOR_TEXT_SUCCESS)
+            if hasattr(self, "lbl_sub") and self.lbl_sub.winfo_exists():
+                self.lbl_sub.configure(text=f"SQLite Database: {db_path}")
 
         try:
             total_convs = storage.get_conversation_count(filter_empty=True)
@@ -1769,10 +1832,14 @@ class MemoryView(tk.Frame):
         self._populate_conversation_list()
 
     def _populate_conversation_list(self) -> None:
-        for widget in self.scroll_content.winfo_children():
-            widget.destroy()
-        self._card_widgets.clear()
+        if self._search_timer is not None:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
 
+        self._search_token += 1
         storage = self.storage or getattr(self.coordinator, "storage", None)
         if storage is None:
             self._populate_empty_list("No persistent storage active.")
@@ -1795,6 +1862,14 @@ class MemoryView(tk.Frame):
             self._populate_empty_list(f"Database query error: {exc}")
             return
 
+        self._render_cards_and_detail(convs)
+
+    def _render_cards_and_detail(self, convs: List[ConversationRecord]) -> None:
+        for widget in self.scroll_content.winfo_children():
+            widget.destroy()
+        self._card_widgets.clear()
+
+        storage = self.storage or getattr(self.coordinator, "storage", None)
         self.lbl_list_count.configure(text=str(len(convs)))
 
         if not convs:
@@ -1813,10 +1888,11 @@ class MemoryView(tk.Frame):
             is_active = (c.id == active_cid)
             is_selected = (c.id == self.selected_cid)
             msg_count = 0
-            try:
-                msg_count = storage.get_message_count(c.id)
-            except Exception:
-                pass
+            if storage is not None:
+                try:
+                    msg_count = storage.get_message_count(c.id)
+                except Exception:
+                    pass
 
             card = tk.Frame(
                 self.scroll_content,
@@ -1928,9 +2004,12 @@ class MemoryView(tk.Frame):
 
         conv = None
         messages = []
+        total_msg_count = 0
         try:
             conv = storage.get_conversation(cid)
-            messages = storage.get_messages(cid)
+            total_msg_count = storage.get_message_count(cid)
+            # Limit transcript to most recent 500 messages to prevent UI lock on large logs
+            messages = storage.get_messages(cid, limit=500)
         except Exception as exc:
             logger.error("Error loading conversation %s: %s", cid, exc)
 
@@ -1945,8 +2024,10 @@ class MemoryView(tk.Frame):
         self.lbl_detail_title.configure(text=conv.title)
         up_str = conv.updated_at[:19].replace("T", " ") if len(conv.updated_at) >= 19 else conv.updated_at
         cr_str = conv.created_at[:19].replace("T", " ") if len(conv.created_at) >= 19 else conv.created_at
+        shown_count = len(messages)
+        count_str = f"{total_msg_count} messages" if total_msg_count == shown_count else f"{total_msg_count} messages (showing latest {shown_count})"
         self.lbl_detail_meta.configure(
-            text=f"UUID: {conv.id}  •  Updated: {up_str}  •  Created: {cr_str}  •  {len(messages)} messages"
+            text=f"UUID: {conv.id}  •  Updated: {up_str}  •  Created: {cr_str}  •  {count_str}"
         )
 
         self.txt_transcript.configure(state=tk.NORMAL)
@@ -1959,6 +2040,12 @@ class MemoryView(tk.Frame):
                 "system_msg",
             )
         else:
+            if total_msg_count > shown_count:
+                self.txt_transcript.insert(
+                    tk.END,
+                    f"── Showing latest {shown_count} of {total_msg_count} messages (earlier messages archived in SQLite) ──\n\n",
+                    "system_msg",
+                )
             for msg in messages:
                 if msg.role == "user":
                     self.txt_transcript.insert(tk.END, f"\nUser:\n", "user_hdr")
@@ -2017,9 +2104,17 @@ class MemoryView(tk.Frame):
             initialvalue=conv.title,
             parent=self,
         )
-        if new_title and new_title.strip():
+        if new_title is not None:
+            clean_title = new_title.strip()
+            if not clean_title:
+                messagebox.showwarning(
+                    "Invalid Title",
+                    "Conversation title cannot be empty or whitespace only.",
+                    parent=self,
+                )
+                return
             try:
-                storage.update_conversation_title(self.selected_cid, new_title.strip())
+                storage.update_conversation_title(self.selected_cid, clean_title)
                 self.refresh()
                 if self.app and hasattr(self.app, "_refresh_recent_chats"):
                     self.app._refresh_recent_chats()
