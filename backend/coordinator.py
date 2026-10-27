@@ -173,11 +173,16 @@ class AICoordinator:
             return self
 
     def close(self, timeout: float = 2.0) -> None:
-        """Closes the underlying C bridge subprocess cleanly."""
+        """Closes the underlying C bridge subprocess and persistent storage cleanly."""
         acquired = self._lock.acquire(timeout=min(timeout, 1.0))
         try:
             if self.bridge.is_running:
                 self.bridge.close(timeout=timeout)
+            if self.storage is not None:
+                try:
+                    self.storage.close()
+                except Exception as e:
+                    logger.debug("Error closing storage in coordinator: %s", e)
         finally:
             if acquired:
                 self._lock.release()
@@ -396,11 +401,13 @@ class AICoordinator:
                 prompt_for_ai = "Hello"
 
             # 4. If storage is enabled, persist user message once C core accepted dispatch
+            # Pin target_cid to ensure assistant response writes to the exact same conversation
+            target_cid = self._active_conversation_id
             user_saved = False
-            if self.storage is not None and self._active_conversation_id:
+            if self.storage is not None and target_cid:
                 try:
                     self.storage.save_message(
-                        conversation_id=self._active_conversation_id,
+                        conversation_id=target_cid,
                         role="user",
                         content=prompt_for_ai,
                         auto_title=True,
@@ -427,7 +434,7 @@ class AICoordinator:
                 )
             except Exception as exc:
                 inference_error = exc
-                if user_saved:
+                if user_saved and self._active_conversation_id == target_cid:
                     self.history.add_user_message(prompt_for_ai)
                 raise
             finally:
@@ -459,13 +466,14 @@ class AICoordinator:
 
             # 6. Inference and cleanup both succeeded: record to history and return result
             assert llm_response is not None
-            self.history.add_user_message(prompt_for_ai)
-            self.history.add_assistant_message(llm_response.text)
+            if self._active_conversation_id == target_cid:
+                self.history.add_user_message(prompt_for_ai)
+                self.history.add_assistant_message(llm_response.text)
 
-            if self.storage is not None and self._active_conversation_id:
+            if self.storage is not None and target_cid:
                 try:
                     self.storage.save_message(
-                        conversation_id=self._active_conversation_id,
+                        conversation_id=target_cid,
                         role="assistant",
                         content=llm_response.text,
                         model=llm_response.model,
@@ -487,6 +495,6 @@ class AICoordinator:
                 model=llm_response.model,
                 raw_response=llm_response.raw_response,
                 total_duration_ns=llm_response.total_duration_ns,
-                conversation_id=self._active_conversation_id,
+                conversation_id=target_cid,
                 storage_status=self.last_storage_status,
             )

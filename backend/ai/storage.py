@@ -177,12 +177,27 @@ class SQLiteConversationStorage:
         try:
             self._conn = self._create_connection(self._current_path)
             self._apply_migrations(self._conn)
+        except StorageInitError as init_err:
+            logger.error("Schema initialization error for %s: %s", target_path, init_err)
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+            self._fallback_to_memory(str(init_err))
         except sqlite3.DatabaseError as db_err:
             logger.error("Database initialization error for %s: %s", target_path, db_err)
             # Safe corruption quarantine: preserve original corrupt file and switch to in-memory
             self._quarantine_and_fallback(target_path, db_err)
         except Exception as exc:
             logger.error("Unexpected storage initialization error: %s", exc)
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
             self._fallback_to_memory(f"Unexpected error: {exc}")
 
     def _create_connection(self, path: str) -> sqlite3.Connection:
@@ -211,13 +226,6 @@ class SQLiteConversationStorage:
 
     def _quarantine_and_fallback(self, corrupt_path: str, error: Exception) -> None:
         """Preserves a corrupt database by copying it aside and activates in-memory fallback."""
-        if self._conn is not None:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
-
         quarantine_path: Optional[str] = None
         if corrupt_path != ":memory:" and os.path.exists(corrupt_path):
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -229,6 +237,32 @@ class SQLiteConversationStorage:
                 )
             except Exception as copy_err:
                 logger.error("Could not quarantine corrupt database: %s", copy_err)
+
+            # Quarantine WAL and SHM sidecars before closing connection,
+            # as SQLite may unlink or truncate the WAL file during connection cleanup.
+            for sidecar_ext in ("-wal", "-shm"):
+                sidecar_path = corrupt_path + sidecar_ext
+                if os.path.exists(sidecar_path):
+                    try:
+                        shutil.copy2(sidecar_path, f"{quarantine_path}{sidecar_ext}")
+                        logger.warning(
+                            "Corrupt database sidecar preserved to quarantine: %s%s",
+                            quarantine_path,
+                            sidecar_ext,
+                        )
+                    except Exception as sidecar_err:
+                        logger.error(
+                            "Could not quarantine sidecar %s: %s",
+                            sidecar_path,
+                            sidecar_err,
+                        )
+
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
 
         msg = f"Database corrupted ({error}). Preserved original. Operating in temporary in-memory mode."
         self._fallback_to_memory(msg)
@@ -263,6 +297,11 @@ class SQLiteConversationStorage:
                 cur = conn.execute("SELECT MAX(version) FROM schema_version;")
                 row = cur.fetchone()
                 current_ver = row[0] if (row and row[0] is not None) else 0
+
+                if current_ver > CURRENT_SCHEMA_VERSION:
+                    raise StorageInitError(
+                        f"Database schema version {current_ver} is newer than supported version {CURRENT_SCHEMA_VERSION}."
+                    )
 
                 if current_ver < 1:
                     # Version 1 schema: conversations & messages

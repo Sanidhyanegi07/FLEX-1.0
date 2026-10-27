@@ -449,6 +449,89 @@ class TestAICoordinatorPersistence(unittest.TestCase):
         self.assertEqual(len(c2_hist), 1)
         self.assertEqual(c2_hist[0].content, "C2 User Msg")
 
+    def test_storage_assistant_persistence_failure_falls_back_to_memory_only(self) -> None:
+        """Verifies storage failure on assistant message does not abort request and reports MEMORY_ONLY."""
+        real_save = self.storage.save_message
+        call_count = 0
+
+        def failing_save(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if kwargs.get("role") == "assistant" or (len(args) > 1 and args[1] == "assistant"):
+                raise Exception("Simulated disk error on assistant message")
+            return real_save(*args, **kwargs)
+
+        self.storage.save_message = MagicMock(side_effect=failing_save)
+
+        result = self.coordinator.send_chat("Test assistant write failure")
+
+        self.assertEqual(result.storage_status, "MEMORY_ONLY")
+        self.assertIn("Simulated disk error", self.coordinator.last_storage_error or "")
+        self.assertEqual(result.text, "Persistence stores messages to SQLite.")
+        # User message was saved to storage before failure
+        self.assertEqual(call_count, 2)
+
+    def test_conversation_switching_while_request_running_pins_conversation(self) -> None:
+        """Verifies that if active conversation is changed during inference, the turn remains pinned to the starting conversation."""
+        c1 = self.coordinator.active_conversation_id
+        c2 = self.storage.create_conversation("Conversation 2")
+
+        # Simulate conversation switch happening inside generate()
+        def switch_mid_flight(*args: Any, **kwargs: Any) -> LLMResponse:
+            # Switch the active conversation on the coordinator directly
+            self.coordinator._active_conversation_id = c2
+            return LLMResponse(
+                text="Response meant for C1.",
+                model="qwen2.5-coder:3b",
+                total_duration_ns=1000,
+            )
+
+        self.mock_provider.generate.side_effect = switch_mid_flight
+
+        result = self.coordinator.send_chat("Question for C1")
+
+        # Result is pinned to C1, not C2
+        self.assertEqual(result.conversation_id, c1)
+
+        # Both user and assistant messages for the turn are saved in C1
+        c1_msgs = self.storage.get_messages(c1)
+        self.assertEqual(len(c1_msgs), 2)
+        self.assertEqual(c1_msgs[0].content, "Question for C1")
+        self.assertEqual(c1_msgs[1].content, "Response meant for C1.")
+
+        # C2 has NO messages (no contamination!)
+        c2_msgs = self.storage.get_messages(c2)
+        self.assertEqual(len(c2_msgs), 0)
+
+    def test_create_new_chat_after_failed_request(self) -> None:
+        """Verifies creating a new chat after an inference failure functions without leftover error state."""
+        self.mock_provider.generate.side_effect = AIServiceUnavailableError("Server down")
+        with self.assertRaises(AIServiceUnavailableError):
+            self.coordinator.send_chat("Failed message")
+
+        # Create new chat
+        new_cid = self.coordinator.create_new_conversation("Recovery Chat")
+        self.assertEqual(self.coordinator.active_conversation_id, new_cid)
+        self.assertEqual(len(self.coordinator.history.get_messages()), 0)
+
+        # Now configure provider to succeed
+        self.mock_provider.generate.side_effect = None
+        self.mock_provider.generate.return_value = LLMResponse(
+            text="Recovered successfully.",
+            model="qwen2.5-coder:3b",
+            total_duration_ns=1000,
+        )
+
+        result = self.coordinator.send_chat("Are you working?")
+        self.assertEqual(result.conversation_id, new_cid)
+        self.assertEqual(result.text, "Recovered successfully.")
+
+    def test_coordinator_close_closes_storage(self) -> None:
+        """Verifies coordinator.close() cleanly closes storage connection."""
+        self.assertIsNotNone(self.storage._conn)
+        self.coordinator.close()
+        self.assertIsNone(self.storage._conn)
+
 
 if __name__ == "__main__":
     unittest.main()

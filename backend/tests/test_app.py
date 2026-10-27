@@ -768,6 +768,69 @@ class TestFlexDesktopAppPersistence(unittest.TestCase):
         self.app.on_closing()
         mock_storage.close.assert_called_once()
 
+    def test_new_chat_and_load_ignored_when_busy(self) -> None:
+        """Verifies new_chat and load_conversation no-op when app._busy is True."""
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+        self.app._busy = True
+
+        self.app.new_chat()
+        self.mock_coordinator.create_new_conversation.assert_not_called()
+
+        self.app.load_conversation("some-cid")
+        self.mock_coordinator.set_active_conversation.assert_not_called()
+
+    def test_switching_to_empty_conversation_clears_transcript(self) -> None:
+        """Verifies switching from a conversation with messages to an empty conversation clears the transcript."""
+        c1 = self.storage.create_conversation("Topic 1")
+        self.storage.save_message(c1, role="user", content="Question 1")
+        c2 = self.storage.create_conversation("Empty Topic 2")
+
+        def mock_set_active(conv_id: str, sync_history: bool = True) -> None:
+            self.mock_coordinator.active_conversation_id = conv_id
+
+        self.mock_coordinator.set_active_conversation.side_effect = mock_set_active
+        self.mock_coordinator.active_conversation_id = c1
+
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+
+        # Confirm Question 1 is visible initially
+        rendered_initial = self.app.chat_display.get("1.0", tk.END)
+        self.assertIn("Question 1", rendered_initial)
+
+        # Switch to Empty Topic 2
+        self.app.load_conversation(c2)
+        rendered_after = self.app.chat_display.get("1.0", tk.END)
+        self.assertNotIn("Question 1", rendered_after)
+        self.assertIn("FLEX 1.0 System Initialized", rendered_after)
+
+    def test_on_closing_while_busy_terminates_cleanly(self) -> None:
+        """Verifies on_closing handles a running worker cleanly without crashing."""
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+        self.app._busy = True
+        self.app.on_closing()
+        self.assertTrue(self.app._closing)
+
+    def test_chat_success_for_non_active_conversation_does_not_append_to_ui(self) -> None:
+        """Verifies that if a chat success response arrives for an inactive conversation, UI does not append."""
+        from backend.coordinator import CoordinatorChatResult
+        self.app = FlexDesktopApp(self.root, coordinator=self.mock_coordinator, storage=self.storage)
+        self.mock_coordinator.active_conversation_id = "active-cid-123"
+
+        stale_result = CoordinatorChatResult(
+            text="Stale response text that should not appear.",
+            operation_id=99,
+            command_name="chat",
+            parser_status="FLEX_STATUS_OK",
+            state_status="FLEX_STATE_OK",
+            model="qwen2.5-coder:3b",
+            conversation_id="other-cid-456",
+            storage_status="PERSISTED",
+        )
+
+        self.app.chat_view._on_chat_success(stale_result, 1.0)
+        rendered = self.app.chat_display.get("1.0", tk.END)
+        self.assertNotIn("Stale response text that should not appear.", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

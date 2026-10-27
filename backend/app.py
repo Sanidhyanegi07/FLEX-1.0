@@ -923,6 +923,16 @@ class ChatView(tk.Frame):
         if self.app and hasattr(self.app, "badge_op") and self.app.badge_op.winfo_exists():
             self.app.badge_op.configure(text=f"OP #{result.operation_id}", fg=COLOR_TEXT_ACCENT)
 
+        active_cid = getattr(self.coordinator, "active_conversation_id", None)
+        if result.conversation_id and active_cid and result.conversation_id != active_cid:
+            logger.info("Ignoring UI append for non-active conversation %s", result.conversation_id)
+            self._reset_input_state()
+            if self.app and hasattr(self.app, "refresh_status"):
+                self.app.refresh_status()
+            if self.app and hasattr(self.app, "_refresh_recent_chats"):
+                self.app._refresh_recent_chats()
+            return
+
         if hasattr(self, "ai_core"):
             self.ai_core.set_state(AICoreVisualizer.STATE_RESPONDING)
 
@@ -957,6 +967,13 @@ class ChatView(tk.Frame):
         try:
             messages = storage.get_messages(conversation_id)
             if not messages:
+                self.chat_display.configure(state=tk.NORMAL)
+                self.chat_display.delete("1.0", tk.END)
+                self._display_welcome_banner()
+                self.chat_display.configure(state=tk.DISABLED)
+                if hasattr(self, "ai_core"):
+                    self.ai_core.set_compact_mode(False)
+                    self.ai_core.set_state(AICoreVisualizer.STATE_IDLE)
                 return
             self.chat_display.configure(state=tk.NORMAL)
             self.chat_display.delete("1.0", tk.END)
@@ -2252,6 +2269,8 @@ class FlexDesktopApp:
 
     def new_chat(self) -> None:
         """Creates a new conversation in storage, clears transcript, and returns immediately to Home."""
+        if self._busy:
+            return
         try:
             if hasattr(self.coordinator, "create_new_conversation"):
                 self.coordinator.create_new_conversation()

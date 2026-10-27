@@ -342,6 +342,69 @@ class TestSQLiteStorageUnit(unittest.TestCase):
             if orig_env is not None:
                 os.environ["FLEX_DB_PATH"] = orig_env
 
+    def test_unsupported_future_schema_version_falls_back(self) -> None:
+        """Verifies that a database with a future unsupported schema version falls back to memory mode."""
+        future_db = os.path.join(self.temp_dir, "future_schema.db")
+        conn = sqlite3.connect(future_db)
+        conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT);")
+        conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (999, '2099-01-01T00:00:00Z');")
+        conn.commit()
+        conn.close()
+
+        storage = SQLiteConversationStorage(db_path=future_db)
+        try:
+            self.assertTrue(storage.is_degraded)
+            self.assertIsNotNone(storage.storage_error)
+            self.assertIn("newer than supported version", storage.storage_error or "")
+            self.assertEqual(storage.db_path, ":memory:")
+            # Functional in memory
+            cid = storage.create_conversation("Safe In Memory")
+            self.assertTrue(bool(cid))
+        finally:
+            storage.close()
+
+    def test_corruption_quarantines_wal_and_shm_sidecars(self) -> None:
+        """Verifies that WAL and SHM sidecars are quarantined alongside the corrupt database file."""
+        corrupt_db = os.path.join(self.temp_dir, "corrupt_with_wal.db")
+        wal_file = f"{corrupt_db}-wal"
+        shm_file = f"{corrupt_db}-shm"
+
+        with open(corrupt_db, "wb") as f:
+            f.write(b"CORRUPT DB FILE HEADER")
+        with open(wal_file, "wb") as f:
+            f.write(b"WAL FILE DATA")
+        with open(shm_file, "wb") as f:
+            f.write(b"SHM FILE DATA")
+
+        storage = SQLiteConversationStorage(db_path=corrupt_db)
+        try:
+            self.assertTrue(storage.is_degraded)
+            self.assertEqual(storage.db_path, ":memory:")
+
+            # Check that quarantine file and its sidecars exist
+            quarantines = [
+                f for f in os.listdir(self.temp_dir)
+                if "corrupt_with_wal.db.corrupt" in f
+            ]
+            self.assertTrue(len(quarantines) >= 1)
+            quarantine_wal = [f for f in quarantines if f.endswith("-wal")]
+            quarantine_shm = [f for f in quarantines if f.endswith("-shm")]
+            self.assertEqual(len(quarantine_wal), 1)
+            self.assertEqual(len(quarantine_shm), 1)
+        finally:
+            storage.close()
+
+    def test_busy_timeout_and_wal_pragma_configured(self) -> None:
+        """Verifies that WAL mode and busy timeout are set on file-backed database."""
+        with self.storage._lock:
+            cur = self.storage._conn.execute("PRAGMA journal_mode;")
+            mode = cur.fetchone()[0]
+            self.assertEqual(mode.lower(), "wal")
+
+            cur = self.storage._conn.execute("PRAGMA busy_timeout;")
+            timeout = cur.fetchone()[0]
+            self.assertEqual(timeout, 5000)
+
 
 if __name__ == "__main__":
     unittest.main()
