@@ -401,6 +401,12 @@ class AICoordinator:
                 prompt_for_ai = "Hello"
 
             # 4. If storage is enabled, persist user message once C core accepted dispatch
+            if self.storage is not None and not self._active_conversation_id:
+                try:
+                    self._active_conversation_id = self.storage.create_conversation()
+                except Exception as exc:
+                    logger.warning("Error creating conversation in storage: %s", exc)
+
             # Pin target_cid to ensure assistant response writes to the exact same conversation
             target_cid = self._active_conversation_id
             user_saved = False

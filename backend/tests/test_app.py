@@ -11,7 +11,9 @@ Verifies:
 
 from __future__ import annotations
 
+import shutil
 import sys
+import tempfile
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -20,6 +22,7 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from backend.ai.storage import SQLiteConversationStorage
 from backend.app import AICoreVisualizer, DiagnosticsDrawer, FlexDesktopApp
 from backend.coordinator import AICoordinator, CoordinatorChatResult, CoordinatorDispatchError
 
@@ -830,6 +833,211 @@ class TestFlexDesktopAppPersistence(unittest.TestCase):
         self.app.chat_view._on_chat_success(stale_result, 1.0)
         rendered = self.app.chat_display.get("1.0", tk.END)
         self.assertNotIn("Stale response text that should not appear.", rendered)
+
+
+class TestFlexDesktopAppStage2C1UIStabilization(unittest.TestCase):
+    """Stage 2C.1 regression tests for UI stabilization and functional recovery."""
+
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_stage2c1.db"
+        self.storage = SQLiteConversationStorage(self.db_path)
+
+        self.mock_coordinator = MagicMock(spec=AICoordinator)
+        self.mock_coordinator.is_running = True
+        self.mock_coordinator.storage = self.storage
+        self.mock_coordinator.active_conversation_id = self.storage.create_conversation("Active Chat")
+        self.mock_coordinator.get_status.return_value = {
+            "bridge": {"is_running": True, "lifecycle": "FLEX_LIFECYCLE_IDLE"},
+            "ai_health": True,
+            "model_available": True,
+            "model": "qwen2.5-coder:3b",
+        }
+
+        self.app = FlexDesktopApp(
+            self.root, coordinator=self.mock_coordinator, storage=self.storage
+        )
+
+    def tearDown(self) -> None:
+        if hasattr(self, "app") and not self.app._closing:
+            self.app.on_closing()
+        elif hasattr(self, "root"):
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+        if hasattr(self, "storage") and self.storage is not None:
+            self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_composer_mapped_and_visible_in_layout(self) -> None:
+        """Verifies that the chat composer Text widget and Send button are packed and visible in layout."""
+        self.assertEqual(self.app.txt_input.winfo_manager(), "pack")
+        self.assertGreater(self.app.txt_input.winfo_reqheight(), 0)
+        self.assertEqual(self.app.btn_send.winfo_manager(), "pack")
+        self.assertGreater(self.app.btn_send.winfo_reqheight(), 0)
+
+        # In active desktop display, deiconify and update to verify winfo_ismapped
+        try:
+            self.root.deiconify()
+            self.root.update()
+            self.assertEqual(self.app.txt_input.winfo_ismapped(), 1)
+            self.assertGreater(self.app.txt_input.winfo_height(), 0)
+            self.assertEqual(self.app.btn_send.winfo_ismapped(), 1)
+            self.assertGreater(self.app.btn_send.winfo_height(), 0)
+        finally:
+            self.root.withdraw()
+
+    def test_composer_placeholder_and_focus_behavior(self) -> None:
+        """Verifies placeholder appearance, clearing on focus/keypress, and restoration on empty blur."""
+        chat_view = self.app.chat_view
+        self.assertTrue(chat_view._has_placeholder)
+        self.assertEqual(chat_view.txt_input.get("1.0", tk.END).strip(), chat_view.PLACEHOLDER_TEXT)
+
+        # FocusIn clears placeholder
+        chat_view._on_input_focus_in()
+        self.assertFalse(chat_view._has_placeholder)
+        self.assertEqual(chat_view.txt_input.get("1.0", tk.END).strip(), "")
+
+        # FocusOut with empty text restores placeholder
+        chat_view._on_input_focus_out()
+        self.assertTrue(chat_view._has_placeholder)
+        self.assertEqual(chat_view.txt_input.get("1.0", tk.END).strip(), chat_view.PLACEHOLDER_TEXT)
+
+    def test_enter_and_shift_enter_key_bindings(self) -> None:
+        """Verifies Shift+Enter inserts newline and Enter submits the message."""
+        chat_view = self.app.chat_view
+        chat_view._on_input_focus_in()
+        chat_view.txt_input.insert("1.0", "Line 1")
+
+        # Shift+Enter inserts newline
+        res_shift = chat_view._handle_shift_enter()
+        self.assertEqual(res_shift, "break")
+        chat_view.txt_input.insert(tk.INSERT, "Line 2")
+        self.assertIn("Line 1\nLine 2", chat_view.txt_input.get("1.0", tk.END))
+
+        # Enter submits message
+        event_mock = MagicMock()
+        event_mock.state = 0  # No Shift modifier
+        with patch.object(chat_view, "send_message") as mock_send:
+            res_enter = chat_view._handle_enter_key(event_mock)
+            self.assertEqual(res_enter, "break")
+            mock_send.assert_called_once()
+
+    def test_empty_or_placeholder_message_not_submitted(self) -> None:
+        """Verifies empty or placeholder-only messages are never submitted."""
+        with patch("threading.Thread") as mock_thread:
+            # Placeholder text only
+            self.app.send_message()
+            mock_thread.assert_not_called()
+            self.assertFalse(self.app._busy)
+
+            # Whitespace only
+            self.app.txt_input.delete("1.0", tk.END)
+            self.app.txt_input.insert("1.0", "   \n\t  ")
+            self.app.send_message()
+            mock_thread.assert_not_called()
+            self.assertFalse(self.app._busy)
+
+    def test_submit_handler_receives_actual_message_and_prevents_duplicate(self) -> None:
+        """Verifies message is dispatched and concurrent submissions while busy are safely blocked."""
+        self.app.txt_input.delete("1.0", tk.END)
+        self.app.txt_input.insert("1.0", "Perform C core operation")
+
+        with patch("threading.Thread") as mock_thread:
+            self.app.send_message()
+            self.assertTrue(self.app._busy)
+            self.assertEqual(self.app.btn_send["text"], "BUSY...")
+            self.assertEqual(str(self.app.btn_send["state"]), "disabled")
+            mock_thread.assert_called_once()
+
+            # Attempt duplicate submission while busy
+            self.app.txt_input.insert("1.0", "Duplicate message")
+            self.app.send_message()
+            self.assertEqual(mock_thread.call_count, 1)
+
+    def test_error_does_not_permanently_disable_composer(self) -> None:
+        """Verifies that error recovery resets busy state, restores Send button, and re-enables composer."""
+        self.app._busy = True
+        self.app.btn_send.configure(state=tk.DISABLED, text="BUSY...")
+
+        self.app._on_chat_error(Exception("Inference timeout"), 2.5)
+
+        self.assertFalse(self.app._busy)
+        self.assertEqual(str(self.app.btn_send["state"]), "normal")
+        self.assertEqual(self.app.btn_send["text"], "➤")
+        self.assertIn("Error encountered", self.app.status_lbl.cget("text"))
+
+    def test_new_chat_with_empty_conversation_deduplicates_recent_chats(self) -> None:
+        """Verifies creating new chats without messages does not create duplicate sidebar entries."""
+        # Clean storage with only default empty conversation
+        empty_dir = tempfile.mkdtemp()
+        try:
+            empty_storage = SQLiteConversationStorage(Path(empty_dir) / "empty.db")
+            coord = MagicMock(spec=AICoordinator)
+            coord.storage = empty_storage
+            coord.active_conversation_id = empty_storage.create_conversation("New Chat")
+            app = FlexDesktopApp(self.root, coordinator=coord, storage=empty_storage)
+
+            # Trigger new_chat
+            app.new_chat()
+            app._refresh_recent_chats()
+
+            # Empty database / chats with 0 messages must not generate duplicate sidebar labels
+            self.assertEqual(len(app.recent_chat_labels), 0)
+            empty_storage.close()
+        finally:
+            shutil.rmtree(empty_dir, ignore_errors=True)
+
+    def test_subsystem_diagnostics_shows_sqlite_operational_status(self) -> None:
+        """Verifies diagnostics correctly classifies SQLite persistence as Active and healthy."""
+        diag = {
+            "bridge": {"is_running": True, "lifecycle": "FLEX_LIFECYCLE_IDLE"},
+            "bridge_running": True,
+            "ai_health": True,
+            "model_available": True,
+            "storage_enabled": True,
+            "storage_degraded": False,
+            "total_conversations": 4,
+            "history_count": 5,
+            "history_max": 50,
+            "internet": True,
+        }
+        self.app._apply_diagnostics(diag)
+        mem_text = self.app.status_pills["memory"].cget("text")
+        self.assertIn("SQLite Active (4 chats)", mem_text)
+
+        health_state, _, _ = FlexDesktopApp.calculate_overall_health(diag)
+        self.assertEqual(health_state, "HEALTHY")
+
+    def test_subsystem_diagnostics_shows_degraded_when_storage_fails(self) -> None:
+        """Verifies diagnostics classifies overall health as DEGRADED when storage is degraded."""
+        diag = {
+            "bridge": {"is_running": True, "lifecycle": "FLEX_LIFECYCLE_IDLE"},
+            "bridge_running": True,
+            "ai_health": True,
+            "model_available": True,
+            "storage_enabled": True,
+            "storage_degraded": True,
+            "history_count": 5,
+            "history_max": 50,
+            "internet": True,
+        }
+        self.app._apply_diagnostics(diag)
+        mem_text = self.app.status_pills["memory"].cget("text")
+        self.assertIn("SQLite Degraded", mem_text)
+
+        health_state, _, _ = FlexDesktopApp.calculate_overall_health(diag)
+        self.assertEqual(health_state, "DEGRADED")
+
+    def test_auth_notice_displays_honestly_without_crash(self) -> None:
+        """Verifies clicking authentication controls informs the user about local-first architecture."""
+        with patch("tkinter.messagebox.showinfo") as mock_info:
+            self.app._show_auth_notice()
+            mock_info.assert_called_once()
+            self.assertIn("local-first", self.app.chat_view.status_lbl.cget("text").lower())
 
 
 if __name__ == "__main__":

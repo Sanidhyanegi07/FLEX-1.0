@@ -608,9 +608,14 @@ class ChatView(tk.Frame):
         self._busy: bool = False
         self._closing: bool = False
         self._last_op_id: int = 0
+        self._chat_queue: queue.Queue = queue.Queue()
+        self._queue_poll_id: Optional[str] = None
 
         self._build_ui()
         self._display_welcome_banner()
+        self._schedule_queue_check()
+
+    PLACEHOLDER_TEXT = "Message FLEX anything..."
 
     def _build_ui(self) -> None:
         # Central Animated AI Core (Cosmic Black Hole Singularity - Stage 2A)
@@ -623,76 +628,17 @@ class ChatView(tk.Frame):
         )
         self.ai_core.pack(side=tk.TOP, fill=tk.X, padx=12, pady=(4, 0))
 
-        # Conversation History Display
-        chat_container = tk.Frame(self, bg=COLOR_BG_ROOT, padx=12, pady=4)
-        chat_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Input & Control Deck (Pack at BOTTOM first to guarantee visibility across resizing)
+        bottom_deck = tk.Frame(self, bg=COLOR_BG_ROOT, padx=16, pady=10)
+        bottom_deck.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.chat_display = tk.Text(
-            chat_container,
-            bg=COLOR_BG_CHAT,
-            fg=COLOR_TEXT_PRIMARY,
-            insertbackground=COLOR_TEXT_ACCENT,
-            selectbackground=COLOR_BTN_PRIMARY,
-            font=("Segoe UI", 10),
-            relief=tk.FLAT,
-            padx=14,
-            pady=12,
-            wrap=tk.WORD,
-            state=tk.DISABLED,
-        )
-        self.chat_display.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = tk.Scrollbar(
-            chat_container,
-            command=self.chat_display.yview,
-            bg=COLOR_BG_PANEL,
-            troughcolor=COLOR_BG_ROOT,
-            relief=tk.FLAT,
-            width=10,
-        )
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.chat_display.configure(yscrollcommand=scrollbar.set)
-
-        # Chat tag definitions
-        self.chat_display.tag_configure(
-            "user_hdr", font=("Segoe UI", 10, "bold"), foreground=COLOR_TEXT_USER
-        )
-        self.chat_display.tag_configure(
-            "user_msg", font=("Segoe UI", 10), foreground=COLOR_TEXT_PRIMARY
-        )
-        self.chat_display.tag_configure(
-            "flex_hdr", font=("Segoe UI", 10, "bold"), foreground=COLOR_TEXT_ACCENT
-        )
-        self.chat_display.tag_configure(
-            "flex_msg", font=("Segoe UI", 10), foreground=COLOR_TEXT_ASSISTANT
-        )
-        self.chat_display.tag_configure(
-            "meta_tag", font=("Consolas", 8), foreground=COLOR_TEXT_MUTED
-        )
-        self.chat_display.tag_configure(
-            "system_msg", font=("Segoe UI", 9, "italic"), foreground=COLOR_TEXT_MUTED
-        )
-        self.chat_display.tag_configure(
-            "error_msg", font=("Segoe UI", 10, "bold"), foreground=COLOR_TEXT_ERROR
-        )
-        self.chat_display.tag_configure(
-            "warning_msg", font=("Segoe UI", 10), foreground=COLOR_TEXT_WARNING
-        )
-        self.chat_display.tag_configure(
-            "banner_hdr", font=("Segoe UI", 11, "bold"), foreground=COLOR_TEXT_ACCENT
-        )
-
-        # Progress / Activity Bar
+        # Progress / Activity Bar (Pack at bottom above input deck)
         self.progress_bar = ttk.Progressbar(
             self,
             style="Flex.Horizontal.TProgressbar",
             mode="indeterminate",
         )
-        self.progress_bar.pack(side=tk.TOP, fill=tk.X, padx=16)
-
-        # Input & Control Deck
-        bottom_deck = tk.Frame(self, bg=COLOR_BG_ROOT, padx=16, pady=10)
-        bottom_deck.pack(side=tk.BOTTOM, fill=tk.X)
+        self.progress_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(0, 2))
 
         # Status text row
         status_row = tk.Frame(bottom_deck, bg=COLOR_BG_ROOT)
@@ -769,40 +715,7 @@ class ChatView(tk.Frame):
             pady=4,
         )
         input_pill.pack(side=tk.BOTTOM, fill=tk.X)
-
-        self.txt_input = tk.Text(
-            input_pill,
-            bg=COLOR_BG_INPUT,
-            fg=COLOR_TEXT_PRIMARY,
-            insertbackground=COLOR_TEXT_ACCENT,
-            font=("Segoe UI", 10),
-            height=2,
-            relief=tk.FLAT,
-            padx=8,
-            pady=6,
-            wrap=tk.WORD,
-        )
-        self.txt_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
-        self.txt_input.bind("<Return>", self._handle_enter_key)
-        self.txt_input.bind("<Shift-Return>", lambda e: None)
-        self.txt_input.bind("<KeyPress>", self._on_input_keypress, add="+")
-        self.txt_input.focus_set()
-
-        self.btn_attach = tk.Button(
-            input_pill,
-            text="📎",
-            font=("Segoe UI", 11),
-            fg=COLOR_TEXT_MUTED,
-            bg=COLOR_BG_INPUT,
-            activebackground=COLOR_BG_SIDEBAR_ACTIVE,
-            activeforeground=COLOR_TEXT_PRIMARY,
-            relief=tk.FLAT,
-            padx=6,
-            pady=2,
-            cursor="hand2",
-            command=lambda: self.status_lbl.configure(text="Attachments: Planned for Stage 2 Knowledge Base.", fg=COLOR_TEXT_WARNING),
-        )
-        self.btn_attach.pack(side=tk.RIGHT, padx=(0, 4))
+        input_pill.bind("<Button-1>", lambda e: self.focus_composer())
 
         self.btn_send = tk.Button(
             input_pill,
@@ -820,10 +733,145 @@ class ChatView(tk.Frame):
         )
         self.btn_send.pack(side=tk.RIGHT)
 
+        self.btn_attach = tk.Button(
+            input_pill,
+            text="📎",
+            font=("Segoe UI", 11),
+            fg=COLOR_TEXT_MUTED,
+            bg=COLOR_BG_INPUT,
+            activebackground=COLOR_BG_SIDEBAR_ACTIVE,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief=tk.FLAT,
+            padx=6,
+            pady=2,
+            cursor="hand2",
+            command=lambda: self.status_lbl.configure(text="Attachments: Planned for Stage 2 Knowledge Base.", fg=COLOR_TEXT_WARNING),
+        )
+        self.btn_attach.pack(side=tk.RIGHT, padx=(0, 4))
+
+        self.txt_input = tk.Text(
+            input_pill,
+            bg=COLOR_BG_INPUT,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            font=("Segoe UI", 10),
+            height=2,
+            relief=tk.FLAT,
+            padx=8,
+            pady=6,
+            wrap=tk.WORD,
+        )
+        self.txt_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        self.txt_input.bind("<Return>", self._handle_enter_key)
+        self.txt_input.bind("<Shift-Return>", self._handle_shift_enter)
+        self.txt_input.bind("<KeyPress>", self._on_input_keypress, add="+")
+        self.txt_input.bind("<FocusIn>", self._on_input_focus_in)
+        self.txt_input.bind("<FocusOut>", self._on_input_focus_out)
+        self._has_placeholder: bool = False
+        self._apply_placeholder()
+        self.txt_input.focus_set()
+
+        # Conversation History Display (Pack in middle with expand=True)
+        chat_container = tk.Frame(self, bg=COLOR_BG_ROOT, padx=12, pady=4)
+        chat_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.chat_display = tk.Text(
+            chat_container,
+            bg=COLOR_BG_CHAT,
+            fg=COLOR_TEXT_PRIMARY,
+            insertbackground=COLOR_TEXT_ACCENT,
+            selectbackground=COLOR_BTN_PRIMARY,
+            font=("Segoe UI", 10),
+            relief=tk.FLAT,
+            height=6,
+            padx=14,
+            pady=12,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+        )
+        self.chat_display.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(
+            chat_container,
+            command=self.chat_display.yview,
+            bg=COLOR_BG_PANEL,
+            troughcolor=COLOR_BG_ROOT,
+            relief=tk.FLAT,
+            width=10,
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.chat_display.configure(yscrollcommand=scrollbar.set)
+
+        # Chat tag definitions
+        self.chat_display.tag_configure(
+            "user_hdr", font=("Segoe UI", 10, "bold"), foreground=COLOR_TEXT_USER
+        )
+        self.chat_display.tag_configure(
+            "user_msg", font=("Segoe UI", 10), foreground=COLOR_TEXT_PRIMARY
+        )
+        self.chat_display.tag_configure(
+            "flex_hdr", font=("Segoe UI", 10, "bold"), foreground=COLOR_TEXT_ACCENT
+        )
+        self.chat_display.tag_configure(
+            "flex_msg", font=("Segoe UI", 10), foreground=COLOR_TEXT_ASSISTANT
+        )
+        self.chat_display.tag_configure(
+            "meta_tag", font=("Consolas", 8), foreground=COLOR_TEXT_MUTED
+        )
+        self.chat_display.tag_configure(
+            "system_msg", font=("Segoe UI", 9, "italic"), foreground=COLOR_TEXT_MUTED
+        )
+        self.chat_display.tag_configure(
+            "error_msg", font=("Segoe UI", 10, "bold"), foreground=COLOR_TEXT_ERROR
+        )
+        self.chat_display.tag_configure(
+            "warning_msg", font=("Segoe UI", 10), foreground=COLOR_TEXT_WARNING
+        )
+        self.chat_display.tag_configure(
+            "banner_hdr", font=("Segoe UI", 11, "bold"), foreground=COLOR_TEXT_ACCENT
+        )
+
+    def _apply_placeholder(self) -> None:
+        """Applies the default placeholder prompt in muted color."""
+        raw = self.txt_input.get("1.0", tk.END).strip()
+        if not raw:
+            self.txt_input.delete("1.0", tk.END)
+            self.txt_input.insert("1.0", self.PLACEHOLDER_TEXT)
+            self.txt_input.configure(fg=COLOR_TEXT_MUTED)
+            self._has_placeholder = True
+
+    def _on_input_focus_in(self, event: Any = None) -> None:
+        """Clears placeholder on user focus."""
+        if getattr(self, "_has_placeholder", False):
+            self.txt_input.delete("1.0", tk.END)
+            self.txt_input.configure(fg=COLOR_TEXT_PRIMARY)
+            self._has_placeholder = False
+
+    def _on_input_focus_out(self, event: Any = None) -> None:
+        """Restores placeholder if input is left blank."""
+        raw = self.txt_input.get("1.0", tk.END).strip()
+        if not raw:
+            self._apply_placeholder()
+
+    def _handle_shift_enter(self, event: Any = None) -> str:
+        """Inserts a newline on Shift+Enter."""
+        if getattr(self, "_has_placeholder", False):
+            self._on_input_focus_in()
+        self.txt_input.insert(tk.INSERT, "\n")
+        self.txt_input.see(tk.INSERT)
+        return "break"
+
+    def focus_composer(self) -> None:
+        """Ensures the composer text widget is focused for immediate typing."""
+        if hasattr(self, "txt_input") and self.txt_input.winfo_exists():
+            self.txt_input.focus_set()
+
     def _on_input_keypress(self, event: Any) -> None:
         # Ignore modifier keys (Shift, Control, Alt)
         if event.keysym in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"):
             return
+        if getattr(self, "_has_placeholder", False):
+            self._on_input_focus_in()
         if not self._busy and hasattr(self, "ai_core"):
             self.ai_core.on_user_typing()
 
@@ -856,7 +904,7 @@ class ChatView(tk.Frame):
 
     def _handle_enter_key(self, event: Any) -> str:
         if event.state & 0x0001:
-            return ""
+            return self._handle_shift_enter(event)
         self.send_message()
         return "break"
 
@@ -865,10 +913,18 @@ class ChatView(tk.Frame):
             return
 
         raw_text = self.txt_input.get("1.0", tk.END).strip()
-        if not raw_text:
+        if getattr(self, "_has_placeholder", False):
+            if raw_text == self.PLACEHOLDER_TEXT:
+                return
+            if raw_text.endswith(self.PLACEHOLDER_TEXT):
+                raw_text = raw_text[: -len(self.PLACEHOLDER_TEXT)].strip()
+            self._has_placeholder = False
+
+        if not raw_text or raw_text == self.PLACEHOLDER_TEXT:
             return
 
         self.txt_input.delete("1.0", tk.END)
+        self._has_placeholder = False
 
         if raw_text.lower() == "exit":
             self._append_to_chat(f"\nUser: {raw_text}\n", "user_hdr")
@@ -905,16 +961,51 @@ class ChatView(tk.Frame):
             name="FlexChatWorker",
         ).start()
 
+    def _schedule_queue_check(self) -> None:
+        """Polls the thread-safe chat result queue on the Tkinter main thread."""
+        self._queue_poll_id = None
+        if self._closing or (self.app and self.app._closing):
+            return
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+        self._process_chat_queue()
+        if not self._closing and not (self.app and self.app._closing):
+            try:
+                if self.winfo_exists():
+                    self._queue_poll_id = self.root.after(40, self._schedule_queue_check)
+            except Exception:
+                pass
+
+    def _process_chat_queue(self) -> None:
+        """Processes pending chat worker results safely on the main thread."""
+        if not hasattr(self, "_chat_queue"):
+            return
+        while not self._chat_queue.empty():
+            try:
+                item = self._chat_queue.get_nowait()
+                msg_type, payload, elapsed = item
+                if msg_type == "success":
+                    self._on_chat_success(payload, elapsed)
+                elif msg_type == "error":
+                    self._on_chat_error(payload, elapsed)
+            except queue.Empty:
+                break
+            except Exception as exc:
+                logger.error("Error processing chat queue item: %s", exc)
+
     def _worker_send(self, text: str, start_time: float) -> None:
         try:
             result = self.coordinator.send_chat(text)
             elapsed = time.time() - start_time
             if not self._closing and not (self.app and self.app._closing):
-                self.root.after(0, self._on_chat_success, result, elapsed)
+                self._chat_queue.put(("success", result, elapsed))
         except Exception as exc:
             elapsed = time.time() - start_time
             if not self._closing and not (self.app and self.app._closing):
-                self.root.after(0, self._on_chat_error, exc, elapsed)
+                self._chat_queue.put(("error", exc, elapsed))
 
     def _on_chat_success(self, result: CoordinatorChatResult, elapsed: float) -> None:
         if self._closing or (self.app and self.app._closing):
@@ -1064,7 +1155,8 @@ class ChatView(tk.Frame):
         except Exception:
             pass
         try:
-            self.txt_input.focus_set()
+            self._apply_placeholder()
+            self.focus_composer()
         except Exception:
             pass
 
@@ -1090,6 +1182,13 @@ class ChatView(tk.Frame):
             self.ai_core.resume()
 
     def cancel_animation(self) -> None:
+        self._closing = True
+        if hasattr(self, "_queue_poll_id") and self._queue_poll_id is not None:
+            try:
+                self.root.after_cancel(self._queue_poll_id)
+            except Exception:
+                pass
+            self._queue_poll_id = None
         if hasattr(self, "ai_core"):
             self.ai_core.cancel_animation()
 
@@ -1523,21 +1622,22 @@ class DiagnosticsDrawer(tk.Frame):
         history_max = data.get("history_max", 50)
         storage_enabled = data.get("storage_enabled", False)
         storage_degraded = data.get("storage_degraded", False)
+        total_convs = data.get("total_conversations", 0)
 
         self.lbl_mem_buffer.configure(
-            text=f"● Active: {history_count} / {history_max} messages", fg=COLOR_TEXT_ACCENT
+            text=f"● Active FIFO: {history_count} / {history_max} turns", fg=COLOR_TEXT_ACCENT
         )
         if storage_enabled:
             if storage_degraded:
                 self.lbl_mem_storage.configure(text="Degraded (In-Memory Fallback)", fg=COLOR_TEXT_WARNING)
                 self.lbl_mem_db.configure(text="● DEGRADED (Check permissions)", fg=COLOR_TEXT_WARNING)
             else:
-                self.lbl_mem_storage.configure(text="Persistent SQLite + FIFO Cache", fg=COLOR_TEXT_SUCCESS)
+                self.lbl_mem_storage.configure(text=f"SQLite Operational ({total_convs} saved)", fg=COLOR_TEXT_SUCCESS)
                 self.lbl_mem_db.configure(text="● Operational (conversations.db)", fg=COLOR_TEXT_SUCCESS)
         else:
             self.lbl_mem_storage.configure(text="Ephemeral FIFO Buffer", fg=COLOR_TEXT_MUTED)
             self.lbl_mem_db.configure(text="NOT CONFIGURED", fg="#64748B")
-        self.lbl_mem_vector.configure(text="NOT IMPLEMENTED", fg="#64748B")
+        self.lbl_mem_vector.configure(text="NOT IMPLEMENTED (Stage 3)", fg="#64748B")
 
         # Card 4: Network
         internet = data.get("internet", False)
@@ -1611,6 +1711,10 @@ class FlexDesktopApp:
         active_cid = getattr(self.coordinator, "active_conversation_id", None)
         if active_cid and hasattr(self, "chat_view"):
             self.chat_view.restore_conversation_messages(active_cid)
+
+        # Ensure chat composer has immediate focus on startup
+        if hasattr(self, "chat_view"):
+            self.chat_view.focus_composer()
 
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -1908,7 +2012,7 @@ class FlexDesktopApp:
             padx=14,
             pady=3,
             cursor="hand2",
-            command=lambda: self.switch_view("settings"),
+            command=self._show_auth_notice,
         )
         btn_signin.pack(fill=tk.X, pady=(0, 4))
 
@@ -1921,6 +2025,7 @@ class FlexDesktopApp:
             cursor="hand2",
         )
         lbl_create.pack()
+        lbl_create.bind("<Button-1>", lambda e: self._show_auth_notice())
 
         # 2. System Status Panel
         status_hdr_box = tk.Frame(self.right_sidebar, bg=COLOR_BG_SIDEBAR)
@@ -2084,14 +2189,14 @@ class FlexDesktopApp:
                 self.view_container,
                 title="Memory & Context",
                 icon="🧠",
-                badge_text="● STATUS: IN-MEMORY BUFFER ONLY (STAGE 1F)",
-                badge_color=COLOR_TEXT_ACCENT,
-                description="Conversation recall and context management system for retaining conversation state across turns.",
-                status_explanation="Currently operating with a bounded 50-turn in-memory FIFO conversation buffer (backend/ai/history.py). Persistent disk or database storage is not yet active.",
+                badge_text="● STATUS: SQLITE STORAGE OPERATIONAL (STAGE 2C)",
+                badge_color=COLOR_TEXT_SUCCESS,
+                description="Conversation recall and context persistence system powered by local SQLite database.",
+                status_explanation="Conversation histories and metadata are saved locally to conversations.db with WAL mode, isolated active conversation switching, and in-memory FIFO caching.",
                 unavailable_features=[
-                    "Persistent SQLite conversation database is not implemented in Stage 1.",
-                    "Vector embeddings and semantic long-term memory are not implemented.",
-                    "Memory state resets whenever the application is closed.",
+                    "Vector embeddings and semantic long-term search are planned for Stage 3.",
+                    "Cross-conversation semantic entity extraction is not yet active.",
+                    "Cloud synchronization is not implemented (Local-First architecture).",
                 ],
             ),
             "knowledge": PrototypeView(
@@ -2199,12 +2304,32 @@ class FlexDesktopApp:
         self.current_view_name = view_name
         self._highlight_nav_button(view_name)
 
-        # Resume AI Core animation when returning to Home
+        # Resume AI Core animation and focus composer when returning to Home
         if view_name == "home" and hasattr(self, "chat_view"):
             self.chat_view.resume_animation()
+            self.chat_view.focus_composer()
+
+    def _show_auth_notice(self) -> None:
+        """Informs the user that FLEX 1.0 operates locally without cloud authentication."""
+        notice_msg = "FLEX 1.0 operates local-first. Cloud authentication and remote accounts are not implemented in Stage 2."
+        if hasattr(self, "chat_view") and hasattr(self.chat_view, "status_lbl"):
+            self.chat_view.status_lbl.configure(
+                text=notice_msg,
+                fg=COLOR_TEXT_WARNING,
+            )
+        try:
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "Local-First Architecture",
+                "FLEX 1.0 is designed for local privacy and runs entirely offline.\n\n"
+                "Cloud accounts, registration, and remote sign-in are not implemented.\n"
+                "All conversation data is stored locally in conversations.db.",
+            )
+        except Exception:
+            pass
 
     def _refresh_recent_chats(self) -> None:
-        """Populates the Recent Chats sidebar dynamically from storage."""
+        """Populates the Recent Chats sidebar dynamically from storage without duplicates."""
         if not hasattr(self, "recent_chats_container"):
             return
         for widget in self.recent_chats_container.winfo_children():
@@ -2217,7 +2342,18 @@ class FlexDesktopApp:
         conversations: List[Dict[str, Any]] = []
         if self.storage is not None:
             try:
-                conversations = [c.to_dict() for c in self.storage.list_conversations(limit=8)]
+                all_convs = self.storage.list_conversations(limit=16)
+                filtered = []
+                for c in all_convs:
+                    try:
+                        cnt = self.storage.get_message_count(c.id)
+                        if cnt > 0 or c.title != "New Chat":
+                            filtered.append(c)
+                    except Exception:
+                        filtered.append(c)
+                    if len(filtered) >= 8:
+                        break
+                conversations = [c.to_dict() for c in filtered]
             except Exception as exc:
                 logger.warning("Could not list conversations for sidebar: %s", exc)
 
@@ -2266,6 +2402,8 @@ class FlexDesktopApp:
             self.chat_view.restore_conversation_messages(conversation_id)
         self.switch_view("home")
         self._refresh_recent_chats()
+        if hasattr(self, "chat_view"):
+            self.chat_view.focus_composer()
 
     def new_chat(self) -> None:
         """Creates a new conversation in storage, clears transcript, and returns immediately to Home."""
@@ -2279,6 +2417,8 @@ class FlexDesktopApp:
         except Exception as e:
             logger.error("Error clearing conversation during new_chat: %s", e)
         self.switch_view("home")
+        if hasattr(self, "chat_view"):
+            self.chat_view.focus_composer()
 
     # Forwarding attributes & methods for backward compatibility with existing tests
     @property
@@ -2433,6 +2573,10 @@ class FlexDesktopApp:
         if not ai_health or not model_available:
             return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
 
+        storage_degraded = bool(diagnostics.get("storage_degraded", False))
+        if storage_degraded:
+            return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
+
         return ("HEALTHY", COLOR_TEXT_SUCCESS, "#064E3B")
 
     @staticmethod
@@ -2547,7 +2691,7 @@ class FlexDesktopApp:
                 except Exception:
                     pass
 
-            # 3. Memory stats
+            # 3. Memory & Storage stats
             history_count = 0
             history_max = 50
             history_obj = getattr(self.coordinator, "history", None)
@@ -2555,6 +2699,17 @@ class FlexDesktopApp:
                 try:
                     history_count = len(history_obj.get_messages())
                     history_max = getattr(history_obj, "max_messages", 50)
+                except Exception:
+                    pass
+
+            storage_obj = getattr(self.coordinator, "storage", None) or getattr(self, "storage", None)
+            storage_enabled = storage_obj is not None
+            storage_degraded = bool(getattr(self.coordinator, "storage_degraded", False) or getattr(storage_obj, "is_degraded", False))
+            storage_error = getattr(self.coordinator, "last_storage_error", None)
+            total_conversations = 0
+            if storage_obj is not None and hasattr(storage_obj, "get_conversation_count"):
+                try:
+                    total_conversations = storage_obj.get_conversation_count()
                 except Exception:
                     pass
 
@@ -2575,6 +2730,10 @@ class FlexDesktopApp:
                 "is_inferring": is_inferring,
                 "history_count": history_count,
                 "history_max": history_max,
+                "storage_enabled": storage_enabled,
+                "storage_degraded": storage_degraded,
+                "storage_error": storage_error,
+                "total_conversations": total_conversations,
                 "internet": internet_ok,
                 "timestamp": datetime.now().strftime("%H:%M:%S"),
             }
@@ -2691,14 +2850,16 @@ class FlexDesktopApp:
                 storage_enabled = diagnostics.get("storage_enabled", False)
                 if storage_enabled:
                     storage_degraded = diagnostics.get("storage_degraded", False)
+                    total_convs = diagnostics.get("total_conversations", 0)
                     if storage_degraded:
                         self.status_pills["memory"].configure(
-                            text=f"● Memory — SQLite (Degraded {hist_count}/{hist_max})",
+                            text=f"● Memory — SQLite Degraded ({hist_count}/{hist_max})",
                             fg=COLOR_TEXT_WARNING,
                         )
                     else:
+                        conv_txt = f"{total_convs} chat" if total_convs == 1 else f"{total_convs} chats"
                         self.status_pills["memory"].configure(
-                            text=f"● Memory — SQLite Active ({hist_count}/{hist_max})",
+                            text=f"● Memory — SQLite Active ({conv_txt})",
                             fg=COLOR_TEXT_SUCCESS,
                         )
                 else:
