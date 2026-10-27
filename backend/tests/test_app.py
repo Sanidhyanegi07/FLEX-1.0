@@ -436,8 +436,8 @@ class TestFlexDesktopApp(unittest.TestCase):
         self.assertFalse(self.app._diagnostics_open)
 
     def test_calculate_overall_health_rules(self) -> None:
-        """Verifies overall health calculation for HEALTHY, DEGRADED, and OFFLINE scenarios."""
-        # 1. Nominal / Healthy
+        """Verifies overall health calculation for all required and edge scenarios."""
+        # Scenario 1: Nominal Healthy (bridge running, Ollama healthy, model exists, internet ok)
         healthy_diag = {
             "bridge_running": True,
             "bridge": {"lifecycle": "FLEX_LIFECYCLE_IDLE", "last_error": "FLEX_STATE_OK"},
@@ -448,22 +448,32 @@ class TestFlexDesktopApp(unittest.TestCase):
         state, fg, bg = FlexDesktopApp.calculate_overall_health(healthy_diag)
         self.assertEqual(state, "HEALTHY")
 
-        # 2. Degraded - Ollama offline
+        # Scenario 2: Local components healthy, but internet offline (local-first design)
+        # Internet unavailability alone MUST NOT mark the local application degraded.
+        offline_net = dict(healthy_diag, internet=False)
+        state, fg, bg = FlexDesktopApp.calculate_overall_health(offline_net)
+        self.assertEqual(state, "HEALTHY")
+
+        # Scenario 3: Ollama is unavailable while C bridge is operational
         degraded_ollama = dict(healthy_diag, ai_health=False)
         state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_ollama)
         self.assertEqual(state, "DEGRADED")
 
-        # 3. Degraded - Model missing
+        # Scenario 4: Configured model is missing
         degraded_model = dict(healthy_diag, model_available=False)
         state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_model)
         self.assertEqual(state, "DEGRADED")
 
-        # 4. Degraded - Internet offline (local-only mode)
-        degraded_net = dict(healthy_diag, internet=False)
-        state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_net)
-        self.assertEqual(state, "DEGRADED")
+        # Scenario 5: C bridge process has terminated
+        offline_bridge = dict(healthy_diag, bridge_running=False)
+        state, _, _ = FlexDesktopApp.calculate_overall_health(offline_bridge)
+        self.assertEqual(state, "OFFLINE")
 
-        # 5. Degraded - C core state error
+        # Scenario 6: Diagnostic information is incomplete or empty
+        state_empty, _, _ = FlexDesktopApp.calculate_overall_health({})
+        self.assertEqual(state_empty, "OFFLINE")
+
+        # Scenario 7: C core state error
         degraded_c_err = dict(
             healthy_diag,
             bridge={"lifecycle": "FLEX_LIFECYCLE_ERROR", "last_error": "FLEX_STATE_INVALID"},
@@ -471,10 +481,16 @@ class TestFlexDesktopApp(unittest.TestCase):
         state, _, _ = FlexDesktopApp.calculate_overall_health(degraded_c_err)
         self.assertEqual(state, "DEGRADED")
 
-        # 6. Offline - C Core stopped
-        offline_bridge = dict(healthy_diag, bridge_running=False)
-        state, _, _ = FlexDesktopApp.calculate_overall_health(offline_bridge)
-        self.assertEqual(state, "OFFLINE")
+        # Scenario 8: Missing optional features (voice, knowledge base, persistent DB)
+        # Unimplemented future capabilities must NOT degrade the operational core.
+        optional_unimpl = dict(
+            healthy_diag,
+            voice_implemented=False,
+            knowledge_base_connected=False,
+            persistent_db=False,
+        )
+        state_opt, _, _ = FlexDesktopApp.calculate_overall_health(optional_unimpl)
+        self.assertEqual(state_opt, "HEALTHY")
 
     def test_subsystem_status_mapping_and_honest_indicators(self) -> None:
         """Verifies that right sidebar pills accurately report honest statuses."""

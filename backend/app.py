@@ -1514,6 +1514,7 @@ class FlexDesktopApp:
 
         self._diagnostics_queue: queue.Queue = queue.Queue()
         self._queue_poll_id: Optional[str] = None
+        self._refresh_in_progress: bool = False
 
         self._setup_styles()
         self._build_ui()
@@ -2233,20 +2234,27 @@ class FlexDesktopApp:
     def calculate_overall_health(diagnostics: Dict[str, Any]) -> Tuple[str, str, str]:
         """Calculates overall health state from diagnostic telemetry.
 
+        FLEX 1.0 is an offline-capable, local-first desktop assistant.
+        Required core components for normal operation:
+        - Native C Core bridge is active without lifecycle errors.
+        - Local Ollama daemon is reachable on localhost.
+        - Configured AI model is pulled and available locally.
+
         Rules:
         - HEALTHY (Green):
-            C Core bridge is running with valid lifecycle (not ERROR).
-            Local Ollama daemon is reachable.
-            Configured model is available locally.
+            All required local components are operational:
+            C Core bridge is running (no state error), Local Ollama is reachable,
+            and the configured model is available locally.
+            (Internet connectivity is optional; being offline does not degrade
+            the local core).
         - DEGRADED (Amber):
-            C Core is running, BUT:
-            - Local Ollama is unreachable, OR
+            C Core bridge is running, BUT required local capabilities are impaired:
+            - Local Ollama daemon is unreachable, OR
             - Configured model is missing locally, OR
-            - C Core reported a state error, OR
-            - External network probe failed (offline local-only mode).
+            - C Core reported a state error (e.g. FLEX_LIFECYCLE_ERROR).
         - OFFLINE (Red):
-            C Core bridge is not running / crashed, OR
-            Both C Core and Ollama are unavailable.
+            - C Core bridge process is dead or terminated (bridge_running=False), OR
+            - Incomplete / uninitialized telemetry where C Core is not running.
 
         Returns:
             Tuple[state_label, text_color, bg_color]
@@ -2257,18 +2265,14 @@ class FlexDesktopApp:
         last_error = bridge.get("last_error", "FLEX_STATE_OK")
         ai_health = bool(diagnostics.get("ai_health", False))
         model_available = bool(diagnostics.get("model_available", False))
-        internet = bool(diagnostics.get("internet", False))
 
-        if not bridge_running or (not bridge_running and not ai_health):
+        if not bridge_running:
             return ("OFFLINE", COLOR_TEXT_ERROR, "#450A0A")
 
         if lifecycle == "FLEX_LIFECYCLE_ERROR" or (last_error not in ("FLEX_STATE_OK", "") and last_error is not None):
             return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
 
         if not ai_health or not model_available:
-            return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
-
-        if not internet:
             return ("DEGRADED", COLOR_TEXT_WARNING, "#451A03")
 
         return ("HEALTHY", COLOR_TEXT_SUCCESS, "#064E3B")
@@ -2314,10 +2318,10 @@ class FlexDesktopApp:
 
     def _worker_refresh_status(self) -> None:
         """Worker thread that gathers subsystem telemetry without blocking GUI or active chat turns."""
+        if getattr(self, "_closing", False) or getattr(self, "_refresh_in_progress", False):
+            return
+        self._refresh_in_progress = True
         try:
-            if self._closing:
-                return
-
             bridge_obj = getattr(self.coordinator, "bridge", None)
             is_bridge_running = bool(getattr(self.coordinator, "is_running", False) or getattr(bridge_obj, "is_running", False))
 
@@ -2361,6 +2365,7 @@ class FlexDesktopApp:
                     "lifecycle": getattr(bridge_obj, "_lifecycle", "FLEX_LIFECYCLE_PROCESSING"),
                     "active_operation": getattr(bridge_obj, "_active_operation", "FLEX_OPERATION_CHAT"),
                     "busy": True,
+                    "cached": True,
                 }
 
             # 2. Local Ollama health & model check
@@ -2431,6 +2436,8 @@ class FlexDesktopApp:
                     pass
         except Exception as e:
             logger.debug("Diagnostics refresh error: %s", e)
+        finally:
+            self._refresh_in_progress = False
 
     def _apply_diagnostics(self, diagnostics: Dict[str, Any]) -> None:
         """Applies fresh diagnostic telemetry to all UI components."""
