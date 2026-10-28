@@ -95,6 +95,8 @@ struct ActiveRequest {
     bool isStreaming{false};
     bool isUserCancelled{false};
     bool isTimedOut{false};
+    bool hasStreamError{false};
+    OllamaError streamError;
 
     std::function<void(const ChatResponse&)> onComplete;
     std::function<void(const OllamaError&)> onError;
@@ -113,7 +115,17 @@ public:
 
     ~OllamaClientImpl()
     {
-        cancelAll();
+        for (auto& [id, req] : m_activeRequests) {
+            if (req->timer) {
+                req->timer->stop();
+            }
+            if (req->reply) {
+                req->reply->disconnect();
+                req->reply->abort();
+                req->reply->deleteLater();
+            }
+        }
+        m_activeRequests.clear();
     }
 
     [[nodiscard]] const OllamaConfig& config() const noexcept
@@ -249,24 +261,18 @@ public:
         }
 
         ActiveRequest* req = it->second.get();
+        if (req->isUserCancelled) {
+            return true;
+        }
         req->isUserCancelled = true;
         if (req->timer) {
             req->timer->stop();
         }
-        if (req->reply) {
-            req->reply->abort();
+        QNetworkReply* replyToAbort = req->reply;
+        if (replyToAbort) {
+            QObject::disconnect(replyToAbort, &QNetworkReply::readyRead, nullptr, nullptr);
+            replyToAbort->abort();
         }
-
-        OllamaError err{OllamaErrorCode::Cancelled, 0, "Request was cancelled by caller."};
-        if (req->onError) {
-            req->onError(err);
-        }
-        emit m_q->requestError(requestId, err);
-
-        if (req->reply) {
-            req->reply->deleteLater();
-        }
-        m_activeRequests.erase(it);
         return true;
     }
 
@@ -303,8 +309,10 @@ private:
 
         ActiveRequest* req = it->second.get();
         req->isTimedOut = true;
-        if (req->reply) {
-            req->reply->abort();
+        QNetworkReply* replyToAbort = req->reply;
+        if (replyToAbort) {
+            QObject::disconnect(replyToAbort, &QNetworkReply::readyRead, nullptr, nullptr);
+            replyToAbort->abort();
         }
     }
 
@@ -316,7 +324,7 @@ private:
         }
 
         ActiveRequest* req = it->second.get();
-        if (!req->reply) {
+        if (!req->reply || req->hasStreamError || req->isUserCancelled || req->isTimedOut) {
             return;
         }
 
@@ -339,18 +347,17 @@ private:
             QJsonDocument doc = QJsonDocument::fromJson(line, &parseErr);
             if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
                 // Malformed JSON encountered mid-stream
-                OllamaError err{
+                req->hasStreamError = true;
+                req->streamError = OllamaError{
                     OllamaErrorCode::MalformedJson, 200,
                     "Failed to parse streaming JSON chunk: " + parseErr.errorString().toStdString()
                 };
-                if (req->onError) {
-                    req->onError(err);
+                if (req->timer) {
+                    req->timer->stop();
                 }
-                emit m_q->requestError(reqId, err);
-                if (req->timer) req->timer->stop();
-                req->reply->abort();
-                req->reply->deleteLater();
-                m_activeRequests.erase(it);
+                QNetworkReply* replyToAbort = req->reply;
+                QObject::disconnect(replyToAbort, &QNetworkReply::readyRead, nullptr, nullptr);
+                replyToAbort->abort();
                 return;
             }
 
@@ -404,13 +411,28 @@ private:
 
         int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-        // 1. Check for cancellation / timeout
+        // 1. Check for cancellation
         if (req->isUserCancelled) {
-            // Already reported during cancelRequest
+            OllamaError err{OllamaErrorCode::Cancelled, 0, "Request was cancelled by caller."};
+            if (req->onError) {
+                req->onError(err);
+            }
+            emit m_q->requestError(reqId, err);
             reply->deleteLater();
             return;
         }
 
+        // 2. Check for mid-stream error (e.g. MalformedJson)
+        if (req->hasStreamError) {
+            if (req->onError) {
+                req->onError(req->streamError);
+            }
+            emit m_q->requestError(reqId, req->streamError);
+            reply->deleteLater();
+            return;
+        }
+
+        // 3. Check for timeout
         if (req->isTimedOut) {
             OllamaError err{
                 OllamaErrorCode::Timeout, httpStatus,
@@ -422,7 +444,7 @@ private:
             return;
         }
 
-        // 2. Check for network or HTTP level errors
+        // 4. Check for network or HTTP level errors
         if (reply->error() != QNetworkReply::NoError) {
             QByteArray errBody = reply->readAll();
             std::string errDetail = errBody.isEmpty()
@@ -605,24 +627,29 @@ ChatResponse OllamaClient::chatSync(
 {
     ChatResponse result;
     OllamaError localErr;
+    bool finished = false;
     QEventLoop loop;
 
-    chatAsync(
+    uint64_t reqId = chatAsync(
         messages,
         [&](const ChatResponse& resp) {
             result = resp;
+            finished = true;
             loop.quit();
         },
         [&](const OllamaError& err) {
             localErr = err;
             result.errorMessage = err.message;
             result.statusCode = err.httpStatus;
+            finished = true;
             loop.quit();
         },
         timeoutOverride
     );
 
-    loop.exec();
+    if (!finished && reqId > 0) {
+        loop.exec();
+    }
 
     if (outError) {
         *outError = localErr;
@@ -638,25 +665,30 @@ ChatResponse OllamaClient::chatStreamSync(
 {
     ChatResponse result;
     OllamaError localErr;
+    bool finished = false;
     QEventLoop loop;
 
-    chatStreamAsync(
+    uint64_t reqId = chatStreamAsync(
         messages,
         std::move(onToken),
         [&](const ChatResponse& resp) {
             result = resp;
+            finished = true;
             loop.quit();
         },
         [&](const OllamaError& err) {
             localErr = err;
             result.errorMessage = err.message;
             result.statusCode = err.httpStatus;
+            finished = true;
             loop.quit();
         },
         timeoutOverride
     );
 
-    loop.exec();
+    if (!finished && reqId > 0) {
+        loop.exec();
+    }
 
     if (outError) {
         *outError = localErr;
@@ -686,7 +718,9 @@ bool OllamaClient::checkHealthSync(double timeoutSeconds)
     QObject::connect(&timer, &QTimer::timeout, reply, &QNetworkReply::abort);
     timer.start();
 
-    loop.exec();
+    if (!reply->isFinished()) {
+        loop.exec();
+    }
 
     bool healthy = false;
     if (reply->error() == QNetworkReply::NoError) {
@@ -721,7 +755,9 @@ std::vector<std::string> OllamaClient::listModelsSync(double timeoutSeconds)
     QObject::connect(&timer, &QTimer::timeout, reply, &QNetworkReply::abort);
     timer.start();
 
-    loop.exec();
+    if (!reply->isFinished()) {
+        loop.exec();
+    }
 
     std::vector<std::string> models;
     if (reply->error() == QNetworkReply::NoError) {
