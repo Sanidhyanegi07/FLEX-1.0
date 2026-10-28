@@ -71,5 +71,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running native C++ backend integration test suite (Stage 4)..." -ForegroundColor Cyan
+& "$BuildDir\flex_backend_tests.exe"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "C++ backend integration tests failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
+
 Write-Host "All native builds and tests completed successfully." -ForegroundColor Green
 exit 0

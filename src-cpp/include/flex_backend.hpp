@@ -1,0 +1,6 @@
+#ifndef FLEX_BACKEND_CONVENIENCE_HPP
+#define FLEX_BACKEND_CONVENIENCE_HPP
+
+#include "flex/backend.hpp"
+
+#endif // FLEX_BACKEND_CONVENIENCE_HPP

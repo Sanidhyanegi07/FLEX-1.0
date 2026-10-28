@@ -85,6 +85,30 @@ target_link_libraries(flex_ai PUBLIC
 )
 
 # ------------------------------------------------------------------------------
+# Native C++ Backend Coordinator Library (Stage 4)
+# ------------------------------------------------------------------------------
+add_library(flex_backend STATIC
+    src-cpp/include/flex/backend.hpp
+    src-cpp/src/backend.cpp
+)
+
+set_target_properties(flex_backend PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_backend PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_backend PUBLIC
+    flex_core_cpp
+    flex_storage
+    flex_ai
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Network
+)
+
+# ------------------------------------------------------------------------------
 # Existing C Bridge Executable
 # ------------------------------------------------------------------------------
 add_executable(flex_bridge
@@ -167,3 +191,24 @@ target_link_libraries(flex_ollama_tests PRIVATE
 )
 
 add_test(NAME cpp_ollama_tests COMMAND flex_ollama_tests)
+
+# 5. Native C++ backend integration test suite (Stage 4)
+add_executable(flex_backend_tests
+    src-cpp/tests/test_backend.cpp
+)
+
+set_target_properties(flex_backend_tests PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_backend_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_backend_tests PRIVATE
+    flex_backend
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Network
+)
+
+add_test(NAME cpp_backend_tests COMMAND flex_backend_tests)

@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
@@ -156,8 +157,11 @@ private slots:
                 m_lastRequestBody = data.mid(headerEnd + 4);
 
                 if (m_delayMs > 0 && !m_isStreaming) {
-                    QTimer::singleShot(m_delayMs, this, [this, socket]() {
-                        sendNormalResponse(socket);
+                    QPointer<QTcpSocket> safeSocket = socket;
+                    QTimer::singleShot(m_delayMs, this, [this, safeSocket]() {
+                        if (safeSocket) {
+                            sendNormalResponse(safeSocket.data());
+                        }
                     });
                 } else if (m_isStreaming) {
                     sendStreamingResponse(socket);
