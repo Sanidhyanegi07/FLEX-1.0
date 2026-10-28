@@ -162,12 +162,28 @@ add_library(flex_ui STATIC
     src-cpp/include/flex/ui/message_bubble.hpp
     src-cpp/include/flex/ui/conversation_list_widget.hpp
     src-cpp/include/flex/ui/chat_view.hpp
+    src-cpp/include/flex/ui/top_header_widget.hpp
+    src-cpp/include/flex/ui/navigation_sidebar.hpp
+    src-cpp/include/flex/ui/right_sidebar.hpp
+    src-cpp/include/flex/ui/prototype_view.hpp
+    src-cpp/include/flex/ui/voice_studio_view.hpp
+    src-cpp/include/flex/ui/memory_view.hpp
+    src-cpp/include/flex/ui/projects_view.hpp
+    src-cpp/include/flex/ui/settings_view.hpp
     src-cpp/include/flex/ui/main_window.hpp
     src-cpp/src/ui/theme.cpp
     src-cpp/src/ui/ai_core_widget.cpp
     src-cpp/src/ui/message_bubble.cpp
     src-cpp/src/ui/conversation_list_widget.cpp
     src-cpp/src/ui/chat_view.cpp
+    src-cpp/src/ui/top_header_widget.cpp
+    src-cpp/src/ui/navigation_sidebar.cpp
+    src-cpp/src/ui/right_sidebar.cpp
+    src-cpp/src/ui/prototype_view.cpp
+    src-cpp/src/ui/voice_studio_view.cpp
+    src-cpp/src/ui/memory_view.cpp
+    src-cpp/src/ui/projects_view.cpp
+    src-cpp/src/ui/settings_view.cpp
     src-cpp/src/ui/main_window.cpp
 )
 

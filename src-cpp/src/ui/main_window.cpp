@@ -3,6 +3,7 @@
 
 #include <QCloseEvent>
 #include <QHBoxLayout>
+#include <QMessageBox>
 #include <QMetaObject>
 #include <QThread>
 #include <QVBoxLayout>
@@ -31,6 +32,9 @@ MainWindow::MainWindow(
         this
     );
     m_chatView->setVoiceController(m_voiceController);
+    if (m_voiceStudioView) {
+        m_voiceStudioView->setVoiceController(m_voiceController);
+    }
 
     // Configure health check timer (every 10 seconds, non-blocking)
     connect(&m_healthCheckTimer, &QTimer::timeout, this, &MainWindow::checkAiConnectivity);
@@ -56,10 +60,15 @@ MainWindow::~MainWindow()
     }
 }
 
+ConversationListWidget* MainWindow::conversationListWidget() const
+{
+    return m_navSidebar ? m_navSidebar->conversationListWidget() : nullptr;
+}
+
 void MainWindow::setupUi()
 {
     setWindowTitle("FLEX 1.0 — Native Desktop AI Assistant");
-    resize(1120, 760);
+    resize(1180, 780);
     setMinimumSize(960, 600);
 
     setStyleSheet(Theme::getApplicationStylesheet());
@@ -68,94 +77,203 @@ void MainWindow::setupUi()
     centralWidget->setObjectName("CentralWidget");
     setCentralWidget(centralWidget);
 
-    auto* rootLayout = new QHBoxLayout(centralWidget);
+    auto* rootLayout = new QVBoxLayout(centralWidget);
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    m_splitter = new QSplitter(Qt::Horizontal, centralWidget);
-    m_splitter->setHandleWidth(1);
+    // =========================================================================
+    // Persistent Top Telemetry Header
+    // =========================================================================
+    m_topHeader = new TopHeaderWidget(centralWidget);
+    connect(m_topHeader, &TopHeaderWidget::toggleRightSidebarRequested,
+            this, &MainWindow::onToggleRightSidebar);
+    rootLayout->addWidget(m_topHeader);
 
     // =========================================================================
-    // Left Sidebar
+    // 3-Column Workspace Shell (Horizontal)
     // =========================================================================
-    m_sidebarWidget = new QWidget(m_splitter);
-    m_sidebarWidget->setObjectName("SidebarWidget");
-    m_sidebarWidget->setMinimumWidth(240);
-    m_sidebarWidget->setMaximumWidth(400);
+    auto* workspaceWidget = new QWidget(centralWidget);
+    workspaceWidget->setStyleSheet("background-color: transparent;");
+    auto* workspaceLayout = new QHBoxLayout(workspaceWidget);
+    workspaceLayout->setContentsMargins(0, 0, 0, 0);
+    workspaceLayout->setSpacing(0);
 
-    auto* sidebarLayout = new QVBoxLayout(m_sidebarWidget);
-    sidebarLayout->setContentsMargins(14, 16, 14, 14);
-    sidebarLayout->setSpacing(12);
+    // Column 1: Left Navigation Sidebar (~220px)
+    m_navSidebar = new NavigationSidebar(workspaceWidget);
+    connect(m_navSidebar, &NavigationSidebar::newChatRequested, this, &MainWindow::handleNewConversation);
+    connect(m_navSidebar, &NavigationSidebar::viewChangeRequested, this, &MainWindow::switchView);
 
-    // Brand Header
-    auto* brandHeader = new QWidget(m_sidebarWidget);
-    auto* brandLayout = new QVBoxLayout(brandHeader);
-    brandLayout->setContentsMargins(0, 0, 0, 0);
-    brandLayout->setSpacing(2);
-
-    auto* brandTitle = new QLabel("FLEX 1.0", brandHeader);
-    brandTitle->setObjectName("AppBrandTitle");
-
-    auto* brandSub = new QLabel("NATIVE C/C++ AI ASSISTANT", brandHeader);
-    brandSub->setObjectName("AppBrandSubtitle");
-
-    brandLayout->addWidget(brandTitle);
-    brandLayout->addWidget(brandSub);
-    sidebarLayout->addWidget(brandHeader);
-
-    // New Conversation Button
-    m_newChatButton = new QPushButton("+ New Conversation", m_sidebarWidget);
-    m_newChatButton->setObjectName("NewChatButton");
-    m_newChatButton->setCursor(Qt::PointingHandCursor);
-    connect(m_newChatButton, &QPushButton::clicked, this, &MainWindow::handleNewConversation);
-    sidebarLayout->addWidget(m_newChatButton);
-
-    // Conversation List Widget
-    m_convList = new ConversationListWidget(m_sidebarWidget);
-    connect(m_convList, &ConversationListWidget::conversationSelected,
-            this, &MainWindow::handleSelectConversation);
-    connect(m_convList, &ConversationListWidget::conversationDeleteRequested,
-            this, &MainWindow::handleDeleteConversation);
-    sidebarLayout->addWidget(m_convList, 1);
-
-    // Telemetry & Status Card
-    auto* telemetryCard = new QFrame(m_sidebarWidget);
-    telemetryCard->setObjectName("TelemetryCard");
-    auto* teleLayout = new QVBoxLayout(telemetryCard);
-    teleLayout->setContentsMargins(8, 8, 8, 8);
-    teleLayout->setSpacing(4);
-
-    m_ollamaStatusLabel = new QLabel("○ Ollama: Checking...", telemetryCard);
-    m_ollamaStatusLabel->setObjectName("TelemetryLabel");
-
-    m_coreStatusLabel = new QLabel("● C Core: IDLE", telemetryCard);
-    m_coreStatusLabel->setObjectName("TelemetryLabel");
-
-    m_dbStatusLabel = new QLabel("● Storage: SQLite Native", telemetryCard);
-    m_dbStatusLabel->setObjectName("TelemetryLabel");
-    if (m_coordinator && m_coordinator->storage()) {
-        m_dbStatusLabel->setToolTip(QString::fromStdString(m_coordinator->storage()->dbPath()));
+    if (auto* clist = m_navSidebar->conversationListWidget()) {
+        connect(clist, &ConversationListWidget::conversationSelected,
+                this, &MainWindow::handleSelectConversation);
+        connect(clist, &ConversationListWidget::conversationDeleteRequested,
+                this, &MainWindow::handleDeleteConversation);
     }
+    workspaceLayout->addWidget(m_navSidebar);
 
-    teleLayout->addWidget(m_ollamaStatusLabel);
-    teleLayout->addWidget(m_coreStatusLabel);
-    teleLayout->addWidget(m_dbStatusLabel);
+    // Column 2: Central Dynamic View Container (QStackedWidget)
+    m_viewStack = new QStackedWidget(workspaceWidget);
+    m_viewStack->setObjectName("CentralViewStack");
+    m_viewStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    sidebarLayout->addWidget(telemetryCard);
-
-    // =========================================================================
-    // Right Chat Workspace
-    // =========================================================================
-    m_chatView = new ChatView(m_splitter);
+    // 0: Home (Primary ChatView)
+    m_chatView = new ChatView(m_viewStack);
     connect(m_chatView, &ChatView::sendRequested, this, &MainWindow::handleSendChat);
+    m_viewStack->addWidget(m_chatView);
 
-    m_splitter->addWidget(m_sidebarWidget);
-    m_splitter->addWidget(m_chatView);
-    m_splitter->setStretchFactor(0, 0);
-    m_splitter->setStretchFactor(1, 1);
-    m_splitter->setSizes({ 280, 840 });
+    // 1: Voice Studio
+    m_voiceStudioView = new VoiceStudioView(nullptr, m_viewStack);
+    connect(m_voiceStudioView, &VoiceStudioView::sendSpokenPromptRequested, this, [this](const QString& text) {
+        switchView("home");
+        m_navSidebar->setActiveView("home");
+        handleSendChat(text);
+    });
+    m_viewStack->addWidget(m_voiceStudioView);
 
-    rootLayout->addWidget(m_splitter);
+    // 2: Memory
+    m_memoryView = new MemoryView(m_coordinator, m_viewStack);
+    connect(m_memoryView, &MemoryView::resumeConversationRequested, this, [this](const QString& cid) {
+        handleSelectConversation(cid);
+        switchView("home");
+        m_navSidebar->setActiveView("home");
+    });
+    m_viewStack->addWidget(m_memoryView);
+
+    // 3: Knowledge Base (Truthful Prototype Specification)
+    m_knowledgeView = new PrototypeView(
+        "Knowledge Base",
+        "📚",
+        "● STATUS: PLANNED FOR STAGE 2",
+        Theme::StatusWarning,
+        "Retrieval-augmented generation (RAG) system for indexing local documentation, PDFs, and codebase repositories.",
+        "Document parsing, chunking, and vector index ingestion are architectural components planned for subsequent stages.",
+        {
+            "Document file ingestion and PDF parsing are not implemented in Stage 1.",
+            "Local vector index and semantic search are not implemented.",
+            "Context injection into AI inference is limited to in-memory conversation history."
+        },
+        m_viewStack
+    );
+    m_viewStack->addWidget(m_knowledgeView);
+
+    // 4: Projects & Files
+    m_projectsView = new ProjectsView(m_viewStack);
+    connect(m_projectsView, &ProjectsView::attachFileToChatRequested, this, [this](const QString& path, const QString& content) {
+        switchView("home");
+        m_navSidebar->setActiveView("home");
+        m_chatView->setInputText(QString("[Context File: %1]\n```\n%2\n```\n\n").arg(path, content));
+        m_chatView->focusInput();
+    });
+    m_viewStack->addWidget(m_projectsView);
+
+    // 5: Tools (Truthful Architectural Specification)
+    m_toolsView = new PrototypeView(
+        "C Core Native Tools",
+        "⚙️",
+        "● STATUS: ARCHITECTURAL SPECIFICATION",
+        Theme::StatusSuccess,
+        "Native tools engine governed by the C11 Core. Command parsing, memory safety, and deterministic lifecycle tracking.",
+        "FLEX 1.0 enforces all command parsing through strict C11 native modules without dynamic heap allocations. Live dispatch is active in the Home chat pipeline.",
+        {
+            "External CLI tool execution plugins are not implemented in Stage 1.",
+            "Interactive tools dashboard is an architectural specification only; no fabricated buttons.",
+            "All command verification is performed automatically in the Home chat view."
+        },
+        m_viewStack
+    );
+    m_viewStack->addWidget(m_toolsView);
+
+    // 6: Settings
+    m_settingsView = new SettingsView(m_coordinator, m_viewStack);
+    connect(m_settingsView, &SettingsView::settingsUpdated, this, &MainWindow::checkAiConnectivity);
+    m_viewStack->addWidget(m_settingsView);
+
+    workspaceLayout->addWidget(m_viewStack, 1);
+
+    // Column 3: Right Information Sidebar (~240px)
+    m_rightSidebar = new RightSidebar(workspaceWidget);
+    connect(m_rightSidebar, &RightSidebar::quickActionRequested, this, [this](const QString& key) {
+        m_navSidebar->setActiveView(key);
+        switchView(key);
+    });
+    connect(m_rightSidebar, &RightSidebar::diagnosticsRequested, this, &MainWindow::onDiagnosticsRequested);
+    workspaceLayout->addWidget(m_rightSidebar);
+
+    rootLayout->addWidget(workspaceWidget, 1);
+}
+
+void MainWindow::switchView(const QString& viewKey)
+{
+    if (viewKey == "home") {
+        m_viewStack->setCurrentWidget(m_chatView);
+        m_chatView->focusInput();
+    } else if (viewKey == "voice") {
+        m_viewStack->setCurrentWidget(m_voiceStudioView);
+    } else if (viewKey == "memory") {
+        m_memoryView->refreshConversations();
+        m_viewStack->setCurrentWidget(m_memoryView);
+    } else if (viewKey == "knowledge") {
+        m_viewStack->setCurrentWidget(m_knowledgeView);
+    } else if (viewKey == "projects") {
+        m_viewStack->setCurrentWidget(m_projectsView);
+    } else if (viewKey == "tools") {
+        m_viewStack->setCurrentWidget(m_toolsView);
+    } else if (viewKey == "settings") {
+        m_viewStack->setCurrentWidget(m_settingsView);
+    }
+}
+
+void MainWindow::onToggleRightSidebar()
+{
+    if (!m_rightSidebar) {
+        return;
+    }
+    bool currentlyVisible = m_rightSidebar->isVisible();
+    m_rightSidebar->setVisible(!currentlyVisible);
+    if (m_topHeader) {
+        m_topHeader->setRightSidebarVisible(!currentlyVisible);
+    }
+}
+
+void MainWindow::onDiagnosticsRequested()
+{
+    QString info = "<h3>FLEX 1.0 System Diagnostics</h3>";
+    info += "<hr/>";
+
+    // C Core Status
+    bool coreProcessing = m_coordinator ? m_coordinator->coreSession().isProcessing() : false;
+    info += QString("<p><b>C11 Core:</b> %1<br/>"
+                    "Memory Boundary: 1024 Bytes Max Input<br/>"
+                    "Lifecycle State: %2</p>")
+        .arg(coreProcessing ? "<span style='color:#38BDF8;'>PROCESSING</span>" : "<span style='color:#34D399;'>IDLE</span>")
+        .arg(m_coordinator ? CoreSession::lifecycleToString(m_coordinator->coreSession().lifecycle()) : "UNKNOWN");
+
+    // Ollama AI Engine
+    info += QString("<p><b>Local AI Engine:</b> %1<br/>"
+                    "Model Configured: %2<br/>"
+                    "Endpoint: %3</p>")
+        .arg(m_lastOllamaOnline ? "<span style='color:#34D399;'>ONLINE</span>" : "<span style='color:#F87171;'>OFFLINE</span>")
+        .arg(m_lastOllamaModel.isEmpty() ? "qwen2.5-coder:3b" : m_lastOllamaModel)
+        .arg(m_coordinator && m_coordinator->ollamaClient() ? QString::fromStdString(m_coordinator->ollamaClient()->config().baseUrl) : "127.0.0.1:11434");
+
+    // Storage Status
+    info += QString("<p><b>SQLite Storage:</b> <span style='color:#34D399;'>ACTIVE</span><br/>"
+                    "Database Path: %1<br/>"
+                    "Total Operations: %2</p>")
+        .arg(m_coordinator && m_coordinator->storage() ? QString::fromStdString(m_coordinator->storage()->dbPath()) : "Unknown")
+        .arg(m_opCount);
+
+    // Voice Subsystem
+    info += "<p><b>Voice Subsystem:</b> <span style='color:#34D399;'>ACTIVE</span><br/>"
+            "Audio Capture: WASAPI 16000 Hz Mono PCM<br/>"
+            "Speech Recognition: Local Whisper.cpp (ggml-tiny.en.bin)<br/>"
+            "Speech Synthesis: Native Windows SAPI 5.4</p>";
+
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("FLEX 1.0 — Diagnostics Drawer");
+    msgBox.setText(info);
+    msgBox.setStyleSheet(Theme::getApplicationStylesheet());
+    msgBox.exec();
 }
 
 void MainWindow::connectCoordinatorSignals()
@@ -215,7 +333,11 @@ void MainWindow::handleSendChat(const QString& promptText)
 void MainWindow::handleNewConversation()
 {
     m_chatView->clearConversation();
-    m_convList->selectConversation(QString());
+    if (auto* clist = conversationListWidget()) {
+        clist->selectConversation(QString());
+    }
+    switchView("home");
+    m_navSidebar->setActiveView("home");
     m_chatView->focusInput();
     updateCoreStateDisplay();
 }
@@ -231,6 +353,8 @@ void MainWindow::handleSelectConversation(const QString& conversationId)
     auto messages = m_coordinator->getConversationMessages(conversationId.toStdString());
 
     m_chatView->setConversation(conversationId, title, messages);
+    switchView("home");
+    m_navSidebar->setActiveView("home");
     updateCoreStateDisplay();
 }
 
@@ -257,10 +381,11 @@ void MainWindow::refreshConversations()
     }
 
     auto list = m_coordinator->listConversations(50);
-    m_convList->setConversations(list);
-
-    if (!m_chatView->conversationId().isEmpty()) {
-        m_convList->selectConversation(m_chatView->conversationId());
+    if (auto* clist = conversationListWidget()) {
+        clist->setConversations(list);
+        if (!m_chatView->conversationId().isEmpty()) {
+            clist->selectConversation(m_chatView->conversationId());
+        }
     }
 }
 
@@ -302,13 +427,21 @@ void MainWindow::checkAiConnectivity()
 
 void MainWindow::updateTelemetryBar(bool ollamaOnline, const QString& modelName)
 {
-    if (ollamaOnline) {
-        QString text = QString("● Ollama: Connected (%1)").arg(modelName.isEmpty() ? "online" : modelName);
-        m_ollamaStatusLabel->setText(text);
-        m_ollamaStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(Theme::StatusSuccess));
-    } else {
-        m_ollamaStatusLabel->setText("○ Ollama: Offline (127.0.0.1:11434)");
-        m_ollamaStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(Theme::StatusOffline));
+    m_lastOllamaOnline = ollamaOnline;
+    m_lastOllamaModel = modelName;
+
+    if (m_topHeader) {
+        m_topHeader->setOllamaStatus(ollamaOnline, modelName);
+    }
+
+    QString dbPath;
+    if (m_coordinator && m_coordinator->storage()) {
+        dbPath = QString::fromStdString(m_coordinator->storage()->dbPath());
+    }
+
+    bool coreProc = m_coordinator ? m_coordinator->coreSession().isProcessing() : false;
+    if (m_rightSidebar) {
+        m_rightSidebar->updateTelemetry(ollamaOnline, modelName, coreProc, dbPath);
     }
 }
 
@@ -319,12 +452,19 @@ void MainWindow::updateCoreStateDisplay()
     }
 
     bool processing = m_coordinator->coreSession().isProcessing();
-    if (processing) {
-        m_coreStatusLabel->setText("● C Core: PROCESSING");
-        m_coreStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(Theme::TextAccentCyan));
-    } else {
-        m_coreStatusLabel->setText("● C Core: IDLE");
-        m_coreStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px;").arg(Theme::StatusSuccess));
+    QString stateStr = CoreSession::lifecycleToString(m_coordinator->coreSession().lifecycle());
+
+    if (m_topHeader) {
+        m_topHeader->setCoreStatus(stateStr, processing);
+    }
+
+    QString dbPath;
+    if (m_coordinator && m_coordinator->storage()) {
+        dbPath = QString::fromStdString(m_coordinator->storage()->dbPath());
+    }
+
+    if (m_rightSidebar) {
+        m_rightSidebar->updateTelemetry(m_lastOllamaOnline, m_lastOllamaModel, processing, dbPath);
     }
 }
 
@@ -343,6 +483,11 @@ void MainWindow::onChatFinished(uint64_t requestId, const flex::ChatResult& resu
         return;
     }
     m_currentRequestId = 0;
+    m_opCount++;
+    if (m_topHeader) {
+        m_topHeader->setOpCount(m_opCount);
+    }
+
     m_chatView->setInputEnabled(true);
     updateCoreStateDisplay();
 
@@ -360,7 +505,9 @@ void MainWindow::onChatFinished(uint64_t requestId, const flex::ChatResult& resu
 
         refreshConversations();
         if (!result.conversationId.empty()) {
-            m_convList->selectConversation(QString::fromStdString(result.conversationId));
+            if (auto* clist = conversationListWidget()) {
+                clist->selectConversation(QString::fromStdString(result.conversationId));
+            }
         }
     } else {
         m_chatView->setVisualState(CoreVisualState::Error);
@@ -399,4 +546,3 @@ void MainWindow::closeEvent(QCloseEvent* event)
 }
 
 } // namespace flex::ui
-

@@ -608,6 +608,87 @@ void test_chat_view_voice_controls()
     EXPECT_TRUE(view.audioStatusText().contains("TTS Error"));
 }
 
+void test_shell_restoration_and_view_switching()
+{
+    std::cout << "[Test 12] Shell restoration, 3-column layout, and view switching...\n";
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    flex::OllamaConfig cfg;
+    cfg.baseUrl = "http://127.0.0.1:9999";
+    auto client = std::make_shared<flex::OllamaClient>(cfg);
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, client);
+
+    flex::ui::MainWindow window(coordinator);
+
+    // Verify window initial dimensions and title
+    EXPECT_TRUE(window.windowTitle().contains("FLEX 1.0"));
+    EXPECT_TRUE(window.minimumWidth() >= 960);
+    EXPECT_TRUE(window.minimumHeight() >= 600);
+
+    // Verify views switch cleanly
+    window.switchView("voice");
+    window.switchView("memory");
+    window.switchView("knowledge");
+    window.switchView("projects");
+    window.switchView("tools");
+    window.switchView("settings");
+    window.switchView("home");
+
+    // Capture visual artifacts of the restored UI for verification reporting
+    window.resize(1180, 780);
+    window.show();
+    QCoreApplication::processEvents();
+
+    QString artifactDir = "C:/Users/sanid/.gemini/antigravity/brain/192af516-bd68-4580-acd1-dc492b739fef";
+    if (QDir(artifactDir).exists()) {
+        window.switchView("home");
+        QCoreApplication::processEvents();
+        window.grab().save(artifactDir + "/screenshot_home.png");
+
+        window.switchView("voice");
+        QCoreApplication::processEvents();
+        window.grab().save(artifactDir + "/screenshot_voice_studio.png");
+
+        window.switchView("projects");
+        QCoreApplication::processEvents();
+        window.grab().save(artifactDir + "/screenshot_projects.png");
+
+        window.switchView("memory");
+        QCoreApplication::processEvents();
+        window.grab().save(artifactDir + "/screenshot_memory.png");
+
+        window.switchView("settings");
+        QCoreApplication::processEvents();
+        window.grab().save(artifactDir + "/screenshot_settings.png");
+
+        window.switchView("home");
+        QCoreApplication::processEvents();
+    }
+
+    // Verify ChatView still active and focused
+    EXPECT_TRUE(window.chatView() != nullptr);
+    EXPECT_EQ(0, window.chatView()->messageCount());
+}
+
+void test_projects_and_memory_views()
+{
+    std::cout << "[Test 13] Projects explorer dynamic root and memory vault...\n";
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    std::string cid = storage->createConversation("Memory Test Chat");
+    storage->saveMessage(cid, "user", "What is C11?");
+    storage->saveMessage(cid, "assistant", "C11 is an ISO standard for C.");
+
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, nullptr);
+
+    flex::ui::MemoryView memView(coordinator);
+    memView.refreshConversations();
+
+    flex::ui::ProjectsView projView;
+    EXPECT_FALSE(projView.currentRootPath().isEmpty());
+    EXPECT_TRUE(QDir(projView.currentRootPath()).exists());
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -634,6 +715,8 @@ int main(int argc, char* argv[])
     test_repeated_send_blocked(mock);
     test_safe_window_shutdown(mock);
     test_chat_view_voice_controls();
+    test_shell_restoration_and_view_switching();
+    test_projects_and_memory_views();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

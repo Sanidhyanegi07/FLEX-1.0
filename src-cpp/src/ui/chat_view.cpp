@@ -106,20 +106,59 @@ void ChatView::setupUi()
     // Empty state Hero Widget
     m_emptyHeroWidget = new QWidget(m_messagesContainer);
     auto* heroLayout = new QVBoxLayout(m_emptyHeroWidget);
-    heroLayout->setContentsMargins(10, 40, 10, 40);
+    heroLayout->setContentsMargins(10, 30, 10, 30);
     heroLayout->setSpacing(12);
     heroLayout->setAlignment(Qt::AlignCenter);
 
     m_heroCore = new AICoreWidget(m_emptyHeroWidget, false);
     heroLayout->addWidget(m_heroCore, 0, Qt::AlignCenter);
 
+    auto* heroTitle = new QLabel(
+        "What can I help you build today?",
+        m_emptyHeroWidget
+    );
+    heroTitle->setStyleSheet("color: #F8FAFC; font-size: 18px; font-weight: 700;");
+    heroTitle->setAlignment(Qt::AlignCenter);
+    heroLayout->addWidget(heroTitle);
+
     auto* heroDesc = new QLabel(
-        "FLEX 1.0 is ready. Type a prompt below to begin your conversation.",
+        "Local AI companion with native C core determinism and private storage.",
         m_emptyHeroWidget
     );
     heroDesc->setStyleSheet("color: #94A3B8; font-size: 13px;");
     heroDesc->setAlignment(Qt::AlignCenter);
     heroLayout->addWidget(heroDesc);
+
+    // Suggestion prompt chips container
+    auto* chipsContainer = new QWidget(m_emptyHeroWidget);
+    auto* chipsLayout = new QHBoxLayout(chipsContainer);
+    chipsLayout->setContentsMargins(0, 10, 0, 0);
+    chipsLayout->setSpacing(10);
+    chipsLayout->setAlignment(Qt::AlignCenter);
+
+    struct ChipDef {
+        QString label;
+        QString prompt;
+    };
+    const std::vector<ChipDef> chips = {
+        {"💡 Explain C11 Memory Safety", "Explain how C11 memory safety and bounded buffers prevent security exploits."},
+        {"⚡ Test Local Ollama Inference", "Test local Ollama inference: summarize the key strengths of native C++ desktop software."},
+        {"🎙️ Record Microphone Voice", "Explain how local Whisper speech-to-text operates completely offline."},
+        {"📁 Inspect Project Files", "What is the architectural purpose of core-c in this hybrid AI assistant?"}
+    };
+
+    for (const auto& chip : chips) {
+        auto* chipBtn = new QPushButton(chip.label, chipsContainer);
+        chipBtn->setObjectName("PromptSuggestionChip");
+        chipBtn->setCursor(Qt::PointingHandCursor);
+        QString promptText = chip.prompt;
+        connect(chipBtn, &QPushButton::clicked, this, [this, promptText]() {
+            setInputText(promptText);
+            focusInput();
+        });
+        chipsLayout->addWidget(chipBtn);
+    }
+    heroLayout->addWidget(chipsContainer);
 
     m_messagesLayout->addWidget(m_emptyHeroWidget);
     m_messagesLayout->addStretch();

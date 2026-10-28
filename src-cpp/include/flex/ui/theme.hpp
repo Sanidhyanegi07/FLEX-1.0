@@ -42,6 +42,12 @@ struct Theme {
     static inline const QString StatusError      = "#F87171"; // Red Alert Flare
     static inline const QString StatusOffline    = "#64748B"; // Quenched Slate
 
+    // Additional Celestial Elements
+    static inline const QString BgBadge          = "#141726"; // Status badge background
+    static inline const QString BgTreeView       = "#121124"; // Tree view background
+    static inline const QString SelectionBg      = "#2C1B5E"; // Cosmic selection background
+    static inline const QString TextSlate        = "#64748B"; // Slate caption text
+
     // QColor equivalents
     static inline QColor colorBgRoot()           { return QColor(BgRoot); }
     static inline QColor colorBgPanel()          { return QColor(BgPanel); }

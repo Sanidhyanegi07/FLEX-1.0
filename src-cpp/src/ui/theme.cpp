@@ -14,41 +14,184 @@ QMainWindow, QWidget#CentralWidget {
     font-size: 13px;
 }
 
-/* Sidebar Container */
-QWidget#SidebarWidget {
+/* ========================================================================= */
+/* Top Telemetry Header Bar                                                  */
+/* ========================================================================= */
+
+QFrame#TopHeaderFrame {
     background-color: %3;
-    border-right: 1px solid %4;
+    border-bottom: 1px solid %4;
+    padding: 0px;
 }
 
-/* Header & Brand */
-QLabel#AppBrandTitle {
-    color: %2;
-    font-size: 17px;
-    font-weight: 700;
-    letter-spacing: 1px;
-}
-
-QLabel#AppBrandSubtitle {
+QLabel#TopBrandTitle, QLabel#AppBrandTitle {
     color: %5;
-    font-size: 10px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+
+QLabel#TopBrandSubtitle, QLabel#AppBrandSubtitle {
+    color: %6;
+    font-size: 9px;
+    font-weight: 700;
     letter-spacing: 0.5px;
 }
 
-/* Buttons */
+QLabel#StatusBadge, QFrame#TelemetryCard {
+    background-color: %7;
+    color: %6;
+    border: 1px solid %4;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-family: "Consolas", monospace;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+QPushButton#SidebarToggleBtn {
+    background-color: %7;
+    color: %6;
+    border: 1px solid %4;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QPushButton#SidebarToggleBtn:hover {
+    background-color: %8;
+    color: %2;
+    border-color: %9;
+}
+
+/* ========================================================================= */
+/* Left Navigation Sidebar                                                   */
+/* ========================================================================= */
+
+QWidget#SidebarWidget, QWidget#LeftSidebarWidget {
+    background-color: %10;
+    border-right: 1px solid %4;
+}
+
+QLabel#BrandLogoBox {
+    background-color: %11;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 800;
+    border-radius: 4px;
+    padding: 2px 6px;
+}
+
+QPushButton#NavButton {
+    background-color: transparent;
+    color: %6;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+}
+
+QPushButton#NavButton:hover {
+    background-color: %12;
+    color: %2;
+}
+
+QPushButton#NavButton[active="true"] {
+    background-color: %13;
+    color: %2;
+    font-weight: 600;
+    border-left: 3px solid %11;
+}
+
+QLabel#RecentChatsHeader {
+    color: #64748B;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 6px 14px 2px 14px;
+}
+
+QFrame#LocalProfileCard {
+    background-color: %7;
+    border: 1px solid %4;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+/* ========================================================================= */
+/* Right Information Sidebar                                                 */
+/* ========================================================================= */
+
+QWidget#RightSidebarWidget {
+    background-color: %10;
+    border-left: 1px solid %4;
+}
+
+QFrame#UserProfileCard {
+    background-color: %7;
+    border: 1px solid %4;
+    border-radius: 8px;
+    padding: 12px;
+}
+
+QLabel#SectionHeaderLabel {
+    color: #64748B;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+}
+
+QLabel#StatusPill {
+    background-color: %7;
+    color: %6;
+    border: 1px solid %4;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-family: "Consolas", monospace;
+    font-size: 9px;
+}
+
+QPushButton#QuickActionBtn {
+    background-color: %10;
+    color: %6;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 11px;
+    text-align: left;
+}
+
+QPushButton#QuickActionBtn:hover {
+    background-color: %13;
+    color: %2;
+}
+
+QLabel#TaglineLabel {
+    color: #475569;
+    font-size: 10px;
+    font-style: italic;
+}
+
+/* ========================================================================= */
+/* Buttons                                                                   */
+/* ========================================================================= */
+
 QPushButton {
-    background-color: %6;
+    background-color: %7;
     color: %2;
     border: 1px solid %4;
     border-radius: 6px;
-    padding: 7px 14px;
-    font-size: 13px;
+    padding: 6px 12px;
+    font-size: 12px;
     font-weight: 500;
 }
 
 QPushButton:hover {
-    background-color: %7;
-    border-color: %8;
+    background-color: %12;
+    border-color: %14;
 }
 
 QPushButton:pressed {
@@ -62,15 +205,15 @@ QPushButton:disabled {
 }
 
 QPushButton#PrimaryButton {
-    background-color: %9;
+    background-color: %11;
     color: #FFFFFF;
-    border: 1px solid %9;
+    border: 1px solid %11;
     font-weight: 600;
 }
 
 QPushButton#PrimaryButton:hover {
-    background-color: %10;
-    border-color: %10;
+    background-color: %15;
+    border-color: %15;
 }
 
 QPushButton#PrimaryButton:disabled {
@@ -79,13 +222,13 @@ QPushButton#PrimaryButton:disabled {
     border-color: #2D1F4D;
 }
 
-/* New Chat Button */
 QPushButton#NewChatButton {
-    background-color: #1E1A33;
-    color: %11;
-    border: 1px solid #7C3AED;
+    background-color: %13;
+    color: %16;
+    border: 1px solid %11;
     border-radius: 6px;
-    padding: 8px 14px;
+    padding: 7px 12px;
+    font-size: 12px;
     font-weight: 600;
     text-align: center;
 }
@@ -96,9 +239,32 @@ QPushButton#NewChatButton:hover {
     color: #FFFFFF;
 }
 
-/* Line Edits & Search */
+/* ========================================================================= */
+/* Hero Prompt Suggestion Chips                                              */
+/* ========================================================================= */
+
+QPushButton#PromptSuggestionChip {
+    background-color: %7;
+    color: %6;
+    border: 1px solid %4;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    text-align: left;
+}
+
+QPushButton#PromptSuggestionChip:hover {
+    background-color: %13;
+    border-color: %11;
+    color: %2;
+}
+
+/* ========================================================================= */
+/* Line Edits & Search                                                       */
+/* ========================================================================= */
+
 QLineEdit {
-    background-color: %12;
+    background-color: %17;
     color: %2;
     border: 1px solid %4;
     border-radius: 6px;
@@ -107,12 +273,12 @@ QLineEdit {
 }
 
 QLineEdit:focus {
-    border-color: %8;
+    border-color: %9;
 }
 
 /* Plain Text & Text Edit */
 QPlainTextEdit, QTextEdit {
-    background-color: %12;
+    background-color: %17;
     color: %2;
     border: 1px solid %4;
     border-radius: 8px;
@@ -123,37 +289,80 @@ QPlainTextEdit, QTextEdit {
 }
 
 QPlainTextEdit:focus, QTextEdit:focus {
-    border-color: %8;
+    border-color: %9;
 }
 
-/* Conversation List */
+/* ========================================================================= */
+/* Conversation List                                                         */
+/* ========================================================================= */
+
 QListWidget {
     background-color: transparent;
     border: none;
     outline: none;
-    padding: 4px;
+    padding: 2px;
 }
 
 QListWidget::item {
     background-color: transparent;
-    color: %5;
+    color: %6;
     border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 3px;
+    padding: 7px 10px;
+    margin-bottom: 2px;
 }
 
 QListWidget::item:hover {
-    background-color: %13;
+    background-color: %12;
     color: %2;
 }
 
 QListWidget::item:selected {
-    background-color: %14;
+    background-color: %13;
     color: #FFFFFF;
-    border-left: 3px solid %9;
+    border-left: 3px solid %11;
 }
 
-/* Scroll Areas */
+/* ========================================================================= */
+/* Tree Views & Projects Explorer                                            */
+/* ========================================================================= */
+
+QTreeView {
+    background-color: #121124;
+    color: #E2E8F0;
+    border: 1px solid %4;
+    border-radius: 6px;
+    padding: 4px;
+    outline: none;
+}
+
+QTreeView::item {
+    padding: 4px;
+    border-radius: 4px;
+}
+
+QTreeView::item:hover {
+    background-color: %12;
+}
+
+QTreeView::item:selected {
+    background-color: #2C1B5E;
+    color: #A78BFA;
+}
+
+QHeaderView::section {
+    background-color: %3;
+    color: %6;
+    border: none;
+    border-bottom: 1px solid %4;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* ========================================================================= */
+/* Scroll Areas & Scrollbars                                                 */
+/* ========================================================================= */
+
 QScrollArea {
     background-color: transparent;
     border: none;
@@ -183,20 +392,34 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: none;
 }
 
-/* Telemetry & Status Badges */
-QFrame#TelemetryCard {
-    background-color: %15;
-    border: 1px solid %4;
-    border-radius: 6px;
-    padding: 6px;
+QScrollBar:horizontal {
+    background-color: transparent;
+    height: 7px;
+    margin: 0;
 }
 
-QLabel#TelemetryLabel {
-    color: %5;
-    font-size: 11px;
+QScrollBar::handle:horizontal {
+    background-color: #1E2338;
+    border-radius: 3px;
+    min-width: 20px;
 }
 
-/* Splitter */
+QScrollBar::handle:horizontal:hover {
+    background-color: #333C5E;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
+/* ========================================================================= */
+/* Splitter & Dividers                                                       */
+/* ========================================================================= */
+
 QSplitter::handle {
     background-color: %4;
 }
@@ -204,22 +427,37 @@ QSplitter::handle {
 QSplitter::handle:horizontal {
     width: 1px;
 }
+
+/* ========================================================================= */
+/* Tooltips                                                                  */
+/* ========================================================================= */
+
+QToolTip {
+    background-color: %7;
+    color: %2;
+    border: 1px solid %4;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}
 )")
     .arg(BgRoot)             // %1
     .arg(TextPrimary)        // %2
-    .arg(BgSidebar)         // %3
+    .arg(BgPanel)           // %3
     .arg(Border)            // %4
-    .arg(TextMuted)         // %5
-    .arg(BgCard)            // %6
-    .arg(BgSidebarHover)    // %7
-    .arg(BorderFocus)       // %8
-    .arg(AccentPurple)      // %9
-    .arg(AccentPurpleHover) // %10
-    .arg(TextAccentViolet)  // %11
-    .arg(BgInput)           // %12
-    .arg(BgSidebarHover)    // %13
-    .arg(BgSidebarActive)   // %14
-    .arg(BgPanel);          // %15
+    .arg(TextAccentCyan)    // %5
+    .arg(TextMuted)         // %6
+    .arg(BgCard)            // %7
+    .arg(BgSidebarHover)    // %8
+    .arg(BorderFocus)       // %9
+    .arg(BgSidebar)         // %10
+    .arg(AccentPurple)      // %11
+    .arg(BgSidebarHover)    // %12
+    .arg(BgSidebarActive)   // %13
+    .arg(BorderHover)       // %14
+    .arg(AccentPurpleHover) // %15
+    .arg(TextAccentViolet)  // %16
+    .arg(BgInput);          // %17
 }
 
 } // namespace flex::ui
