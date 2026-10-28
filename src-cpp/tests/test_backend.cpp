@@ -1003,6 +1003,75 @@ void test_safe_destruction_while_in_flight(MockOllamaServer& mock)
     EXPECT_TRUE(true); // Reached safely without crash or assertion failure
 }
 
+// -----------------------------------------------------------------------------
+// Test 21: Concurrent Request Rejection and Orphan Prevention
+// -----------------------------------------------------------------------------
+void test_concurrent_request_rejection_and_no_orphans(MockOllamaServer& mock)
+{
+    std::cout << "[Test 21] Concurrent request rejection by C core and orphan prevention...\n";
+    mock.reset();
+    mock.setDelay(200); // 200ms delay for Request 1
+    mock.setResponse(200, "OK", R"({"message": {"role": "assistant", "content": "Request 1 reply"}, "done": true})");
+
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    flex::OllamaConfig cfg;
+    cfg.baseUrl = mock.url();
+    auto client = std::make_shared<flex::OllamaClient>(cfg);
+
+    flex::BackendCoordinator coordinator(storage, client);
+
+    QEventLoop loop;
+    bool req1Finished = false;
+    flex::ChatResult req1Result;
+
+    // Start Request 1 (in-flight)
+    flex::ChatRequest req1;
+    req1.message = "Request 1 prompt";
+
+    uint64_t id1 = coordinator.sendChatAsync(
+        req1,
+        [&](const flex::ChatResult& res) {
+            req1Finished = true;
+            req1Result = res;
+            loop.quit();
+        },
+        [&](const flex::BackendError&) {
+            req1Finished = true;
+            loop.quit();
+        }
+    );
+    EXPECT_TRUE(id1 > 0);
+    EXPECT_TRUE(coordinator.coreSession().isProcessing());
+
+    // Record conversation count after Request 1 began
+    int64_t convCountBefore = storage->getConversationCount();
+
+    // Now attempt Request 2 while Request 1 is still in-flight
+    flex::ChatRequest req2;
+    req2.message = "Request 2 concurrent prompt";
+
+    flex::BackendError req2Err;
+    flex::ChatResult req2Res = coordinator.sendChatSync(req2, &req2Err);
+
+    // Request 2 MUST be rejected with CoreRejected because C core is busy
+    EXPECT_FALSE(req2Res.success);
+    EXPECT_EQ(static_cast<int>(flex::BackendErrorCategory::CoreRejected), static_cast<int>(req2Err.category));
+
+    // Request 2 MUST NOT have created an orphaned conversation
+    int64_t convCountAfter = storage->getConversationCount();
+    EXPECT_EQ(convCountBefore, convCountAfter);
+
+    // Wait for Request 1 to settle cleanly
+    if (!req1Finished) {
+        loop.exec();
+    }
+
+    EXPECT_TRUE(req1Result.success);
+    EXPECT_STR_EQ("Request 1 reply", req1Result.responseText);
+    EXPECT_TRUE(coordinator.coreSession().isIdle());
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -1036,6 +1105,7 @@ int main(int argc, char* argv[])
     test_context_limits_and_large_input_handling(mock);
     test_unicode_and_multiline_messages(mock);
     test_safe_destruction_while_in_flight(mock);
+    test_concurrent_request_rejection_and_no_orphans(mock);
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

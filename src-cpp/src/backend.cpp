@@ -111,7 +111,15 @@ public:
 
     ~BackendCoordinatorImpl()
     {
+        *m_alive = false;
+        for (auto& [id, active] : m_activeChats) {
+            if (active && active->coreStarted) {
+                m_core.finishOperation();
+                active->coreStarted = false;
+            }
+        }
         cancelAll();
+        m_activeChats.clear();
     }
 
     [[nodiscard]] CoreSession& coreSession() noexcept
@@ -159,8 +167,9 @@ public:
             return 0;
         }
 
-        // 1. Verify or create conversation
+        // 1. Validate target conversation ID if explicitly provided
         std::string targetCid;
+        bool isNewConversation = false;
         if (request.conversationId.has_value() && !request.conversationId.value().empty()) {
             targetCid = request.conversationId.value();
             try {
@@ -181,22 +190,13 @@ public:
                 reportImmediateError(0, err, onError, onComplete);
                 return 0;
             }
-        } else {
-            try {
-                targetCid = m_storage->createConversation("New Chat");
-            } catch (const StorageError& exc) {
-                BackendError err{
-                    BackendErrorCategory::StorageError, 0,
-                    "Failed to create new conversation in storage: " + std::string(exc.what())
-                };
-                reportImmediateError(0, err, onError, onComplete);
-                return 0;
-            }
         }
 
         // 2. Authorize operation with C Core Lifecycle State Manager
         // Note: Decouple C core command authorization from large AI prompt payload
         // to strictly respect the C core's 1024-byte input size limit.
+        // We authorize with C core BEFORE creating any new conversation in storage
+        // to prevent leaving orphaned empty conversations if C core rejects (e.g. ALREADY_PROCESSING).
         DispatchResult dispatchRes = m_core.dispatch("chat");
         if (!dispatchRes.isOk() || !dispatchRes.operationStarted()) {
             BackendErrorCategory cat = BackendErrorCategory::CoreRejected;
@@ -222,14 +222,39 @@ public:
 
         uint64_t coreOpId = dispatchRes.operationId();
 
-        // 3. Persist user message to storage
+        // 3. Resolve conversation ID (create new conversation if not provided)
+        if (targetCid.empty()) {
+            try {
+                targetCid = m_storage->createConversation("New Chat");
+                isNewConversation = true;
+            } catch (const StorageError& exc) {
+                m_core.finishOperation();
+                BackendError err{
+                    BackendErrorCategory::StorageError, 0,
+                    "Failed to create new conversation in storage: " + std::string(exc.what())
+                };
+                ChatResult res;
+                res.success = false;
+                res.userPrompt = cleanMsg;
+                res.operationId = coreOpId;
+                res.parserStatus = dispatchRes.parserStatus();
+                res.stateStatus = dispatchRes.stateStatus();
+                res.error = err;
+                reportImmediateError(0, err, onError, onComplete, &res);
+                return 0;
+            }
+        }
+
+        // 4. Persist user message to storage
         std::string userMsgId;
         try {
             userMsgId = m_storage->saveMessage(
                 targetCid, "user", cleanMsg, std::nullopt, request.userMessageId, true
             );
         } catch (const StorageError& exc) {
-            // Must cleanly finish C core operation because it was started
+            if (isNewConversation) {
+                m_storage->deleteConversation(targetCid);
+            }
             m_core.finishOperation();
             BackendError err{
                 BackendErrorCategory::StorageError, 0,
@@ -247,7 +272,7 @@ public:
             return 0;
         }
 
-        // 4. Assemble context messages from storage
+        // 5. Assemble context messages from storage
         std::vector<ChatMessage> ollamaMessages;
         std::string sysPrompt = request.systemPrompt.value_or(BackendCoordinator::DEFAULT_SYSTEM_PROMPT);
         if (!sysPrompt.empty()) {
@@ -316,7 +341,10 @@ public:
         }
 
         // 6. Dispatch to Ollama Client
-        auto onOllamaToken = [this, reqId](const std::string& tokenChunk) {
+        auto onOllamaToken = [this, reqId, alive = m_alive](const std::string& tokenChunk) {
+            if (!*alive) {
+                return;
+            }
             auto it = m_activeChats.find(reqId);
             if (it != m_activeChats.end() && it->second->onToken) {
                 it->second->onToken(tokenChunk);
@@ -324,13 +352,24 @@ public:
             emit m_q->chatToken(reqId, QString::fromStdString(tokenChunk));
         };
 
-        auto onOllamaComplete = [this, reqId](const ChatResponse& resp) {
+        auto onOllamaComplete = [this, reqId, alive = m_alive](const ChatResponse& resp) {
+            if (!*alive) {
+                return;
+            }
             handleOllamaComplete(reqId, resp);
         };
 
-        auto onOllamaError = [this, reqId](const OllamaError& err) {
+        auto onOllamaError = [this, reqId, alive = m_alive](const OllamaError& err) {
+            if (!*alive) {
+                return;
+            }
             handleOllamaError(reqId, err);
         };
+
+        // Register active request BEFORE dispatching to OllamaClient
+        // so that synchronous completion or immediate error inside chatAsync
+        // is cleanly captured and processed without orphan state.
+        m_activeChats[reqId] = std::move(active);
 
         uint64_t ollamaReqId = 0;
         if (request.streaming) {
@@ -350,8 +389,12 @@ public:
             );
         }
 
-        active->ollamaReqId = ollamaReqId;
-        m_activeChats[reqId] = std::move(active);
+        // Check if request is still active (not settled synchronously)
+        auto it = m_activeChats.find(reqId);
+        if (it != m_activeChats.end()) {
+            it->second->ollamaReqId = ollamaReqId;
+        }
+
         return reqId;
     }
 
@@ -521,6 +564,7 @@ private:
     std::shared_ptr<OllamaClient> m_ollama;
 
     std::atomic<uint64_t> m_nextRequestId{1};
+    std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
     std::unordered_map<uint64_t, std::unique_ptr<ActiveChat>> m_activeChats;
 };
 
