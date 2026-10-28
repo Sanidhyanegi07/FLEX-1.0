@@ -25,3 +25,8 @@ __pycache__/
 *.sqlite
 *.sqlite3
 *.corrupt*
+
+# AI & Speech model files (keep outside Git)
+models/
+*.bin
+*.gguf

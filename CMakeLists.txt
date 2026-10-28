@@ -110,15 +110,26 @@ target_link_libraries(flex_backend PUBLIC
 
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
-# Native C++ Voice Subsystem Library (Stage 6B - Step 1)
+# Third-Party Dependencies: whisper.cpp (Stage 6B - Step 2)
+# ------------------------------------------------------------------------------
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "Do not build whisper tests" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "Do not build whisper examples" FORCE)
+set(WHISPER_BUILD_SERVER OFF CACHE BOOL "Do not build whisper server" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
+add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
+
+# ------------------------------------------------------------------------------
+# Native C++ Voice Subsystem Library (Stage 6B - Step 1 & Step 2)
 # ------------------------------------------------------------------------------
 add_library(flex_voice STATIC
     src-cpp/include/flex/voice/audio_buffer.hpp
     src-cpp/include/flex/voice/audio_capture_service.hpp
     src-cpp/include/flex/voice/text_to_speech_service.hpp
+    src-cpp/include/flex/voice/speech_to_text_service.hpp
     src-cpp/include/flex/voice/tts_queue.hpp
     src-cpp/src/voice/audio_capture_service.cpp
     src-cpp/src/voice/text_to_speech_service.cpp
+    src-cpp/src/voice/speech_to_text_service.cpp
 )
 
 set_target_properties(flex_voice PROPERTIES AUTOMOC ON)
@@ -126,9 +137,11 @@ set_target_properties(flex_voice PROPERTIES AUTOMOC ON)
 target_include_directories(flex_voice PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper.cpp/include
 )
 
 target_link_libraries(flex_voice PUBLIC
+    whisper
     Qt6::Core
     Qt6::Multimedia
     ole32

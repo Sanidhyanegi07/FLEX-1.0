@@ -379,13 +379,7 @@ void TextToSpeechService::stop()
 
 bool TextToSpeechService::isSpeaking() const
 {
-    if (m_impl->m_state == TtsState::Speaking) {
-        return true;
-    }
-    if (m_impl->m_engine) {
-        return m_impl->m_engine->isSpeaking();
-    }
-    return false;
+    return m_impl->m_state == TtsState::Speaking;
 }
 
 TtsState TextToSpeechService::state() const
