@@ -4,6 +4,7 @@
 #include "flex/backend.hpp"
 #include "flex/ui/chat_view.hpp"
 #include "flex/ui/conversation_list_widget.hpp"
+#include "flex/voice/voice_conversation_controller.hpp"
 
 #include <QMainWindow>
 #include <QLabel>
@@ -37,6 +38,7 @@ public:
     ~MainWindow() override;
 
     [[nodiscard]] std::shared_ptr<BackendCoordinator> coordinator() const { return m_coordinator; }
+    [[nodiscard]] std::shared_ptr<voice::VoiceConversationController> voiceController() const { return m_voiceController; }
     [[nodiscard]] ChatView* chatView() const { return m_chatView; }
     [[nodiscard]] ConversationListWidget* conversationListWidget() const { return m_convList; }
 
@@ -63,6 +65,7 @@ private:
     void updateCoreStateDisplay();
 
     std::shared_ptr<BackendCoordinator> m_coordinator;
+    std::shared_ptr<voice::VoiceConversationController> m_voiceController;
 
     // UI Widgets
     QSplitter* m_splitter{nullptr};

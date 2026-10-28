@@ -119,17 +119,19 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
 add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
 
 # ------------------------------------------------------------------------------
-# Native C++ Voice Subsystem Library (Stage 6B - Step 1 & Step 2)
+# Native C++ Voice Subsystem Library (Stage 6B - Step 1, 2, 3)
 # ------------------------------------------------------------------------------
 add_library(flex_voice STATIC
     src-cpp/include/flex/voice/audio_buffer.hpp
     src-cpp/include/flex/voice/audio_capture_service.hpp
     src-cpp/include/flex/voice/text_to_speech_service.hpp
     src-cpp/include/flex/voice/speech_to_text_service.hpp
+    src-cpp/include/flex/voice/voice_conversation_controller.hpp
     src-cpp/include/flex/voice/tts_queue.hpp
     src-cpp/src/voice/audio_capture_service.cpp
     src-cpp/src/voice/text_to_speech_service.cpp
     src-cpp/src/voice/speech_to_text_service.cpp
+    src-cpp/src/voice/voice_conversation_controller.cpp
 )
 
 set_target_properties(flex_voice PROPERTIES AUTOMOC ON)
@@ -141,6 +143,7 @@ target_include_directories(flex_voice PUBLIC
 )
 
 target_link_libraries(flex_voice PUBLIC
+    flex_backend
     whisper
     Qt6::Core
     Qt6::Multimedia
@@ -338,8 +341,11 @@ target_include_directories(flex_voice_tests PRIVATE
 
 target_link_libraries(flex_voice_tests PRIVATE
     flex_voice
+    flex_backend
     Qt6::Core
     Qt6::Multimedia
+    Qt6::Sql
+    Qt6::Network
     ole32
     sapi
 )

@@ -6,6 +6,7 @@
 #include "flex/ui/message_bubble.hpp"
 #include "flex/voice/audio_capture_service.hpp"
 #include "flex/voice/text_to_speech_service.hpp"
+#include "flex/voice/voice_conversation_controller.hpp"
 
 #include <QFrame>
 #include <QLabel>
@@ -78,11 +79,14 @@ public:
     void focusInput();
 
     // Voice & Audio Subsystem Accessors
+    void setVoiceController(std::shared_ptr<voice::VoiceConversationController> controller);
+    [[nodiscard]] std::shared_ptr<voice::VoiceConversationController> voiceController() const { return m_voiceController; }
     [[nodiscard]] std::shared_ptr<voice::AudioCaptureService> audioCaptureService() const { return m_audioCapture; }
     [[nodiscard]] std::shared_ptr<voice::TextToSpeechService> textToSpeechService() const { return m_tts; }
     [[nodiscard]] QString audioStatusText() const;
     [[nodiscard]] QString recordButtonText() const;
     [[nodiscard]] QString testTtsButtonText() const;
+    [[nodiscard]] QString voiceOutputButtonText() const;
 
 signals:
     void sendRequested(const QString& text);
@@ -101,6 +105,8 @@ private slots:
     void onCaptureFinished(const flex::voice::AudioBuffer& buffer);
     void onCaptureCancelled();
     void onCaptureError(flex::voice::AudioCaptureError error, const QString& message);
+    void onVoiceOutputToggled();
+    void onVoiceControllerStateChanged(flex::voice::VoiceSessionState state);
 
 private:
     void setupUi();
@@ -133,11 +139,13 @@ private:
     QHBoxLayout* m_inputControlsLayout{nullptr}; // Slot for voice controls
     QPushButton* m_recordAudioBtn{nullptr};
     QPushButton* m_testTtsBtn{nullptr};
+    QPushButton* m_voiceOutputBtn{nullptr};
     QLabel* m_audioStatusLabel{nullptr};
 
     // Voice & Audio Services
     std::shared_ptr<voice::AudioCaptureService> m_audioCapture;
     std::shared_ptr<voice::TextToSpeechService> m_tts;
+    std::shared_ptr<voice::VoiceConversationController> m_voiceController;
 
     // Active streaming message
     MessageBubble* m_currentAssistantBubble{nullptr};

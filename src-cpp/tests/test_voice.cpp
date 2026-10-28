@@ -1,17 +1,23 @@
+#include "flex/backend.hpp"
 #include "flex/voice/audio_buffer.hpp"
 #include "flex/voice/audio_capture_service.hpp"
 #include "flex/voice/speech_to_text_service.hpp"
 #include "flex/voice/text_to_speech_service.hpp"
 #include "flex/voice/tts_queue.hpp"
+#include "flex/voice/voice_conversation_controller.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHostAddress>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryFile>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 
 #include <cassert>
 #include <cmath>
@@ -72,6 +78,143 @@ int g_tests_failed = 0;
                   << " (expected '" << _exp << "', got '" << _act << "')\n"; \
     } \
 } while (0)
+
+// -----------------------------------------------------------------------------
+// In-Process Mock HTTP Server for Deterministic AI Backend Testing
+// -----------------------------------------------------------------------------
+
+class MockOllamaServer : public QObject {
+    Q_OBJECT
+
+public:
+    explicit MockOllamaServer(QObject* parent = nullptr)
+        : QObject(parent), m_server(new QTcpServer(this))
+    {
+        connect(m_server, &QTcpServer::newConnection, this, &MockOllamaServer::onNewConnection);
+        m_server->listen(QHostAddress::LocalHost, 0);
+    }
+
+    ~MockOllamaServer() override
+    {
+        if (m_server && m_server->isListening()) {
+            m_server->close();
+        }
+    }
+
+    [[nodiscard]] uint16_t port() const { return m_server->serverPort(); }
+    [[nodiscard]] std::string url() const { return "http://127.0.0.1:" + std::to_string(port()); }
+
+    void reset()
+    {
+        m_statusCode = 200;
+        m_statusText = "OK";
+        m_responseBody.clear();
+        m_contentType = "application/json";
+        m_isStreaming = false;
+        m_chunks.clear();
+        m_requestCount = 0;
+        m_lastRequestBody.clear();
+    }
+
+    void setResponse(int code, const std::string& statusText, const std::string& body,
+                     const std::string& contentType = "application/json")
+    {
+        m_statusCode = code;
+        m_statusText = statusText;
+        m_responseBody = body;
+        m_contentType = contentType;
+        m_isStreaming = false;
+        m_chunks.clear();
+    }
+
+    void setStreamingResponse(const std::vector<std::string>& chunks)
+    {
+        m_isStreaming = true;
+        m_chunks = chunks;
+    }
+
+    int requestCount() const { return m_requestCount; }
+    const std::string& lastRequestBody() const { return m_lastRequestBody; }
+
+private slots:
+    void onNewConnection()
+    {
+        while (m_server->hasPendingConnections()) {
+            QTcpSocket* socket = m_server->nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+                m_lastRequestBody = socket->readAll().toStdString();
+                m_requestCount++;
+                if (m_isStreaming) {
+                    sendStreaming(socket);
+                } else {
+                    sendNormal(socket);
+                }
+            });
+        }
+    }
+
+private:
+    void sendNormal(QTcpSocket* socket)
+    {
+        if (!socket || socket->state() != QAbstractSocket::ConnectedState) return;
+        QByteArray resp;
+        resp.append(QString("HTTP/1.1 %1 %2\r\n").arg(m_statusCode).arg(QString::fromStdString(m_statusText)).toUtf8());
+        resp.append(QString("Content-Type: %1\r\n").arg(QString::fromStdString(m_contentType)).toUtf8());
+        resp.append(QString("Content-Length: %1\r\n").arg(m_responseBody.size()).toUtf8());
+        resp.append("Connection: close\r\n\r\n");
+        resp.append(QByteArray::fromStdString(m_responseBody));
+        socket->write(resp);
+        socket->flush();
+        socket->disconnectFromHost();
+    }
+
+    void sendStreaming(QTcpSocket* socket)
+    {
+        if (!socket || socket->state() != QAbstractSocket::ConnectedState) return;
+        QByteArray resp;
+        resp.append("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n");
+        for (const auto& chunk : m_chunks) {
+            resp.append(QByteArray::fromStdString(chunk));
+        }
+        socket->write(resp);
+        socket->flush();
+        socket->disconnectFromHost();
+    }
+
+    QTcpServer* m_server{nullptr};
+    int m_statusCode{200};
+    std::string m_statusText{"OK"};
+    std::string m_responseBody;
+    std::string m_contentType{"application/json"};
+    bool m_isStreaming{false};
+    std::vector<std::string> m_chunks;
+    int m_requestCount{0};
+    std::string m_lastRequestBody;
+};
+
+// -----------------------------------------------------------------------------
+// Temporary Database Guard for Test Isolation
+// -----------------------------------------------------------------------------
+
+class TempDbGuard {
+public:
+    TempDbGuard()
+    {
+        m_path = QDir::tempPath().toStdString() + "/flex_test_voice_db_" +
+                 QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString() + ".db";
+        QFile::remove(QString::fromStdString(m_path));
+    }
+
+    ~TempDbGuard()
+    {
+        QFile::remove(QString::fromStdString(m_path));
+    }
+
+    [[nodiscard]] const std::string& path() const noexcept { return m_path; }
+
+private:
+    std::string m_path;
+};
 
 // -----------------------------------------------------------------------------
 // Mock Audio Capture Source for Headless CI Testing

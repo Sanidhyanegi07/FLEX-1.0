@@ -22,6 +22,16 @@ MainWindow::MainWindow(
     setupUi();
     connectCoordinatorSignals();
 
+    // Initialize voice conversation controller
+    m_voiceController = std::make_shared<voice::VoiceConversationController>(
+        m_coordinator,
+        m_chatView->audioCaptureService(),
+        nullptr,
+        m_chatView->textToSpeechService(),
+        this
+    );
+    m_chatView->setVoiceController(m_voiceController);
+
     // Configure health check timer (every 10 seconds, non-blocking)
     connect(&m_healthCheckTimer, &QTimer::timeout, this, &MainWindow::checkAiConnectivity);
     m_healthCheckTimer.start(10000);
@@ -35,6 +45,9 @@ MainWindow::MainWindow(
 MainWindow::~MainWindow()
 {
     m_healthCheckTimer.stop();
+    if (m_voiceController) {
+        m_voiceController->cancelAll();
+    }
     if (m_coordinator) {
         m_coordinator->cancelAll();
     }
@@ -364,6 +377,9 @@ void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     m_healthCheckTimer.stop();
+    if (m_voiceController) {
+        m_voiceController->cancelAll();
+    }
     if (m_coordinator) {
         m_coordinator->cancelAll();
     }
