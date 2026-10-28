@@ -78,8 +78,10 @@ public:
     ~SpeechToTextService() override;
 
     // Model management
-    bool loadModel(const QString& modelPath);
+    bool loadModel(const QString& modelPath = QString());
+    bool loadModelSync(const QString& modelPath = QString(), int timeoutMs = 10000);
     [[nodiscard]] bool isModelLoaded() const;
+    [[nodiscard]] bool isModelLoading() const;
     [[nodiscard]] QString loadedModelPath() const;
 
     // Transcription

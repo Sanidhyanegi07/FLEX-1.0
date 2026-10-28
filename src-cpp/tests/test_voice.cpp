@@ -5,6 +5,7 @@
 #include "flex/voice/text_to_speech_service.hpp"
 #include "flex/voice/tts_queue.hpp"
 #include "flex/voice/voice_conversation_controller.hpp"
+#include "flex/voice/whisper_model_resolver.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -410,6 +411,9 @@ public:
     {
         m_loadModelCalls++;
         m_lastModelPath = modelPath;
+        if (m_delayMs > 0) {
+            QThread::msleep(m_delayMs);
+        }
         if (m_failLoad) {
             m_loaded = false;
             return false;
@@ -2128,6 +2132,131 @@ void test_voice_controller_no_ui_blocking()
     EXPECT_TRUE(ticks > 3);
 }
 
+void test_whisper_model_resolver_canonical_path()
+{
+    std::cout << "[Test 49] WhisperModelResolver: canonical path and resolution states...\n";
+
+    // 1. Check default filename and directory structure
+    EXPECT_STR_EQ("ggml-tiny.en.bin", flex::voice::WhisperModelResolver::defaultModelFileName().toStdString());
+    QString defDir = flex::voice::WhisperModelResolver::defaultModelsDirectory();
+    EXPECT_TRUE(defDir.contains(".flex/models/whisper") || defDir.contains(".flex\\models\\whisper"));
+    QString defPath = flex::voice::WhisperModelResolver::defaultModelPath();
+    EXPECT_TRUE(defPath.contains("ggml-tiny.en.bin"));
+
+    // 2. Test missing path override
+    qputenv("FLEX_WHISPER_MODEL_PATH", "C:/nonexistent_dir_flex/whisper_fake.bin");
+    auto resMissing = flex::voice::WhisperModelResolver::resolveModelPath();
+    EXPECT_FALSE(resMissing.isFound());
+    EXPECT_EQ(static_cast<int>(flex::voice::ModelResolutionStatus::Missing), static_cast<int>(resMissing.status));
+    EXPECT_TRUE(resMissing.errorMessage.contains("download_whisper_model.ps1"));
+
+    // 3. Test undersized/corrupted model file (<1MB)
+    QTemporaryFile smallFile;
+    EXPECT_TRUE(smallFile.open());
+    smallFile.write("tiny corrupt model");
+    smallFile.flush();
+    QString smallPath = smallFile.fileName();
+
+    qputenv("FLEX_WHISPER_MODEL_PATH", smallPath.toUtf8());
+    auto resTooSmall = flex::voice::WhisperModelResolver::resolveModelPath();
+    EXPECT_FALSE(resTooSmall.isFound());
+    EXPECT_EQ(static_cast<int>(flex::voice::ModelResolutionStatus::TooSmall), static_cast<int>(resTooSmall.status));
+    EXPECT_TRUE(resTooSmall.errorMessage.contains("incomplete or corrupted"));
+
+    // 4. Test valid model file (>=1MB)
+    QTemporaryFile validFile;
+    EXPECT_TRUE(validFile.open());
+    validFile.resize(1024 * 1024 + 100);
+    validFile.flush();
+    QString validPath = validFile.fileName();
+
+    qputenv("FLEX_WHISPER_MODEL_PATH", validPath.toUtf8());
+    auto resValid = flex::voice::WhisperModelResolver::resolveModelPath();
+    EXPECT_TRUE(resValid.isFound());
+    EXPECT_EQ(static_cast<int>(flex::voice::ModelResolutionStatus::Found), static_cast<int>(resValid.status));
+    EXPECT_TRUE(resValid.errorMessage.isEmpty());
+
+    // Cleanup env
+    qunsetenv("FLEX_WHISPER_MODEL_PATH");
+}
+
+void test_voice_controller_pending_audio_queue_during_model_load()
+{
+    std::cout << "[Test 50] VoiceController: pending audio queue during asynchronous model load...\n";
+
+    // Setup valid mock model file so resolver finds it
+    QTemporaryFile validFile;
+    EXPECT_TRUE(validFile.open());
+    validFile.resize(1024 * 1024 + 50);
+    validFile.flush();
+    qputenv("FLEX_WHISPER_MODEL_PATH", validFile.fileName().toUtf8());
+
+    VoiceTestContext ctx;
+    ctx.mockStt->setModelLoaded(false);
+    ctx.mockStt->setSimulateDelay(100); // 100ms background load delay
+
+    QString capturedError;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::errorOccurred,
+                     [&](const QString& err) {
+        capturedError = err;
+    });
+
+    bool started = ctx.controller->startRecording();
+    EXPECT_TRUE(started);
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Recording), static_cast<int>(ctx.controller->state()));
+
+    // Stop recording while model is still not loaded; controller should queue audio and transition to Transcribing
+    ctx.controller->stopRecording();
+
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Transcribing), static_cast<int>(ctx.controller->state()));
+
+    // Wait for asynchronous load and subsequent transcription to complete
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }, 4000));
+
+    EXPECT_TRUE(capturedError.isEmpty());
+    EXPECT_STR_EQ("Hello, how are you today?", ctx.controller->lastTranscript().toStdString());
+
+    qunsetenv("FLEX_WHISPER_MODEL_PATH");
+}
+
+void test_voice_controller_pending_audio_queue_cleans_up_on_load_failure()
+{
+    std::cout << "[Test 51] VoiceController: pending audio queue cleans up properly on load failure...\n";
+
+    // Setup valid-sized mock file so resolver passes it to the engine
+    QTemporaryFile validFile;
+    EXPECT_TRUE(validFile.open());
+    validFile.resize(1024 * 1024 + 50);
+    validFile.flush();
+    qputenv("FLEX_WHISPER_MODEL_PATH", validFile.fileName().toUtf8());
+
+    VoiceTestContext ctx;
+    ctx.mockStt->setModelLoaded(false);
+    ctx.mockStt->setFailLoad(true); // Fail the engine load
+
+    QString capturedError;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::errorOccurred,
+                     [&](const QString& err) {
+        capturedError = err;
+    });
+
+    bool started = ctx.controller->startRecording();
+    EXPECT_TRUE(started);
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Error;
+    }, 3000));
+
+    EXPECT_FALSE(capturedError.isEmpty());
+    EXPECT_TRUE(capturedError.contains("Whisper speech model failed to initialize"));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+
+    qunsetenv("FLEX_WHISPER_MODEL_PATH");
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -2193,6 +2322,9 @@ int main(int argc, char* argv[])
     test_voice_controller_c_core_lifecycle_integrity();
     test_voice_controller_typed_chat_parity();
     test_voice_controller_no_ui_blocking();
+    test_whisper_model_resolver_canonical_path();
+    test_voice_controller_pending_audio_queue_during_model_load();
+    test_voice_controller_pending_audio_queue_cleans_up_on_load_failure();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

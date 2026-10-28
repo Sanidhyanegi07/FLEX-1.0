@@ -1,4 +1,5 @@
 #include "flex/voice/voice_conversation_controller.hpp"
+#include "flex/voice/whisper_model_resolver.hpp"
 
 #include <QDir>
 #include <QFileInfo>
@@ -54,6 +55,8 @@ VoiceConversationController::VoiceConversationController(
             this, &VoiceConversationController::onCaptureError);
 
     // Connect SpeechToText signals
+    connect(m_stt.get(), &SpeechToTextService::modelLoadFinished,
+            this, &VoiceConversationController::onModelLoadFinished);
     connect(m_stt.get(), &SpeechToTextService::transcriptionFinished,
             this, &VoiceConversationController::onSttFinished);
     connect(m_stt.get(), &SpeechToTextService::transcriptionCancelled,
@@ -80,13 +83,10 @@ VoiceConversationController::VoiceConversationController(
     }
 
     // Attempt to preload local model if file is already present on disk (no network access)
-    if (m_stt && !m_stt->isModelLoaded()) {
-        QString modelPath = QString::fromUtf8(qgetenv("FLEX_WHISPER_MODEL_PATH"));
-        if (modelPath.isEmpty() || !QFileInfo::exists(modelPath)) {
-            modelPath = QDir::homePath() + "/.flex/models/whisper/ggml-tiny.en.bin";
-        }
-        if (QFileInfo::exists(modelPath)) {
-            m_stt->loadModel(modelPath);
+    if (m_stt && !m_stt->isModelLoaded() && !m_stt->isModelLoading()) {
+        auto resolution = WhisperModelResolver::resolveModelPath();
+        if (resolution.isFound()) {
+            m_stt->loadModel(resolution.resolvedPath);
         }
     }
 }
@@ -246,6 +246,8 @@ void VoiceConversationController::stopRecording()
 
 void VoiceConversationController::cancelVoiceInput()
 {
+    m_waitingForModelLoad = false;
+    m_pendingAudioBuffer.clear();
     if (m_audioCapture && m_audioCapture->isRecording()) {
         m_audioCapture->cancelCapture();
     }
@@ -323,6 +325,8 @@ void VoiceConversationController::stopSpeaking()
 
 void VoiceConversationController::cancelAll()
 {
+    m_waitingForModelLoad = false;
+    m_pendingAudioBuffer.clear();
     if (m_audioCapture && m_audioCapture->isRecording()) {
         m_audioCapture->cancelCapture();
     }
@@ -375,21 +379,32 @@ void VoiceConversationController::onCaptureFinished(const AudioBuffer& buffer)
 
     // 3. Ensure Whisper model is loaded
     if (!m_stt->isModelLoaded()) {
-        QString modelPath = QString::fromUtf8(qgetenv("FLEX_WHISPER_MODEL_PATH"));
-        if (modelPath.isEmpty() || !QFileInfo::exists(modelPath)) {
-            modelPath = QDir::homePath() + "/.flex/models/whisper/ggml-tiny.en.bin";
+        if (m_stt->isModelLoading()) {
+            m_pendingAudioBuffer = buffer;
+            m_waitingForModelLoad = true;
+            setState(VoiceSessionState::Transcribing);
+            emit transcriptionStarted();
+            return;
         }
-        if (!QFileInfo::exists(modelPath)) {
+
+        auto resolution = WhisperModelResolver::resolveModelPath();
+        if (!resolution.isFound()) {
             finishVoiceCoreOperation();
-            m_lastErrorMessage = "Whisper speech model not found. Run scripts/download_whisper_model.ps1 to download the model.";
+            m_lastErrorMessage = resolution.errorMessage;
             setState(VoiceSessionState::Error);
             emit errorOccurred(m_lastErrorMessage);
             return;
         }
-        m_stt->loadModel(modelPath);
+
+        m_pendingAudioBuffer = buffer;
+        m_waitingForModelLoad = true;
+        setState(VoiceSessionState::Transcribing);
+        emit transcriptionStarted();
+        m_stt->loadModel(resolution.resolvedPath);
+        return;
     }
 
-    // 4. Dispatch transcription
+    // 4. Model is already loaded: dispatch transcription immediately
     setState(VoiceSessionState::Transcribing);
     emit transcriptionStarted();
 
@@ -399,6 +414,43 @@ void VoiceConversationController::onCaptureFinished(const AudioBuffer& buffer)
         m_lastErrorMessage = m_stt->lastErrorMessage();
         if (m_lastErrorMessage.isEmpty()) {
             m_lastErrorMessage = "Failed to dispatch speech recognition.";
+        }
+        setState(VoiceSessionState::Error);
+        emit errorOccurred(m_lastErrorMessage);
+    }
+}
+
+void VoiceConversationController::onModelLoadFinished(bool success, const QString& message)
+{
+    if (!m_waitingForModelLoad) {
+        return;
+    }
+    m_waitingForModelLoad = false;
+
+    if (!success) {
+        finishVoiceCoreOperation();
+        m_pendingAudioBuffer.clear();
+        m_lastErrorMessage = QString("Whisper speech model failed to initialize: %1").arg(message);
+        setState(VoiceSessionState::Error);
+        emit errorOccurred(m_lastErrorMessage);
+        return;
+    }
+
+    if (m_pendingAudioBuffer.isEmpty()) {
+        finishVoiceCoreOperation();
+        setState(VoiceSessionState::Idle);
+        return;
+    }
+
+    AudioBuffer buf = std::move(m_pendingAudioBuffer);
+    m_pendingAudioBuffer.clear();
+
+    bool ok = m_stt->transcribeAsync(buf);
+    if (!ok) {
+        finishVoiceCoreOperation();
+        m_lastErrorMessage = m_stt->lastErrorMessage();
+        if (m_lastErrorMessage.isEmpty()) {
+            m_lastErrorMessage = "Failed to dispatch speech recognition after model load.";
         }
         setState(VoiceSessionState::Error);
         emit errorOccurred(m_lastErrorMessage);

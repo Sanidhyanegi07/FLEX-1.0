@@ -126,11 +126,13 @@ add_library(flex_voice STATIC
     src-cpp/include/flex/voice/audio_capture_service.hpp
     src-cpp/include/flex/voice/text_to_speech_service.hpp
     src-cpp/include/flex/voice/speech_to_text_service.hpp
+    src-cpp/include/flex/voice/whisper_model_resolver.hpp
     src-cpp/include/flex/voice/voice_conversation_controller.hpp
     src-cpp/include/flex/voice/tts_queue.hpp
     src-cpp/src/voice/audio_capture_service.cpp
     src-cpp/src/voice/text_to_speech_service.cpp
     src-cpp/src/voice/speech_to_text_service.cpp
+    src-cpp/src/voice/whisper_model_resolver.cpp
     src-cpp/src/voice/voice_conversation_controller.cpp
 )
 

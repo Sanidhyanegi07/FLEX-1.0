@@ -115,6 +115,7 @@ private slots:
     void onCaptureCancelled();
     void onCaptureError(flex::voice::AudioCaptureError error, const QString& message);
 
+    void onModelLoadFinished(bool success, const QString& message);
     void onSttFinished(const QString& text, int64_t durationMs);
     void onSttCancelled();
     void onSttError(flex::voice::SpeechToTextError error, const QString& message);
@@ -145,6 +146,9 @@ private:
     QString m_lastTranscript;
     QString m_lastErrorMessage;
     QString m_lastAssistantResponse;
+
+    AudioBuffer m_pendingAudioBuffer;
+    bool m_waitingForModelLoad{false};
 };
 
 } // namespace flex::voice

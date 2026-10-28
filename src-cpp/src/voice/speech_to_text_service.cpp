@@ -1,13 +1,16 @@
 #include "flex/voice/speech_to_text_service.hpp"
+#include "flex/voice/whisper_model_resolver.hpp"
 
 #include <whisper.h>
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QPointer>
 #include <QThread>
+#include <QTimer>
 
 #include <chrono>
 #include <cmath>
@@ -307,32 +310,77 @@ bool SpeechToTextService::loadModel(const QString& modelPath)
         return false;
     }
 
-    QFileInfo info(modelPath);
-    if (!info.exists() || info.size() < 1024 * 1024) {
+    auto resolution = WhisperModelResolver::resolveModelPath(modelPath);
+    if (!resolution.isFound()) {
         m_impl->m_state = SpeechToTextState::Error;
-        m_impl->m_lastError = SpeechToTextError::ModelNotFound;
-        m_impl->m_lastErrorMessage = QString("Whisper model file not found or invalid: %1").arg(modelPath);
+        if (resolution.status == ModelResolutionStatus::Missing) {
+            m_impl->m_lastError = SpeechToTextError::ModelNotFound;
+        } else {
+            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
+        }
+        m_impl->m_lastErrorMessage = resolution.errorMessage;
         emit stateChanged(m_impl->m_state);
         emit transcriptionError(m_impl->m_lastError, m_impl->m_lastErrorMessage);
         return false;
     }
 
+    QString targetPath = resolution.resolvedPath;
     m_impl->m_state = SpeechToTextState::LoadingModel;
-    m_impl->m_loadedModelPath = modelPath;
+    m_impl->m_loadedModelPath = targetPath;
     m_impl->m_lastError = SpeechToTextError::None;
     m_impl->m_lastErrorMessage.clear();
 
     emit stateChanged(m_impl->m_state);
-    emit modelLoadStarted(modelPath);
+    emit modelLoadStarted(targetPath);
 
     QMetaObject::invokeMethod(m_impl->m_worker, "doLoadModel", Qt::QueuedConnection,
-                              Q_ARG(QString, modelPath));
+                              Q_ARG(QString, targetPath));
     return true;
+}
+
+bool SpeechToTextService::loadModelSync(const QString& modelPath, int timeoutMs)
+{
+    if (isModelLoaded()) {
+        if (modelPath.isEmpty() || modelPath == loadedModelPath()) {
+            return true;
+        }
+    }
+
+    bool success = false;
+    bool finished = false;
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+
+    auto conn = connect(this, &SpeechToTextService::modelLoadFinished,
+                        [&](bool ok, const QString&) {
+        success = ok;
+        finished = true;
+        loop.quit();
+    });
+
+    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+    if (!loadModel(modelPath)) {
+        disconnect(conn);
+        return false;
+    }
+
+    timer.start(timeoutMs);
+    loop.exec();
+    disconnect(conn);
+
+    return finished && success;
 }
 
 bool SpeechToTextService::isModelLoaded() const
 {
     return m_impl->m_engine && m_impl->m_engine->isModelLoaded();
+}
+
+bool SpeechToTextService::isModelLoading() const
+{
+    return m_impl->m_state == SpeechToTextState::LoadingModel;
 }
 
 QString SpeechToTextService::loadedModelPath() const
