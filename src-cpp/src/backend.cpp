@@ -712,3 +712,4 @@ std::shared_ptr<OllamaClient> BackendCoordinator::ollamaClient() const
 } // namespace flex
 
 #include "moc_backend.cpp"
+
