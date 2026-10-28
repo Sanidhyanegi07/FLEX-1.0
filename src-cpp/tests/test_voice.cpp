@@ -8,10 +8,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
+#include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryFile>
@@ -112,6 +114,7 @@ public:
         m_contentType = "application/json";
         m_isStreaming = false;
         m_chunks.clear();
+        m_delayMs = 0;
         m_requestCount = 0;
         m_lastRequestBody.clear();
     }
@@ -133,6 +136,11 @@ public:
         m_chunks = chunks;
     }
 
+    void setDelay(int delayMs)
+    {
+        m_delayMs = delayMs;
+    }
+
     int requestCount() const { return m_requestCount; }
     const std::string& lastRequestBody() const { return m_lastRequestBody; }
 
@@ -144,7 +152,15 @@ private slots:
             connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
                 m_lastRequestBody = socket->readAll().toStdString();
                 m_requestCount++;
-                if (m_isStreaming) {
+                if (m_delayMs > 0 && !m_isStreaming) {
+                    QPointer<QTcpSocket> safeSocket = socket;
+                    int delay = m_delayMs;
+                    QTimer::singleShot(delay, this, [this, safeSocket]() {
+                        if (safeSocket) {
+                            sendNormal(safeSocket.data());
+                        }
+                    });
+                } else if (m_isStreaming) {
                     sendStreaming(socket);
                 } else {
                     sendNormal(socket);
@@ -188,6 +204,7 @@ private:
     std::string m_contentType{"application/json"};
     bool m_isStreaming{false};
     std::vector<std::string> m_chunks;
+    int m_delayMs{0};
     int m_requestCount{0};
     std::string m_lastRequestBody;
 };
@@ -313,6 +330,7 @@ public:
 
     void setFailInitialize(bool fail) { m_failInit = fail; }
     void setFailSpeak(bool fail) { m_failSpeak = fail; }
+    void setAutoFinish(bool autoFinish) { m_autoFinish = autoFinish; }
 
     bool initialize() override
     {
@@ -334,6 +352,11 @@ public:
         m_spokenTexts.push_back(text);
         m_isSpeaking = true;
         notifyStarted();
+        if (m_autoFinish) {
+            QTimer::singleShot(10, [this]() {
+                notifyFinished();
+            });
+        }
         return true;
     }
 
@@ -368,6 +391,7 @@ private:
     bool m_initialized{true};
     bool m_failInit{false};
     bool m_failSpeak{false};
+    bool m_autoFinish{false};
     bool m_isSpeaking{false};
     int m_stopCalledCount{0};
     std::vector<std::string> m_spokenTexts;
