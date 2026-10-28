@@ -260,6 +260,9 @@ bool VoiceConversationController::submitTranscript(const QString& transcriptText
 {
     QString trimmed = transcriptText.trimmed();
     if (trimmed.isEmpty()) {
+        trimmed = m_lastTranscript.trimmed();
+    }
+    if (trimmed.isEmpty()) {
         m_lastErrorMessage = "Cannot submit empty transcript.";
         emit errorOccurred(m_lastErrorMessage);
         return false;
@@ -295,7 +298,7 @@ bool VoiceConversationController::submitTranscript(const QString& transcriptText
 
     ChatRequest req;
     req.message = trimmed.toStdString();
-    req.streaming = true;
+    req.streaming = false;
 
     m_currentChatRequestId = m_coordinator->sendChatAsync(req);
     if (m_currentChatRequestId == 0) {

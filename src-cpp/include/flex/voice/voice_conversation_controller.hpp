@@ -92,7 +92,7 @@ public:
     bool startRecording();
     void stopRecording();
     void cancelVoiceInput();
-    bool submitTranscript(const QString& transcriptText);
+    bool submitTranscript(const QString& transcriptText = QString{});
     void stopSpeaking();
     void cancelAll();
 
