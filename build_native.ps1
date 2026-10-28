@@ -85,5 +85,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running native voice subsystem test suite (Stage 6B - Step 1)..." -ForegroundColor Cyan
+& "$BuildDir\flex_voice_tests.exe"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Voice subsystem tests failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
+
 Write-Host "All native builds and tests completed successfully." -ForegroundColor Green
 exit 0

@@ -4,6 +4,8 @@
 #include "flex/storage.hpp"
 #include "flex/ui/ai_core_widget.hpp"
 #include "flex/ui/message_bubble.hpp"
+#include "flex/voice/audio_capture_service.hpp"
+#include "flex/voice/text_to_speech_service.hpp"
 
 #include <QFrame>
 #include <QLabel>
@@ -75,6 +77,10 @@ public:
     void setInputText(const QString& text);
     void focusInput();
 
+    // Voice & Audio Subsystem Accessors
+    [[nodiscard]] std::shared_ptr<voice::AudioCaptureService> audioCaptureService() const { return m_audioCapture; }
+    [[nodiscard]] std::shared_ptr<voice::TextToSpeechService> textToSpeechService() const { return m_tts; }
+
 signals:
     void sendRequested(const QString& text);
     void stopRequested();
@@ -82,6 +88,8 @@ signals:
 private slots:
     void onSendClicked();
     void onInputTextChanged();
+    void onRecordButtonClicked();
+    void onTestTtsButtonClicked();
 
 private:
     void setupUi();
@@ -111,7 +119,14 @@ private:
     // Input Deck
     ChatInputEdit* m_inputEdit{nullptr};
     QPushButton* m_sendButton{nullptr};
-    QHBoxLayout* m_inputControlsLayout{nullptr}; // Slot for future voice mic button
+    QHBoxLayout* m_inputControlsLayout{nullptr}; // Slot for voice controls
+    QPushButton* m_recordAudioBtn{nullptr};
+    QPushButton* m_testTtsBtn{nullptr};
+    QLabel* m_audioStatusLabel{nullptr};
+
+    // Voice & Audio Services
+    std::shared_ptr<voice::AudioCaptureService> m_audioCapture;
+    std::shared_ptr<voice::TextToSpeechService> m_tts;
 
     // Active streaming message
     MessageBubble* m_currentAssistantBubble{nullptr};

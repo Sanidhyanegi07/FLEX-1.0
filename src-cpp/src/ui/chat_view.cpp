@@ -46,6 +46,8 @@ void ChatInputEdit::keyPressEvent(QKeyEvent* event)
 ChatView::ChatView(QWidget* parent)
     : QWidget(parent)
 {
+    m_audioCapture = std::make_shared<voice::AudioCaptureService>(nullptr, this);
+    m_tts = std::make_shared<voice::TextToSpeechService>(nullptr, this);
     setupUi();
 }
 
@@ -178,11 +180,35 @@ void ChatView::setupUi()
     auto* controlsRow = new QHBoxLayout();
     controlsRow->setContentsMargins(4, 0, 4, 0);
 
-    // Voice-Ready Expansion Slot:
-    // Future microphone widget/button will be added to m_inputControlsLayout seamlessly
-    // without altering the chat interface or submission flow.
+    // Voice Controls Layout (Audio capture & SAPI TTS foundation)
     m_inputControlsLayout = new QHBoxLayout();
     m_inputControlsLayout->setContentsMargins(0, 0, 0, 0);
+    m_inputControlsLayout->setSpacing(8);
+
+    m_recordAudioBtn = new QPushButton("🎙 Record Audio", inputCard);
+    m_recordAudioBtn->setCursor(Qt::PointingHandCursor);
+    m_recordAudioBtn->setStyleSheet(
+        "QPushButton { background-color: #1E1A33; color: #C084FC; border: 1px solid #7C3AED; "
+        "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
+        "QPushButton:hover { background-color: #2D244D; color: #FFFFFF; }"
+    );
+    connect(m_recordAudioBtn, &QPushButton::clicked, this, &ChatView::onRecordButtonClicked);
+    m_inputControlsLayout->addWidget(m_recordAudioBtn);
+
+    m_testTtsBtn = new QPushButton("🔊 Test Voice", inputCard);
+    m_testTtsBtn->setCursor(Qt::PointingHandCursor);
+    m_testTtsBtn->setStyleSheet(
+        "QPushButton { background-color: #171826; color: #A78BFA; border: 1px solid #2E3650; "
+        "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
+        "QPushButton:hover { background-color: #23273D; color: #FFFFFF; }"
+    );
+    connect(m_testTtsBtn, &QPushButton::clicked, this, &ChatView::onTestTtsButtonClicked);
+    m_inputControlsLayout->addWidget(m_testTtsBtn);
+
+    m_audioStatusLabel = new QLabel("○ Audio: Ready", inputCard);
+    m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::TextMuted));
+    m_inputControlsLayout->addWidget(m_audioStatusLabel);
+
     controlsRow->addLayout(m_inputControlsLayout);
 
     controlsRow->addStretch();
@@ -229,6 +255,29 @@ void ChatView::setConversation(
 
 void ChatView::clearConversation()
 {
+    if (m_audioCapture && m_audioCapture->isRecording()) {
+        m_audioCapture->cancelCapture();
+        if (m_recordAudioBtn) {
+            m_recordAudioBtn->setText("🎙 Record Audio");
+            m_recordAudioBtn->setStyleSheet(
+                "QPushButton { background-color: #1E1A33; color: #C084FC; border: 1px solid #7C3AED; "
+                "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
+                "QPushButton:hover { background-color: #2D244D; color: #FFFFFF; }"
+            );
+        }
+    }
+    if (m_tts && m_tts->isSpeaking()) {
+        m_tts->stop();
+        if (m_testTtsBtn) {
+            m_testTtsBtn->setText("🔊 Test Voice");
+            m_testTtsBtn->setStyleSheet(
+                "QPushButton { background-color: #171826; color: #A78BFA; border: 1px solid #2E3650; "
+                "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
+                "QPushButton:hover { background-color: #23273D; color: #FFFFFF; }"
+            );
+        }
+    }
+
     m_conversationId.clear();
     m_conversationTitle = "New Conversation";
     m_titleLabel->setText(m_conversationTitle);
@@ -366,6 +415,73 @@ void ChatView::scrollToBottom()
             );
         }
     });
+}
+
+void ChatView::onRecordButtonClicked()
+{
+    if (!m_audioCapture) {
+        return;
+    }
+
+    if (!m_audioCapture->isRecording()) {
+        bool ok = m_audioCapture->startCapture();
+        if (ok) {
+            m_recordAudioBtn->setText("⏹ Stop Capture");
+            m_recordAudioBtn->setStyleSheet(
+                "QPushButton { background-color: #3D1418; color: #F87171; border: 1px solid #EF4444; "
+                "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: bold; }"
+            );
+            m_audioStatusLabel->setText("● Recording 16kHz audio...");
+            m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::StatusError));
+        } else {
+            m_audioStatusLabel->setText(QString("○ Error: %1").arg(m_audioCapture->lastErrorMessage()));
+            m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::StatusError));
+        }
+    } else {
+        auto buf = m_audioCapture->stopCapture();
+        m_recordAudioBtn->setText("🎙 Record Audio");
+        m_recordAudioBtn->setStyleSheet(
+            "QPushButton { background-color: #1E1A33; color: #C084FC; border: 1px solid #7C3AED; "
+            "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
+            "QPushButton:hover { background-color: #2D244D; color: #FFFFFF; }"
+        );
+        double sec = static_cast<double>(buf.durationMs) / 1000.0;
+        m_audioStatusLabel->setText(QString("✓ Captured %1s audio (%2 samples)").arg(sec, 0, 'f', 1).arg(buf.sampleCount()));
+        m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::StatusSuccess));
+    }
+}
+
+void ChatView::onTestTtsButtonClicked()
+{
+    if (!m_tts) {
+        return;
+    }
+
+    if (!m_tts->isSpeaking()) {
+        bool ok = m_tts->speak("FLEX 1.0 native audio foundation is operational.", true);
+        if (ok) {
+            m_testTtsBtn->setText("⏹ Stop Voice");
+            m_testTtsBtn->setStyleSheet(
+                "QPushButton { background-color: #0E2938; color: #38BDF8; border: 1px solid #0284C7; "
+                "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: bold; }"
+            );
+            m_audioStatusLabel->setText("● Speaking test phrase...");
+            m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::TextAccentCyan));
+        } else {
+            m_audioStatusLabel->setText(QString("○ TTS Error: %1").arg(m_tts->lastErrorMessage()));
+            m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::StatusError));
+        }
+    } else {
+        m_tts->stop();
+        m_testTtsBtn->setText("🔊 Test Voice");
+        m_testTtsBtn->setStyleSheet(
+            "QPushButton { background-color: #171826; color: #A78BFA; border: 1px solid #2E3650; "
+            "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
+            "QPushButton:hover { background-color: #23273D; color: #FFFFFF; }"
+        );
+        m_audioStatusLabel->setText("○ Speech stopped");
+        m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::TextMuted));
+    }
 }
 
 } // namespace flex::ui

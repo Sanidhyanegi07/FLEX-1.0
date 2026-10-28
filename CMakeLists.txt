@@ -12,7 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Add Qt 6.11.1 MinGW-64 installation path to prefix if not set
 list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.1/mingw_64")
 
-find_package(Qt6 REQUIRED COMPONENTS Core Sql Network Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Sql Network Widgets Multimedia)
 
 if(MSVC)
     add_compile_options(/W4)
@@ -110,6 +110,32 @@ target_link_libraries(flex_backend PUBLIC
 
 # ------------------------------------------------------------------------------
 # ------------------------------------------------------------------------------
+# Native C++ Voice Subsystem Library (Stage 6B - Step 1)
+# ------------------------------------------------------------------------------
+add_library(flex_voice STATIC
+    src-cpp/include/flex/voice/audio_buffer.hpp
+    src-cpp/include/flex/voice/audio_capture_service.hpp
+    src-cpp/include/flex/voice/text_to_speech_service.hpp
+    src-cpp/include/flex/voice/tts_queue.hpp
+    src-cpp/src/voice/audio_capture_service.cpp
+    src-cpp/src/voice/text_to_speech_service.cpp
+)
+
+set_target_properties(flex_voice PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_voice PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_voice PUBLIC
+    Qt6::Core
+    Qt6::Multimedia
+    ole32
+    sapi
+)
+
+# ------------------------------------------------------------------------------
 # Native C++ Desktop GUI Library (Stage 5)
 # ------------------------------------------------------------------------------
 add_library(flex_ui STATIC
@@ -136,10 +162,14 @@ target_include_directories(flex_ui PUBLIC
 
 target_link_libraries(flex_ui PUBLIC
     flex_backend
+    flex_voice
     Qt6::Core
     Qt6::Sql
     Qt6::Network
     Qt6::Widgets
+    Qt6::Multimedia
+    ole32
+    sapi
 )
 
 # ------------------------------------------------------------------------------
@@ -280,3 +310,25 @@ target_link_libraries(flex_ui_tests PRIVATE
 )
 
 add_test(NAME cpp_ui_tests COMMAND flex_ui_tests)
+
+# 7. Native C++ Voice tests (Stage 6B - Step 1)
+add_executable(flex_voice_tests
+    src-cpp/tests/test_voice.cpp
+)
+
+set_target_properties(flex_voice_tests PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_voice_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_voice_tests PRIVATE
+    flex_voice
+    Qt6::Core
+    Qt6::Multimedia
+    ole32
+    sapi
+)
+
+add_test(NAME cpp_voice_tests COMMAND flex_voice_tests)
