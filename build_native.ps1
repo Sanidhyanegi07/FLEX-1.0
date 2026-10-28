@@ -64,5 +64,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running native C++ Ollama client test suite (Stage 3)..." -ForegroundColor Cyan
+& "$BuildDir\flex_ollama_tests.exe"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "C++ Ollama client tests failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
+
 Write-Host "All native builds and tests completed successfully." -ForegroundColor Green
 exit 0

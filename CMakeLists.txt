@@ -12,7 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Add Qt 6.11.1 MinGW-64 installation path to prefix if not set
 list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.1/mingw_64")
 
-find_package(Qt6 REQUIRED COMPONENTS Core Sql)
+find_package(Qt6 REQUIRED COMPONENTS Core Sql Network)
 
 if(MSVC)
     add_compile_options(/W4)
@@ -34,7 +34,7 @@ target_include_directories(flex_core_c PUBLIC
 )
 
 # ------------------------------------------------------------------------------
-# C++ Core Wrapper Library
+# C++ Core Wrapper Library (Stage 1)
 # ------------------------------------------------------------------------------
 add_library(flex_core_cpp STATIC
     src-cpp/src/core_session.cpp
@@ -62,6 +62,26 @@ target_include_directories(flex_storage PUBLIC
 target_link_libraries(flex_storage PUBLIC
     Qt6::Core
     Qt6::Sql
+)
+
+# ------------------------------------------------------------------------------
+# Native C++ Ollama AI Client Library (Stage 3)
+# ------------------------------------------------------------------------------
+add_library(flex_ai STATIC
+    src-cpp/include/flex/ollama_client.hpp
+    src-cpp/src/ollama_client.cpp
+)
+
+set_target_properties(flex_ai PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_ai PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_ai PUBLIC
+    Qt6::Core
+    Qt6::Network
 )
 
 # ------------------------------------------------------------------------------
@@ -132,3 +152,18 @@ target_link_libraries(flex_storage_tests PRIVATE
 )
 
 add_test(NAME cpp_storage_tests COMMAND flex_storage_tests)
+
+# 4. Native C++ Ollama client test suite (Stage 3)
+add_executable(flex_ollama_tests
+    src-cpp/tests/test_ollama_client.cpp
+)
+
+set_target_properties(flex_ollama_tests PROPERTIES AUTOMOC ON)
+
+target_link_libraries(flex_ollama_tests PRIVATE
+    flex_ai
+    Qt6::Core
+    Qt6::Network
+)
+
+add_test(NAME cpp_ollama_tests COMMAND flex_ollama_tests)
