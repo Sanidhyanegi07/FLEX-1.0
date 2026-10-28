@@ -78,5 +78,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running native Qt desktop UI test suite (Stage 5)..." -ForegroundColor Cyan
+& "$BuildDir\flex_ui_tests.exe"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Qt desktop UI tests failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
+
 Write-Host "All native builds and tests completed successfully." -ForegroundColor Green
 exit 0

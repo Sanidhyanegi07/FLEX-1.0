@@ -12,7 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Add Qt 6.11.1 MinGW-64 installation path to prefix if not set
 list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.1/mingw_64")
 
-find_package(Qt6 REQUIRED COMPONENTS Core Sql Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Sql Network Widgets)
 
 if(MSVC)
     add_compile_options(/W4)
@@ -106,6 +106,52 @@ target_link_libraries(flex_backend PUBLIC
     Qt6::Core
     Qt6::Sql
     Qt6::Network
+)
+
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Native C++ Desktop GUI Library (Stage 5)
+# ------------------------------------------------------------------------------
+add_library(flex_ui STATIC
+    src-cpp/include/flex/ui/theme.hpp
+    src-cpp/include/flex/ui/ai_core_widget.hpp
+    src-cpp/include/flex/ui/message_bubble.hpp
+    src-cpp/include/flex/ui/conversation_list_widget.hpp
+    src-cpp/include/flex/ui/chat_view.hpp
+    src-cpp/include/flex/ui/main_window.hpp
+    src-cpp/src/ui/theme.cpp
+    src-cpp/src/ui/ai_core_widget.cpp
+    src-cpp/src/ui/message_bubble.cpp
+    src-cpp/src/ui/conversation_list_widget.cpp
+    src-cpp/src/ui/chat_view.cpp
+    src-cpp/src/ui/main_window.cpp
+)
+
+set_target_properties(flex_ui PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_ui PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_ui PUBLIC
+    flex_backend
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Network
+    Qt6::Widgets
+)
+
+# ------------------------------------------------------------------------------
+# Native C++ Desktop GUI Executable (Stage 5)
+# ------------------------------------------------------------------------------
+add_executable(flex_desktop
+    src-cpp/src/main.cpp
+)
+
+target_link_libraries(flex_desktop PRIVATE
+    flex_ui
+    Qt6::Widgets
 )
 
 # ------------------------------------------------------------------------------
@@ -212,3 +258,25 @@ target_link_libraries(flex_backend_tests PRIVATE
 )
 
 add_test(NAME cpp_backend_tests COMMAND flex_backend_tests)
+
+# 6. Native C++ Qt UI test suite (Stage 5)
+add_executable(flex_ui_tests
+    src-cpp/tests/test_ui.cpp
+)
+
+set_target_properties(flex_ui_tests PROPERTIES AUTOMOC ON)
+
+target_include_directories(flex_ui_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+)
+
+target_link_libraries(flex_ui_tests PRIVATE
+    flex_ui
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Network
+    Qt6::Widgets
+)
+
+add_test(NAME cpp_ui_tests COMMAND flex_ui_tests)
