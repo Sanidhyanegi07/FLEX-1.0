@@ -46,8 +46,10 @@ public:
     {
         cleanup();
 
+        std::cout << "[SpeechToText] Attempting to load Whisper model from: " << modelPath << "\n";
         QFileInfo info(QString::fromStdString(modelPath));
         if (!info.exists() || info.size() < 1024 * 1024) { // Must exist and be > 1 MB
+            std::cout << "[SpeechToText] Model file does not exist or is too small (<1MB): " << modelPath << "\n";
             return false;
         }
 
@@ -56,7 +58,9 @@ public:
 
         m_ctx = whisper_init_from_file_with_params(modelPath.c_str(), cparams);
         m_modelPath = modelPath;
-        return (m_ctx != nullptr);
+        bool success = (m_ctx != nullptr);
+        std::cout << "[SpeechToText] Model initialization: " << (success ? "SUCCESS" : "FAILED") << "\n";
+        return success;
     }
 
     [[nodiscard]] bool isModelLoaded() const override
@@ -70,16 +74,33 @@ public:
         if (!m_ctx) {
             result.error = SpeechToTextError::ModelNotFound;
             result.errorMessage = "Whisper context is not initialized.";
+            std::cout << "[SpeechToText] Transcribe error: Whisper context is null.\n";
             return result;
         }
 
         if (samples.empty()) {
             result.error = SpeechToTextError::InvalidAudioInput;
             result.errorMessage = "Audio sample buffer is empty.";
+            std::cout << "[SpeechToText] Transcribe error: audio samples vector is empty.\n";
             return result;
         }
 
+        // Padding to at least 16,000 samples (1 second) to prevent Whisper encoder short input warning
+        std::vector<float> audioData;
+        const float* audioPtr = samples.data();
+        int sampleCount = static_cast<int>(samples.size());
+        if (sampleCount < 16000) {
+            audioData = samples;
+            audioData.resize(16000, 0.0f);
+            audioPtr = audioData.data();
+            sampleCount = 16000;
+        }
+
         m_abortFlag.store(false);
+
+        int threads = std::max(1, nThreads);
+        std::cout << "[SpeechToText] Starting Whisper inference on " << sampleCount << " samples ("
+                  << (sampleCount * 1000 / 16000) << " ms) using " << threads << " CPU threads...\n";
 
         auto startTime = std::chrono::steady_clock::now();
 
@@ -90,7 +111,7 @@ public:
         params.print_timestamps = false;
         params.translate = false;
         params.language = "en";
-        params.n_threads = std::max(1, nThreads);
+        params.n_threads = threads;
 
         // Connect abort callback for responsive mid-inference cancellation
         params.abort_callback = [](void* userData) -> bool {
@@ -99,7 +120,7 @@ public:
         };
         params.abort_callback_user_data = &m_abortFlag;
 
-        int ret = whisper_full(m_ctx, params, samples.data(), static_cast<int>(samples.size()));
+        int ret = whisper_full(m_ctx, params, audioPtr, sampleCount);
 
         auto endTime = std::chrono::steady_clock::now();
         result.inferenceDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
@@ -107,30 +128,45 @@ public:
         if (m_abortFlag.load()) {
             result.error = SpeechToTextError::Cancelled;
             result.errorMessage = "Transcription was cancelled by user.";
+            std::cout << "[SpeechToText] Inference cancelled by user after " << result.inferenceDurationMs << " ms.\n";
             return result;
         }
 
         if (ret != 0) {
             result.error = SpeechToTextError::TranscriptionFailed;
             result.errorMessage = QString("whisper_full failed with return code %1").arg(ret);
+            std::cout << "[SpeechToText] whisper_full failed with return code " << ret << "\n";
             return result;
         }
 
         int nSegments = whisper_full_n_segments(m_ctx);
-        QString fullText;
+        std::cout << "[SpeechToText] Inference completed in " << result.inferenceDurationMs
+                  << " ms, segments extracted: " << nSegments << "\n";
+
+        QString rawFullText;
+        QString cleanedFullText;
+
         for (int i = 0; i < nSegments; ++i) {
             const char* segmentText = whisper_full_get_segment_text(m_ctx, i);
             if (segmentText) {
-                QString seg = QString::fromUtf8(segmentText);
-                seg.remove("[BLANK_AUDIO]", Qt::CaseInsensitive);
-                seg.remove("[_BEG_]", Qt::CaseInsensitive);
-                seg.remove("[MUSIC]", Qt::CaseInsensitive);
-                fullText.append(seg);
+                QString rawSeg = QString::fromUtf8(segmentText);
+                rawFullText.append(rawSeg);
+
+                QString cleanedSeg = rawSeg;
+                cleanedSeg.remove("[BLANK_AUDIO]", Qt::CaseInsensitive);
+                cleanedSeg.remove("[_BEG_]", Qt::CaseInsensitive);
+                cleanedSeg.remove("[MUSIC]", Qt::CaseInsensitive);
+                cleanedFullText.append(cleanedSeg);
+
+                std::cout << "[SpeechToText]   Segment [" << i << "]: raw=\""
+                          << rawSeg.toStdString() << "\", cleaned=\"" << cleanedSeg.toStdString() << "\"\n";
             }
         }
 
         result.success = true;
-        result.text = fullText.trimmed();
+        result.text = cleanedFullText.trimmed();
+        std::cout << "[SpeechToText] Raw transcription: \"" << rawFullText.trimmed().toStdString() << "\"\n";
+        std::cout << "[SpeechToText] Final cleaned transcription: \"" << result.text.toStdString() << "\"\n";
         return result;
     }
 

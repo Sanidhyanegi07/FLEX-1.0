@@ -8,8 +8,11 @@
 #include <QPointer>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
+#include <iostream>
 #include <vector>
 
 namespace flex::voice {
@@ -163,6 +166,36 @@ AudioResampleResult convertAndResampleTo16kMono(
     result.buffer.rawPcmBytes = std::move(pcmBytes);
     result.buffer.durationMs = static_cast<int64_t>(
         (static_cast<double>(result.buffer.sampleCount()) / static_cast<double>(targetSampleRate)) * 1000.0);
+
+    // Diagnostic signal measurement and health checks
+    double sumSq = 0.0;
+    float peakAmp = 0.0f;
+    size_t zeroCount = 0;
+    bool allFinite = true;
+
+    for (float s : result.buffer.samples) {
+        if (!std::isfinite(s) || s < -1.0f || s > 1.0f) {
+            allFinite = false;
+        }
+        float absVal = std::abs(s);
+        if (absVal > peakAmp) peakAmp = absVal;
+        if (absVal < 1e-5f) zeroCount++;
+        sumSq += static_cast<double>(s) * static_cast<double>(s);
+    }
+
+    double rms = result.buffer.samples.empty() ? 0.0 : std::sqrt(sumSq / static_cast<double>(result.buffer.samples.size()));
+    double zeroPct = result.buffer.samples.empty() ? 0.0 : (static_cast<double>(zeroCount) * 100.0 / static_cast<double>(result.buffer.samples.size()));
+
+    std::cout << "[AudioConversion] Resampled: " << result.buffer.samples.size() << " samples ("
+              << result.buffer.durationMs << " ms) at 16000 Hz Mono\n";
+    std::cout << "[AudioConversion] Signal analysis: Peak=" << peakAmp
+              << " (" << std::fixed << std::setprecision(2) << (peakAmp * 100.0f) << "%), RMS=" << rms
+              << ", Zero/near-zero samples=" << zeroPct << "%, allFinite=" << (allFinite ? "true" : "false") << "\n";
+
+    if (peakAmp < 0.005f && rms < 0.001) {
+        std::cout << "[AudioConversion] Warning: Audio signal level is extremely low/silent (Peak < 0.005, RMS < 0.001). Check microphone mute and hardware levels.\n";
+    }
+
     return result;
 }
 
@@ -183,11 +216,82 @@ public:
         stopInternal();
     }
 
+    static QAudioDevice selectBestInputDevice(const std::string& preferredId = {})
+    {
+        const auto devices = QMediaDevices::audioInputs();
+        if (devices.empty()) {
+            return QAudioDevice{};
+        }
+
+        // 1. Check environment variable override
+        QString envDev = QString::fromUtf8(qgetenv("FLEX_AUDIO_INPUT_DEVICE")).trimmed();
+        if (!envDev.isEmpty()) {
+            for (const auto& d : devices) {
+                if (d.description().contains(envDev, Qt::CaseInsensitive) ||
+                    QString::fromStdString(d.id().toStdString()).contains(envDev, Qt::CaseInsensitive)) {
+                    std::cout << "[AudioCapture] Using FLEX_AUDIO_INPUT_DEVICE override: \""
+                              << d.description().toStdString() << "\"\n";
+                    return d;
+                }
+            }
+        }
+
+        // 2. Check explicit preferred ID
+        if (!preferredId.empty()) {
+            for (const auto& d : devices) {
+                if (d.id().toStdString() == preferredId) {
+                    return d;
+                }
+            }
+        }
+
+        // 3. Inspect default device
+        auto defDev = QMediaDevices::defaultAudioInput();
+        QString defDesc = defDev.description().trimmed();
+
+        bool isLoopback = defDesc.contains("Stereo Mix", Qt::CaseInsensitive) ||
+                          defDesc.contains("What U Hear", Qt::CaseInsensitive) ||
+                          defDesc.contains("Wave Out", Qt::CaseInsensitive) ||
+                          defDesc.contains("Loopback", Qt::CaseInsensitive);
+
+        if (!isLoopback && !defDev.isNull()) {
+            return defDev;
+        }
+
+        // 4. Default is a loopback; prioritize a genuine physical microphone
+        for (const auto& d : devices) {
+            QString desc = d.description();
+            bool loop = desc.contains("Stereo Mix", Qt::CaseInsensitive) ||
+                        desc.contains("What U Hear", Qt::CaseInsensitive) ||
+                        desc.contains("Wave Out", Qt::CaseInsensitive) ||
+                        desc.contains("Loopback", Qt::CaseInsensitive);
+            if (!loop && (desc.contains("Microphone", Qt::CaseInsensitive) ||
+                          desc.contains("Mic", Qt::CaseInsensitive) ||
+                          desc.contains("Headset", Qt::CaseInsensitive) ||
+                          desc.contains("Array", Qt::CaseInsensitive))) {
+                std::cout << "[AudioCapture] Default input is loopback (\"" << defDesc.toStdString()
+                          << "\"). Auto-selected physical microphone: \"" << desc.toStdString() << "\"\n";
+                return d;
+            }
+        }
+
+        // 5. Fallback: first non-loopback device
+        for (const auto& d : devices) {
+            QString desc = d.description();
+            if (!desc.contains("Stereo Mix", Qt::CaseInsensitive) &&
+                !desc.contains("What U Hear", Qt::CaseInsensitive)) {
+                return d;
+            }
+        }
+
+        return defDev;
+    }
+
     [[nodiscard]] std::vector<AudioDeviceInfo> availableDevices() const override
     {
         std::vector<AudioDeviceInfo> list;
         const auto devices = QMediaDevices::audioInputs();
-        const auto defaultDev = QMediaDevices::defaultAudioInput();
+        const auto defaultDev = selectBestInputDevice(m_preferredDeviceId);
 
         for (const auto& dev : devices) {
             AudioDeviceInfo info;
@@ -201,7 +305,7 @@ public:
 
     [[nodiscard]] AudioDeviceInfo defaultDevice() const override
     {
-        const auto dev = QMediaDevices::defaultAudioInput();
+        const auto dev = selectBestInputDevice(m_preferredDeviceId);
         AudioDeviceInfo info;
         info.id = dev.id().toStdString();
         info.name = dev.description().toStdString();
@@ -209,14 +313,34 @@ public:
         return info;
     }
 
+    void setPreferredDeviceId(const std::string& id) override
+    {
+        m_preferredDeviceId = id;
+    }
+
+    [[nodiscard]] std::string preferredDeviceId() const override
+    {
+        return m_preferredDeviceId;
+    }
+
+    [[nodiscard]] std::string activeDeviceName() const override
+    {
+        return m_activeDeviceName;
+    }
+
     bool start() override
     {
         stopInternal();
 
-        const auto dev = QMediaDevices::defaultAudioInput();
+        const auto dev = selectBestInputDevice(m_preferredDeviceId);
         if (dev.isNull()) {
+            std::cout << "[AudioCapture] Error: No valid audio input device available.\n";
             return false;
         }
+
+        m_activeDeviceName = dev.description().toStdString();
+        std::cout << "[AudioCapture] Input device: \"" << m_activeDeviceName
+                  << "\" (ID: " << dev.id().toStdString() << ")\n";
 
         // Target: 16 kHz, Mono, 16-bit signed PCM
         QAudioFormat format;
@@ -227,6 +351,11 @@ public:
         if (!dev.isFormatSupported(format)) {
             // Pick preferred format if 16kHz mono is not natively accepted
             format = dev.preferredFormat();
+            std::cout << "[AudioCapture] Device does not support native 16kHz mono Int16. Using preferred format: "
+                      << format.sampleRate() << " Hz, " << format.channelCount() << " ch, format="
+                      << static_cast<int>(format.sampleFormat()) << "\n";
+        } else {
+            std::cout << "[AudioCapture] Native 16 kHz mono Int16 capture supported.\n";
         }
 
         m_activeFormat = format;
@@ -237,6 +366,8 @@ public:
             if (state == QAudio::StoppedState && m_recording) {
                 if (m_audioSource && m_audioSource->error() != QAudio::NoError) {
                     m_recording = false;
+                    std::cout << "[AudioCapture] Hardware error or device disconnected. QAudio error: "
+                              << m_audioSource->error() << "\n";
                     if (m_errorCallback) {
                         m_errorCallback(AudioCaptureError::DeviceUnavailable,
                                         "Audio hardware error or device disconnected.");
@@ -248,19 +379,26 @@ public:
         m_pcmBuffer.clear();
         m_ioBuffer.setBuffer(&m_pcmBuffer);
         if (!m_ioBuffer.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            std::cout << "[AudioCapture] Failed to open QBuffer for writing.\n";
             return false;
         }
 
         m_audioSource->start(&m_ioBuffer);
         m_recording = (m_audioSource->error() == QAudio::NoError);
+        std::cout << "[AudioCapture] Capture start status: " << (m_recording ? "SUCCESS" : "FAILED")
+                  << " (error code: " << m_audioSource->error() << ")\n";
         return m_recording;
     }
 
     AudioBuffer stop() override
     {
         if (!m_recording && m_pcmBuffer.isEmpty()) {
+            std::cout << "[AudioCapture] Stop called but no audio was recorded.\n";
             return AudioBuffer{};
         }
+
+        std::cout << "[AudioCapture] Stop called. Captured " << m_pcmBuffer.size()
+                  << " raw bytes from device \"" << m_activeDeviceName << "\"\n";
 
         stopInternal();
 
@@ -284,6 +422,7 @@ public:
         m_pcmBuffer.clear();
 
         if (!res.success) {
+            std::cout << "[AudioCapture] Format conversion failed: " << res.errorMessage << "\n";
             if (m_errorCallback) {
                 m_errorCallback(AudioCaptureError::FormatNotSupported,
                                 QString::fromStdString(res.errorMessage));
@@ -323,6 +462,8 @@ private:
     std::unique_ptr<QAudioSource> m_audioSource;
     QByteArray m_pcmBuffer;
     QBuffer m_ioBuffer;
+    std::string m_preferredDeviceId;
+    std::string m_activeDeviceName;
 };
 
 } // anonymous namespace
@@ -397,6 +538,29 @@ AudioDeviceInfo AudioCaptureService::defaultInputDevice() const
 {
     if (m_impl->m_source) {
         return m_impl->m_source->defaultDevice();
+    }
+    return {};
+}
+
+void AudioCaptureService::setPreferredDeviceId(const std::string& id)
+{
+    if (m_impl->m_source) {
+        m_impl->m_source->setPreferredDeviceId(id);
+    }
+}
+
+std::string AudioCaptureService::preferredDeviceId() const
+{
+    if (m_impl->m_source) {
+        return m_impl->m_source->preferredDeviceId();
+    }
+    return {};
+}
+
+std::string AudioCaptureService::activeDeviceName() const
+{
+    if (m_impl->m_source) {
+        return m_impl->m_source->activeDeviceName();
     }
     return {};
 }

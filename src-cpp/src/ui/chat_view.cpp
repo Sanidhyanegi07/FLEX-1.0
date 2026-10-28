@@ -6,6 +6,7 @@
 #include <QKeyEvent>
 #include <QScrollBar>
 #include <QTimer>
+#include <iostream>
 
 namespace flex::ui {
 
@@ -470,6 +471,8 @@ void ChatView::setVoiceController(std::shared_ptr<voice::VoiceConversationContro
 
     connect(m_voiceController.get(), &voice::VoiceConversationController::transcriptReadyForReview,
             this, [this](const QString& text) {
+        std::cout << "[ChatView] Handler received transcriptReadyForReview: \"" << text.toStdString()
+                  << "\". Populating editable chat input.\n";
         setInputText(text);
         focusInput();
         if (m_sendButton) {
@@ -486,7 +489,16 @@ void ChatView::setVoiceController(std::shared_ptr<voice::VoiceConversationContro
 
     connect(m_voiceController.get(), &voice::VoiceConversationController::errorOccurred,
             this, [this](const QString& msg) {
+        std::cout << "[ChatView] Handler received errorOccurred: \"" << msg.toStdString() << "\"\n";
         showErrorBanner(msg);
+        if (m_audioStatusLabel) {
+            if (msg.contains("No speech detected", Qt::CaseInsensitive)) {
+                m_audioStatusLabel->setText("○ No speech detected");
+            } else {
+                m_audioStatusLabel->setText("○ Audio: Ready");
+            }
+            m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::TextMuted));
+        }
     });
 
     connect(m_voiceController.get(), &voice::VoiceConversationController::voiceOutputToggled,
@@ -617,6 +629,10 @@ void ChatView::onVoiceControllerStateChanged(voice::VoiceSessionState state)
                     "border-radius: 6px; padding: 5px 10px; font-size: 11px; font-weight: 600; }"
                     "QPushButton:hover { background-color: #2D244D; color: #FFFFFF; }"
                 );
+            }
+            if (m_audioStatusLabel && m_audioStatusLabel->text().contains("Transcribing")) {
+                m_audioStatusLabel->setText("○ Audio: Ready");
+                m_audioStatusLabel->setStyleSheet(QString("color: %1; font-size: 11px; margin-left: 4px;").arg(Theme::TextMuted));
             }
             setVisualState(CoreVisualState::Error);
             break;

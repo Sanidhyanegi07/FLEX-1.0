@@ -471,7 +471,7 @@ void VoiceConversationController::onCaptureError(AudioCaptureError /*error*/, co
     emit errorOccurred(message);
 }
 
-void VoiceConversationController::onSttFinished(const QString& text, int64_t /*durationMs*/)
+void VoiceConversationController::onSttFinished(const QString& text, int64_t durationMs)
 {
     if (m_state != VoiceSessionState::Transcribing) {
         return;
@@ -479,6 +479,9 @@ void VoiceConversationController::onSttFinished(const QString& text, int64_t /*d
 
     // Complete the C core voice operation
     finishVoiceCoreOperation();
+
+    std::cout << "[VoiceController] Received transcription result: \"" << text.toStdString()
+              << "\" (inference duration: " << durationMs << " ms)\n";
 
     QString trimmed = text.trimmed();
     trimmed.remove("[BLANK_AUDIO]", Qt::CaseInsensitive);
@@ -488,12 +491,14 @@ void VoiceConversationController::onSttFinished(const QString& text, int64_t /*d
     m_lastTranscript = trimmed;
 
     if (trimmed.isEmpty()) {
-        m_lastErrorMessage = "No speech recognized (transcription was empty).";
+        std::cout << "[VoiceController] Speech-to-text output is empty after filtering special tokens. Emitting errorOccurred.\n";
+        m_lastErrorMessage = "No speech detected. Please speak clearly into your microphone and try again.";
         setState(VoiceSessionState::Error);
         emit errorOccurred(m_lastErrorMessage);
         return;
     }
 
+    std::cout << "[VoiceController] Emitting transcriptReadyForReview: \"" << trimmed.toStdString() << "\"\n";
     emit transcriptReadyForReview(trimmed);
 
     if (m_autoSubmit) {

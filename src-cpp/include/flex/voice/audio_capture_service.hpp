@@ -81,6 +81,9 @@ public:
     [[nodiscard]] virtual bool isRecording() const = 0;
     [[nodiscard]] virtual std::vector<AudioDeviceInfo> availableDevices() const = 0;
     [[nodiscard]] virtual AudioDeviceInfo defaultDevice() const = 0;
+    virtual void setPreferredDeviceId(const std::string& id) { (void)id; }
+    [[nodiscard]] virtual std::string preferredDeviceId() const { return {}; }
+    [[nodiscard]] virtual std::string activeDeviceName() const { return defaultDevice().name; }
 
     virtual void setErrorCallback(std::function<void(AudioCaptureError, const QString&)> callback)
     {
@@ -116,9 +119,12 @@ public:
 
     ~AudioCaptureService() override;
 
-    // Device Discovery
+    // Device Discovery & Selection
     [[nodiscard]] std::vector<AudioDeviceInfo> availableInputDevices() const;
     [[nodiscard]] AudioDeviceInfo defaultInputDevice() const;
+    void setPreferredDeviceId(const std::string& id);
+    [[nodiscard]] std::string preferredDeviceId() const;
+    [[nodiscard]] std::string activeDeviceName() const;
 
     // Capture Operations
     bool startCapture();

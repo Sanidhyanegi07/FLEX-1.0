@@ -314,10 +314,26 @@ public:
         return { "mock-mic-1", "Mock Studio Microphone", true };
     }
 
+    void setPreferredDeviceId(const std::string& id) override
+    {
+        m_preferredId = id;
+    }
+
+    [[nodiscard]] std::string preferredDeviceId() const override
+    {
+        return m_preferredId;
+    }
+
+    [[nodiscard]] std::string activeDeviceName() const override
+    {
+        return "Mock Studio Microphone";
+    }
+
 private:
     bool m_isRecording{false};
     bool m_failStart{false};
     bool m_returnEmpty{false};
+    std::string m_preferredId;
     flex::voice::AudioBuffer m_simulatedBuffer;
 };
 
@@ -532,6 +548,10 @@ void test_audio_capture_device_discovery()
 
     auto defDev = service.defaultInputDevice();
     EXPECT_STR_EQ("mock-mic-1", defDev.id);
+
+    service.setPreferredDeviceId("mock-mic-2");
+    EXPECT_STR_EQ("mock-mic-2", service.preferredDeviceId());
+    EXPECT_STR_EQ("Mock Studio Microphone", service.activeDeviceName());
 }
 
 void test_audio_capture_start_stop_lifecycle()
@@ -1543,6 +1563,77 @@ void test_stt_real_model_smoke_test()
     std::cout << "  [PASS] Real whisper.cpp engine loaded and inferred without error!\n";
 }
 
+void test_stt_real_model_with_speech_fixture()
+{
+    std::cout << "[Test 29b] SpeechToText: real neural model transcription with known speech WAV fixture...\n";
+
+    auto resolution = flex::voice::WhisperModelResolver::resolveModelPath();
+    if (!resolution.isFound()) {
+        std::cout << "  [SKIP] Local Whisper model not found. Skipping real speech fixture test.\n";
+        return;
+    }
+
+    QString wavPath = "third_party/whisper.cpp/bindings/go/samples/jfk.wav";
+    QFile wavFile(wavPath);
+    if (!wavFile.exists() || !wavFile.open(QIODevice::ReadOnly)) {
+        std::cout << "  [SKIP] Speech fixture WAV not found at: " << wavPath.toStdString() << "\n";
+        return;
+    }
+
+    QByteArray bytes = wavFile.readAll();
+    if (bytes.size() <= 44) {
+        std::cout << "  [SKIP] Speech fixture WAV is invalid or truncated.\n";
+        return;
+    }
+
+    flex::voice::AudioBuffer wavBuf;
+    wavBuf.sampleRate = 16000;
+    wavBuf.channelCount = 1;
+    wavBuf.sampleSizeBits = 16;
+    size_t sampleCount = (bytes.size() - 44) / sizeof(int16_t);
+    const int16_t* pcm = reinterpret_cast<const int16_t*>(bytes.constData() + 44);
+    wavBuf.samples.resize(sampleCount);
+    for (size_t i = 0; i < sampleCount; ++i) {
+        wavBuf.samples[i] = static_cast<float>(pcm[i]) / 32768.0f;
+    }
+    wavBuf.durationMs = static_cast<int64_t>((static_cast<double>(sampleCount) / 16000.0) * 1000.0);
+
+    flex::voice::SpeechToTextService service;
+    bool loaded = service.loadModelSync(resolution.resolvedPath, 15000);
+    EXPECT_TRUE(loaded);
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    timer.setInterval(25000); // 25s allowance for CPU neural inference
+    QString receivedText;
+    int64_t receivedDuration = 0;
+
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&service, &flex::voice::SpeechToTextService::transcriptionFinished,
+                     [&](const QString& text, int64_t dur) {
+        receivedText = text;
+        receivedDuration = dur;
+        loop.quit();
+    });
+    QObject::connect(&service, &flex::voice::SpeechToTextService::transcriptionError,
+                     [&](flex::voice::SpeechToTextError, const QString&) {
+        loop.quit();
+    });
+
+    timer.start();
+    bool started = service.transcribeAsync(wavBuf);
+    EXPECT_TRUE(started);
+    loop.exec();
+
+    EXPECT_FALSE(receivedText.isEmpty());
+    EXPECT_TRUE(receivedText.contains("fellow Americans", Qt::CaseInsensitive) ||
+                receivedText.contains("country", Qt::CaseInsensitive));
+    EXPECT_TRUE(receivedDuration > 0);
+    std::cout << "  [PASS] Real speech WAV fixture recognized accurately: \""
+              << receivedText.toStdString() << "\"\n";
+}
+
 // -----------------------------------------------------------------------------
 // Voice Conversation Pipeline Tests (Tests 30 to 48)
 // -----------------------------------------------------------------------------
@@ -2302,6 +2393,7 @@ int main(int argc, char* argv[])
     test_stt_safe_shutdown_with_pending_work();
     test_stt_empty_transcription_output();
     test_stt_real_model_smoke_test();
+    test_stt_real_model_with_speech_fixture();
 
     test_voice_controller_successful_recording_to_transcription();
     test_voice_controller_empty_silent_transcription();
