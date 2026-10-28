@@ -80,6 +80,9 @@ public:
     // Voice & Audio Subsystem Accessors
     [[nodiscard]] std::shared_ptr<voice::AudioCaptureService> audioCaptureService() const { return m_audioCapture; }
     [[nodiscard]] std::shared_ptr<voice::TextToSpeechService> textToSpeechService() const { return m_tts; }
+    [[nodiscard]] QString audioStatusText() const;
+    [[nodiscard]] QString recordButtonText() const;
+    [[nodiscard]] QString testTtsButtonText() const;
 
 signals:
     void sendRequested(const QString& text);
@@ -90,6 +93,14 @@ private slots:
     void onInputTextChanged();
     void onRecordButtonClicked();
     void onTestTtsButtonClicked();
+    void onTtsStarted();
+    void onTtsFinished();
+    void onTtsCancelled();
+    void onTtsError(flex::voice::TtsError error, const QString& message);
+    void onCaptureStarted();
+    void onCaptureFinished(const flex::voice::AudioBuffer& buffer);
+    void onCaptureCancelled();
+    void onCaptureError(flex::voice::AudioCaptureError error, const QString& message);
 
 private:
     void setupUi();

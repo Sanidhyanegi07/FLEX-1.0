@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,6 +35,29 @@ public:
     virtual bool speak(const std::string& text, bool purgePrevious) = 0;
     virtual void stop() = 0;
     [[nodiscard]] virtual bool isSpeaking() const = 0;
+
+    void setCallbacks(
+        std::function<void()> onStarted,
+        std::function<void()> onFinished,
+        std::function<void()> onStopped,
+        std::function<void(const std::string&)> onError)
+    {
+        m_onStarted = std::move(onStarted);
+        m_onFinished = std::move(onFinished);
+        m_onStopped = std::move(onStopped);
+        m_onError = std::move(onError);
+    }
+
+    void notifyStarted() { if (m_onStarted) m_onStarted(); }
+    void notifyFinished() { if (m_onFinished) m_onFinished(); }
+    void notifyStopped() { if (m_onStopped) m_onStopped(); }
+    void notifyError(const std::string& msg) { if (m_onError) m_onError(msg); }
+
+protected:
+    std::function<void()> m_onStarted;
+    std::function<void()> m_onFinished;
+    std::function<void()> m_onStopped;
+    std::function<void(const std::string&)> m_onError;
 };
 
 class TextToSpeechServiceImpl;

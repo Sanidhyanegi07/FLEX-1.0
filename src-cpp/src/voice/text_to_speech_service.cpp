@@ -104,6 +104,21 @@ signals:
     void speakStopped();
     void speakFailed(const QString& errorMsg);
 
+public slots:
+    void cleanup()
+    {
+        stopPollTimer();
+        if (m_voice) {
+            m_voice->Speak(NULL, SPF_PURGEBEFORESPEAK, NULL);
+            m_voice->Release();
+            m_voice = nullptr;
+        }
+        if (m_comInitialized) {
+            CoUninitialize();
+            m_comInitialized = false;
+        }
+    }
+
 private slots:
     void onPollTimer()
     {
@@ -130,20 +145,6 @@ private:
         }
     }
 
-    void cleanup()
-    {
-        stopPollTimer();
-        if (m_voice) {
-            m_voice->Speak(NULL, SPF_PURGEBEFORESPEAK, NULL);
-            m_voice->Release();
-            m_voice = nullptr;
-        }
-        if (m_comInitialized) {
-            CoUninitialize();
-            m_comInitialized = false;
-        }
-    }
-
     ISpVoice* m_voice{nullptr};
     bool m_comInitialized{false};
     QTimer* m_pollTimer{nullptr};
@@ -161,17 +162,33 @@ public:
         m_worker = new SapiWorker();
         m_worker->moveToThread(m_thread);
 
-        connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
+        // Propagate asynchronous worker signals to engine callbacks
+        connect(m_worker, &SapiWorker::speakStarted, this, [this]() {
+            notifyStarted();
+        });
+        connect(m_worker, &SapiWorker::speakFinished, this, [this]() {
+            notifyFinished();
+        });
+        connect(m_worker, &SapiWorker::speakStopped, this, [this]() {
+            notifyStopped();
+        });
+        connect(m_worker, &SapiWorker::speakFailed, this, [this](const QString& err) {
+            notifyError(err.toStdString());
+        });
+
         m_thread->start();
     }
 
     ~SapiTtsEngine() override
     {
-        stop();
-        if (m_thread && m_thread->isRunning()) {
+        disconnect(m_worker, nullptr, this, nullptr);
+        if (m_worker && m_thread && m_thread->isRunning()) {
+            QMetaObject::invokeMethod(m_worker, "cleanup", Qt::BlockingQueuedConnection);
             m_thread->quit();
             m_thread->wait(1000);
         }
+        delete m_worker;
+        m_worker = nullptr;
     }
 
     bool initialize() override
@@ -253,6 +270,41 @@ public:
         }
     }
 
+    void wireCallbacks(TextToSpeechService* q)
+    {
+        if (!m_engine) return;
+        m_engine->setCallbacks(
+            [this, q]() {
+                if (m_state != TtsState::Speaking) {
+                    m_state = TtsState::Speaking;
+                    emit q->stateChanged(m_state);
+                    emit q->speechStarted();
+                }
+            },
+            [this, q]() {
+                if (m_state == TtsState::Speaking) {
+                    m_state = TtsState::Idle;
+                    emit q->stateChanged(m_state);
+                    emit q->speechFinished();
+                }
+            },
+            [this, q]() {
+                if (m_state == TtsState::Speaking) {
+                    m_state = TtsState::Idle;
+                    emit q->stateChanged(m_state);
+                    emit q->speechCancelled();
+                }
+            },
+            [this, q](const std::string& err) {
+                m_state = TtsState::Error;
+                m_lastError = TtsError::SynthesisFailed;
+                m_lastErrorMessage = QString::fromStdString(err);
+                emit q->stateChanged(m_state);
+                emit q->speechError(m_lastError, m_lastErrorMessage);
+            }
+        );
+    }
+
     std::shared_ptr<ITextToSpeechEngine> m_engine;
     TtsState m_state{TtsState::Idle};
     TtsError m_lastError{TtsError::None};
@@ -269,6 +321,7 @@ TextToSpeechService::TextToSpeechService(
     : QObject(parent)
     , m_impl(std::make_unique<TextToSpeechServiceImpl>(std::move(customEngine)))
 {
+    m_impl->wireCallbacks(this);
 }
 
 TextToSpeechService::~TextToSpeechService()
@@ -303,9 +356,11 @@ bool TextToSpeechService::speak(const QString& text, bool purgePrevious)
         return false;
     }
 
-    m_impl->m_state = TtsState::Speaking;
-    emit stateChanged(m_impl->m_state);
-    emit speechStarted();
+    if (m_impl->m_state != TtsState::Speaking) {
+        m_impl->m_state = TtsState::Speaking;
+        emit stateChanged(m_impl->m_state);
+        emit speechStarted();
+    }
     return true;
 }
 
@@ -324,6 +379,9 @@ void TextToSpeechService::stop()
 
 bool TextToSpeechService::isSpeaking() const
 {
+    if (m_impl->m_state == TtsState::Speaking) {
+        return true;
+    }
     if (m_impl->m_engine) {
         return m_impl->m_engine->isSpeaking();
     }
@@ -349,6 +407,7 @@ void TextToSpeechService::setEngine(std::shared_ptr<ITextToSpeechEngine> engine)
 {
     stop();
     m_impl->m_engine = std::move(engine);
+    m_impl->wireCallbacks(this);
 }
 
 const char* ttsStateToString(TtsState state) noexcept
@@ -375,4 +434,3 @@ const char* ttsErrorToString(TtsError error) noexcept
 } // namespace flex::voice
 
 #include "text_to_speech_service.moc"
-

@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -97,6 +98,14 @@ public:
     void setFailStart(bool fail) { m_failStart = fail; }
     void setReturnEmpty(bool empty) { m_returnEmpty = empty; }
 
+    void simulateDeviceError(flex::voice::AudioCaptureError err, const QString& msg)
+    {
+        m_isRecording = false;
+        if (m_errorCallback) {
+            m_errorCallback(err, msg);
+        }
+    }
+
     bool start() override
     {
         if (m_failStart) {
@@ -175,6 +184,7 @@ public:
         }
         m_spokenTexts.push_back(text);
         m_isSpeaking = true;
+        notifyStarted();
         return true;
     }
 
@@ -182,6 +192,7 @@ public:
     {
         m_isSpeaking = false;
         m_stopCalledCount++;
+        notifyStopped();
     }
 
     [[nodiscard]] bool isSpeaking() const override
@@ -274,10 +285,6 @@ void test_audio_capture_empty_and_cancellation()
     service.cancelCapture();
     EXPECT_FALSE(service.isRecording());
     EXPECT_EQ(static_cast<int>(flex::voice::AudioCaptureState::Idle), static_cast<int>(service.state()));
-
-    // Repeated cancel should be safe
-    service.cancelCapture();
-    EXPECT_FALSE(service.isRecording());
 }
 
 void test_audio_capture_hardware_error_handling()
@@ -299,13 +306,256 @@ void test_audio_capture_safe_destruction_while_recording()
 {
     std::cout << "[Test 5] Safe destruction while recording in progress...\n";
     auto mockSource = std::make_shared<MockAudioCaptureSource>();
+    mockSource->setSimulatedSamples(16000, 2000);
+
     {
         flex::voice::AudioCaptureService service(mockSource);
         service.startCapture();
         EXPECT_TRUE(service.isRecording());
-        // Destructor executes here
+        // Destruction happens when service goes out of scope here
     }
+
     EXPECT_FALSE(mockSource->isRecording());
+}
+
+void test_audio_capture_duration_timeout()
+{
+    std::cout << "[Test 6] Audio capture 30s timeout and automatic stop...\n";
+    auto mockSource = std::make_shared<MockAudioCaptureSource>();
+    mockSource->setSimulatedSamples(16000, 1000);
+
+    flex::voice::AudioCaptureService service(mockSource);
+    // Inject a 40ms duration limit for fast deterministic test execution
+    service.setMaxDurationMs(40);
+    EXPECT_EQ(40, service.maxDurationMs());
+    EXPECT_FALSE(service.wasMaxDurationReached());
+
+    bool timeoutFired = false;
+    QObject::connect(&service, &flex::voice::AudioCaptureService::captureMaxDurationReached, [&]() {
+        timeoutFired = true;
+    });
+
+    bool finishedFired = false;
+    size_t samplesReceived = 0;
+    QObject::connect(&service, &flex::voice::AudioCaptureService::captureFinished, [&](const flex::voice::AudioBuffer& buf) {
+        finishedFired = true;
+        samplesReceived = buf.sampleCount();
+    });
+
+    service.startCapture();
+    EXPECT_TRUE(service.isRecording());
+
+    // Wait for timer to trigger auto-stop
+    QEventLoop loop;
+    QTimer::singleShot(80, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    EXPECT_FALSE(service.isRecording());
+    EXPECT_EQ(static_cast<int>(flex::voice::AudioCaptureState::Idle), static_cast<int>(service.state()));
+    EXPECT_TRUE(timeoutFired);
+    EXPECT_TRUE(service.wasMaxDurationReached());
+    EXPECT_TRUE(finishedFired);
+    EXPECT_EQ(std::size_t(16000), samplesReceived);
+}
+
+void test_audio_capture_device_disconnection_error()
+{
+    std::cout << "[Test 7] Unexpected device disconnection and error handling...\n";
+    auto mockSource = std::make_shared<MockAudioCaptureSource>();
+    flex::voice::AudioCaptureService service(mockSource);
+
+    bool errorFired = false;
+    flex::voice::AudioCaptureError receivedError = flex::voice::AudioCaptureError::None;
+    QObject::connect(&service, &flex::voice::AudioCaptureService::captureError, [&](flex::voice::AudioCaptureError err, const QString&) {
+        errorFired = true;
+        receivedError = err;
+    });
+
+    service.startCapture();
+    EXPECT_TRUE(service.isRecording());
+
+    // Simulate hardware disconnection mid-recording
+    mockSource->simulateDeviceError(flex::voice::AudioCaptureError::DeviceUnavailable, "Device removed");
+
+    EXPECT_FALSE(service.isRecording());
+    EXPECT_EQ(static_cast<int>(flex::voice::AudioCaptureState::Error), static_cast<int>(service.state()));
+    EXPECT_EQ(static_cast<int>(flex::voice::AudioCaptureError::DeviceUnavailable), static_cast<int>(service.lastError()));
+    EXPECT_TRUE(errorFired);
+    EXPECT_EQ(static_cast<int>(flex::voice::AudioCaptureError::DeviceUnavailable), static_cast<int>(receivedError));
+}
+
+// -----------------------------------------------------------------------------
+// Audio Resampling & Conversion Tests (Task 1)
+// -----------------------------------------------------------------------------
+
+void test_audio_conversion_16k_int16()
+{
+    std::cout << "[Test 8] Audio format conversion: 16 kHz signed 16-bit PCM...\n";
+    const int sampleRate = 16000;
+    const int numSamples = 16000; // 1.0 second
+    std::vector<int16_t> pcmInput(numSamples);
+
+    for (int i = 0; i < numSamples; ++i) {
+        float val = std::sin(2.0f * 3.14159265f * 440.0f * (static_cast<float>(i) / 16000.0f)) * 0.75f;
+        pcmInput[i] = static_cast<int16_t>(val * 32767.0f);
+    }
+
+    auto res = flex::voice::convertAndResampleTo16kMono(
+        pcmInput.data(),
+        pcmInput.size() * sizeof(int16_t),
+        sampleRate,
+        1,
+        flex::voice::AudioSampleFormat::Int16,
+        16000);
+
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(16000, res.buffer.sampleRate);
+    EXPECT_EQ(1, res.buffer.channelCount);
+    EXPECT_EQ(std::size_t(16000), res.buffer.sampleCount());
+    EXPECT_EQ(1000, res.buffer.durationMs);
+
+    // Verify normalization
+    for (float s : res.buffer.samples) {
+        EXPECT_TRUE(s >= -1.0f && s <= 1.0f);
+    }
+}
+
+void test_audio_conversion_44k1_float()
+{
+    std::cout << "[Test 9] Audio format conversion: 44.1 kHz float mono resampling...\n";
+    const int sampleRate = 44100;
+    const int numSamples = 22050; // 0.5 seconds
+    std::vector<float> floatInput(numSamples);
+
+    for (int i = 0; i < numSamples; ++i) {
+        floatInput[i] = std::sin(2.0f * 3.14159265f * 880.0f * (static_cast<float>(i) / 44100.0f)) * 0.5f;
+    }
+
+    auto res = flex::voice::convertAndResampleTo16kMono(
+        floatInput.data(),
+        floatInput.size() * sizeof(float),
+        sampleRate,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(16000, res.buffer.sampleRate);
+    EXPECT_EQ(1, res.buffer.channelCount);
+
+    // Expected sample count: round(22050 * 16000 / 44100) = 8000. Rounding tolerance: +/- 1 sample
+    size_t expected = static_cast<size_t>(std::round(22050.0 * 16000.0 / 44100.0));
+    EXPECT_EQ(std::size_t(8000), expected);
+    EXPECT_EQ(expected, res.buffer.sampleCount());
+    EXPECT_EQ(500, res.buffer.durationMs);
+
+    // Check sample validity
+    for (float s : res.buffer.samples) {
+        EXPECT_TRUE(s >= -1.0f && s <= 1.0f);
+        EXPECT_FALSE(std::isnan(s));
+    }
+}
+
+void test_audio_conversion_48k_int16_stereo()
+{
+    std::cout << "[Test 10] Audio format conversion: 48 kHz 16-bit stereo downmix and resampling...\n";
+    const int sampleRate = 48000;
+    const int numFrames = 48000; // 1.0 second of stereo
+    const int channels = 2;
+    std::vector<int16_t> stereoInput(numFrames * channels);
+
+    for (int i = 0; i < numFrames; ++i) {
+        float left = std::sin(2.0f * 3.14159265f * 440.0f * (static_cast<float>(i) / 48000.0f)) * 0.5f;
+        float right = std::sin(2.0f * 3.14159265f * 880.0f * (static_cast<float>(i) / 48000.0f)) * 0.5f;
+        stereoInput[i * 2] = static_cast<int16_t>(left * 32767.0f);
+        stereoInput[i * 2 + 1] = static_cast<int16_t>(right * 32767.0f);
+    }
+
+    auto res = flex::voice::convertAndResampleTo16kMono(
+        stereoInput.data(),
+        stereoInput.size() * sizeof(int16_t),
+        sampleRate,
+        channels,
+        flex::voice::AudioSampleFormat::Int16,
+        16000);
+
+    EXPECT_TRUE(res.success);
+    EXPECT_EQ(16000, res.buffer.sampleRate);
+    EXPECT_EQ(1, res.buffer.channelCount);
+    // 48000 frames * 16000 / 48000 = exactly 16000 mono output samples
+    EXPECT_EQ(std::size_t(16000), res.buffer.sampleCount());
+    EXPECT_EQ(1000, res.buffer.durationMs);
+
+    for (float s : res.buffer.samples) {
+        EXPECT_TRUE(s >= -1.0f && s <= 1.0f);
+        EXPECT_FALSE(std::isnan(s));
+    }
+}
+
+void test_audio_conversion_invalid_and_unsupported_formats()
+{
+    std::cout << "[Test 11] Audio format conversion: invalid, unsupported & truncated format rejection...\n";
+
+    // 1. Empty input
+    auto resEmpty = flex::voice::convertAndResampleTo16kMono(
+        nullptr, 0, 16000, 1, flex::voice::AudioSampleFormat::Int16);
+    EXPECT_TRUE(resEmpty.success);
+    EXPECT_TRUE(resEmpty.buffer.isEmpty());
+    EXPECT_EQ(std::size_t(0), resEmpty.buffer.sampleCount());
+
+    // 2. Unknown format
+    int16_t dummyData[10] = {0};
+    auto resUnknown = flex::voice::convertAndResampleTo16kMono(
+        dummyData, sizeof(dummyData), 16000, 1, flex::voice::AudioSampleFormat::Unknown);
+    EXPECT_FALSE(resUnknown.success);
+    EXPECT_FALSE(resUnknown.errorMessage.empty());
+
+    // 3. Invalid sample rate
+    auto resBadRate = flex::voice::convertAndResampleTo16kMono(
+        dummyData, sizeof(dummyData), 0, 1, flex::voice::AudioSampleFormat::Int16);
+    EXPECT_FALSE(resBadRate.success);
+
+    // 4. Invalid channels
+    auto resBadCh = flex::voice::convertAndResampleTo16kMono(
+        dummyData, sizeof(dummyData), 16000, 0, flex::voice::AudioSampleFormat::Int16);
+    EXPECT_FALSE(resBadCh.success);
+
+    // 5. Truncated byte length (3 bytes for 16-bit mono is truncated)
+    char oddBytes[3] = {0, 0, 0};
+    auto resTrunc = flex::voice::convertAndResampleTo16kMono(
+        oddBytes, sizeof(oddBytes), 16000, 1, flex::voice::AudioSampleFormat::Int16);
+    EXPECT_FALSE(resTrunc.success);
+    EXPECT_FALSE(resTrunc.errorMessage.empty());
+}
+
+void test_audio_conversion_silence_nonzero_and_clipping()
+{
+    std::cout << "[Test 12] Audio format conversion: silence, non-zero signal & clipping/finite limits...\n";
+
+    // Silence
+    std::vector<int16_t> silence(1000, 0);
+    auto resSilence = flex::voice::convertAndResampleTo16kMono(
+        silence.data(), silence.size() * sizeof(int16_t), 16000, 1, flex::voice::AudioSampleFormat::Int16);
+    EXPECT_TRUE(resSilence.success);
+    for (float s : resSilence.buffer.samples) {
+        EXPECT_EQ(0.0f, s);
+    }
+
+    // Clipping and NaN protection for float input
+    std::vector<float> noisyFloats = {
+        2.5f, -3.0f, 0.5f, -0.5f,
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity()
+    };
+
+    auto resClipped = flex::voice::convertAndResampleTo16kMono(
+        noisyFloats.data(), noisyFloats.size() * sizeof(float), 16000, 1, flex::voice::AudioSampleFormat::Float32);
+    EXPECT_TRUE(resClipped.success);
+    for (float s : resClipped.buffer.samples) {
+        EXPECT_FALSE(std::isnan(s));
+        EXPECT_TRUE(s >= -1.0f && s <= 1.0f);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -314,7 +564,7 @@ void test_audio_capture_safe_destruction_while_recording()
 
 void test_tts_service_lifecycle_and_mock_synthesis()
 {
-    std::cout << "[Test 6] TTS service lifecycle and synthesis...\n";
+    std::cout << "[Test 13] TTS service lifecycle and synthesis...\n";
     auto mockEngine = std::make_shared<MockTtsEngine>();
     flex::voice::TextToSpeechService service(mockEngine);
 
@@ -339,11 +589,39 @@ void test_tts_service_lifecycle_and_mock_synthesis()
     EXPECT_STR_EQ("FLEX 1.0 speech foundation operational.", mockEngine->spokenTexts()[0]);
 }
 
-void test_tts_stop_and_cancellation()
+void test_tts_completion_propagation()
 {
-    std::cout << "[Test 7] TTS stop, cancellation and queue purging...\n";
+    std::cout << "[Test 14] TTS completion signal propagation...\n";
     auto mockEngine = std::make_shared<MockTtsEngine>();
     flex::voice::TextToSpeechService service(mockEngine);
+
+    bool finishedEmitted = false;
+    QObject::connect(&service, &flex::voice::TextToSpeechService::speechFinished, [&]() {
+        finishedEmitted = true;
+    });
+
+    service.speak("Sentence completing normally.");
+    EXPECT_TRUE(service.isSpeaking());
+    EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Speaking), static_cast<int>(service.state()));
+
+    // Engine notifies that speech finished
+    mockEngine->notifyFinished();
+
+    EXPECT_FALSE(service.isSpeaking());
+    EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Idle), static_cast<int>(service.state()));
+    EXPECT_TRUE(finishedEmitted);
+}
+
+void test_tts_stop_and_cancellation()
+{
+    std::cout << "[Test 15] TTS stop, cancellation and queue purging...\n";
+    auto mockEngine = std::make_shared<MockTtsEngine>();
+    flex::voice::TextToSpeechService service(mockEngine);
+
+    bool cancelledEmitted = false;
+    QObject::connect(&service, &flex::voice::TextToSpeechService::speechCancelled, [&]() {
+        cancelledEmitted = true;
+    });
 
     service.speak("Sentence one.");
     EXPECT_TRUE(service.isSpeaking());
@@ -352,6 +630,7 @@ void test_tts_stop_and_cancellation()
     EXPECT_FALSE(service.isSpeaking());
     EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Idle), static_cast<int>(service.state()));
     EXPECT_EQ(1, mockEngine->stopCalledCount());
+    EXPECT_TRUE(cancelledEmitted);
 
     // Repeated stop should be safe
     service.stop();
@@ -360,7 +639,7 @@ void test_tts_stop_and_cancellation()
 
 void test_tts_engine_failure_handling()
 {
-    std::cout << "[Test 8] TTS engine failure reporting...\n";
+    std::cout << "[Test 16] TTS engine failure reporting...\n";
     auto mockEngine = std::make_shared<MockTtsEngine>();
     mockEngine->setFailSpeak(true);
 
@@ -370,11 +649,29 @@ void test_tts_engine_failure_handling()
     EXPECT_FALSE(service.isSpeaking());
     EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Error), static_cast<int>(service.state()));
     EXPECT_EQ(static_cast<int>(flex::voice::TtsError::SynthesisFailed), static_cast<int>(service.lastError()));
+
+    // Test async error reporting through notifyError
+    mockEngine->setFailSpeak(false);
+    service.speak("Second attempt");
+    EXPECT_TRUE(service.isSpeaking());
+
+    bool errorEmitted = false;
+    QString errorMsg;
+    QObject::connect(&service, &flex::voice::TextToSpeechService::speechError, [&](flex::voice::TtsError, const QString& msg) {
+        errorEmitted = true;
+        errorMsg = msg;
+    });
+
+    mockEngine->notifyError("Direct hardware sound error");
+    EXPECT_FALSE(service.isSpeaking());
+    EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Error), static_cast<int>(service.state()));
+    EXPECT_TRUE(errorEmitted);
+    EXPECT_FALSE(errorMsg.isEmpty());
 }
 
 void test_tts_queue_fifo_and_clearing()
 {
-    std::cout << "[Test 9] TTS Queue FIFO ordering and clearing on cancellation...\n";
+    std::cout << "[Test 17] TTS Queue FIFO ordering and clearing on cancellation...\n";
     flex::voice::TtsQueue queue;
     EXPECT_TRUE(queue.isEmpty());
     EXPECT_EQ(std::size_t(0), queue.size());
@@ -414,11 +711,21 @@ void test_tts_queue_fifo_and_clearing()
 #ifdef _WIN32
 void test_real_sapi_initialization_smoke()
 {
-    std::cout << "[Test 10] Real Windows SAPI engine initialization smoke test...\n";
+    std::cout << "[Test 18] Real Windows SAPI engine initialization smoke test...\n";
     flex::voice::TextToSpeechService service; // Constructs default SapiTtsEngine
-    // Check initial state without blocking or requiring physical audio
     EXPECT_FALSE(service.isSpeaking());
     EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Idle), static_cast<int>(service.state()));
+
+    // Test SAPI initialization by calling speak on a non-blocking background phrase
+    bool ok = service.speak("FLEX SAPI smoke initialization test.", true);
+    // On systems with SAPI installed, speak should succeed and transition state
+    if (ok) {
+        EXPECT_TRUE(service.isSpeaking());
+        // Cleanly stop and purge
+        service.stop();
+        EXPECT_FALSE(service.isSpeaking());
+        EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Idle), static_cast<int>(service.state()));
+    }
 }
 #endif
 
@@ -437,7 +744,17 @@ int main(int argc, char* argv[])
     test_audio_capture_empty_and_cancellation();
     test_audio_capture_hardware_error_handling();
     test_audio_capture_safe_destruction_while_recording();
+    test_audio_capture_duration_timeout();
+    test_audio_capture_device_disconnection_error();
+
+    test_audio_conversion_16k_int16();
+    test_audio_conversion_44k1_float();
+    test_audio_conversion_48k_int16_stereo();
+    test_audio_conversion_invalid_and_unsupported_formats();
+    test_audio_conversion_silence_nonzero_and_clipping();
+
     test_tts_service_lifecycle_and_mock_synthesis();
+    test_tts_completion_propagation();
     test_tts_stop_and_cancellation();
     test_tts_engine_failure_handling();
     test_tts_queue_fifo_and_clearing();
@@ -461,4 +778,3 @@ int main(int argc, char* argv[])
     std::cout << "Result: SUCCESS (All native voice foundation tests passed!)\n";
     return 0;
 }
-

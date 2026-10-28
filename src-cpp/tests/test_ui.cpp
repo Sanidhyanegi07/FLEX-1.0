@@ -561,6 +561,53 @@ void test_safe_window_shutdown(MockOllamaServer& mock)
     EXPECT_TRUE(coordinator->coreSession().isIdle());
 }
 
+void test_chat_view_voice_controls()
+{
+    std::cout << "[Test 11] ChatView voice button transitions and error propagation...\n";
+    flex::ui::ChatView view;
+
+    EXPECT_STR_EQ("🎙 Record Audio", view.recordButtonText().toStdString());
+    EXPECT_STR_EQ("🔊 Test Voice", view.testTtsButtonText().toStdString());
+    EXPECT_STR_EQ("○ Audio: Ready", view.audioStatusText().toStdString());
+
+    auto tts = view.textToSpeechService();
+    EXPECT_TRUE(tts != nullptr);
+
+    class MockUiTtsEngine : public flex::voice::ITextToSpeechEngine {
+    public:
+        bool initialize() override { return true; }
+        bool speak(const std::string&, bool) override { notifyStarted(); return true; }
+        void stop() override { notifyStopped(); }
+        bool isSpeaking() const override { return false; }
+    };
+
+    auto mockEngine = std::make_shared<MockUiTtsEngine>();
+    tts->setEngine(mockEngine);
+
+    // Speak
+    tts->speak("Test voice UI phrase");
+    EXPECT_STR_EQ("⏹ Stop Voice", view.testTtsButtonText().toStdString());
+    EXPECT_STR_EQ("● Speaking test phrase...", view.audioStatusText().toStdString());
+
+    // Finish
+    mockEngine->notifyFinished();
+    EXPECT_STR_EQ("🔊 Test Voice", view.testTtsButtonText().toStdString());
+    EXPECT_STR_EQ("✓ Speech finished", view.audioStatusText().toStdString());
+
+    // Speak again, then cancel/stop
+    tts->speak("Test phrase 2");
+    EXPECT_STR_EQ("⏹ Stop Voice", view.testTtsButtonText().toStdString());
+    tts->stop();
+    EXPECT_STR_EQ("🔊 Test Voice", view.testTtsButtonText().toStdString());
+    EXPECT_STR_EQ("○ Speech stopped", view.audioStatusText().toStdString());
+
+    // Error
+    tts->speak("Test phrase 3");
+    mockEngine->notifyError("Hardware SAPI error");
+    EXPECT_STR_EQ("🔊 Test Voice", view.testTtsButtonText().toStdString());
+    EXPECT_TRUE(view.audioStatusText().contains("TTS Error"));
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -586,6 +633,7 @@ int main(int argc, char* argv[])
     test_backend_error_displays_visibly(mock);
     test_repeated_send_blocked(mock);
     test_safe_window_shutdown(mock);
+    test_chat_view_voice_controls();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

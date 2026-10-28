@@ -6,12 +6,45 @@
 #include <QObject>
 #include <QString>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace flex::voice {
+
+enum class AudioSampleFormat {
+    Unknown = 0,
+    Int16,
+    Float32,
+    Int32,
+    UInt8
+};
+
+struct AudioResampleResult {
+    bool success{false};
+    AudioBuffer buffer;
+    std::string errorMessage;
+};
+
+/**
+ * Decodes raw PCM bytes of any supported sample format and channel count,
+ * normalizes samples to [-1.0f, 1.0f], downmixes multi-channel to mono,
+ * and resamples the audio stream to target sample rate (default 16 kHz).
+ *
+ * Algorithm: Linear interpolation time-domain resampling.
+ * Limitations: Does not implement polyphase anti-aliasing sinc filtering;
+ * input frequency components above target Nyquist (8 kHz for 16 kHz output)
+ * will fold back (alias) into the audible band.
+ */
+AudioResampleResult convertAndResampleTo16kMono(
+    const void* data,
+    size_t byteCount,
+    int sourceSampleRate,
+    int sourceChannels,
+    AudioSampleFormat sourceFormat,
+    int targetSampleRate = 16000);
 
 enum class AudioCaptureState {
     Idle = 0,
@@ -48,6 +81,14 @@ public:
     [[nodiscard]] virtual bool isRecording() const = 0;
     [[nodiscard]] virtual std::vector<AudioDeviceInfo> availableDevices() const = 0;
     [[nodiscard]] virtual AudioDeviceInfo defaultDevice() const = 0;
+
+    virtual void setErrorCallback(std::function<void(AudioCaptureError, const QString&)> callback)
+    {
+        m_errorCallback = std::move(callback);
+    }
+
+protected:
+    std::function<void(AudioCaptureError, const QString&)> m_errorCallback;
 };
 
 class AudioCaptureServiceImpl;
@@ -58,8 +99,11 @@ class AudioCaptureServiceImpl;
  * Responsibilities:
  * - Enumerates input audio devices.
  * - Captures 16 kHz 16-bit mono PCM streams on a non-blocking background buffer.
+ * - Automatically resamples and downmixes arbitrary device formats to 16 kHz mono.
  * - Extracts normalized floating-point samples [-1.0f, 1.0f] for future STT inference.
  * - Handles device removal, errors, cancellation, and clean shutdown.
+ * - Automatically stops capture when reaching a configurable duration limit (default 30s).
+ * - Enforces hard buffer size safeguard to prevent unbounded memory growth.
  * - Supports dependency injection of mock audio sources for CI test isolation.
  */
 class AudioCaptureService : public QObject {
@@ -81,6 +125,11 @@ public:
     AudioBuffer stopCapture();
     void cancelCapture();
 
+    // Duration Limit Controls
+    void setMaxDurationMs(int ms);
+    [[nodiscard]] int maxDurationMs() const;
+    [[nodiscard]] bool wasMaxDurationReached() const;
+
     // State Inspection
     [[nodiscard]] bool isRecording() const;
     [[nodiscard]] AudioCaptureState state() const;
@@ -96,7 +145,11 @@ signals:
     void captureFinished(const flex::voice::AudioBuffer& buffer);
     void captureCancelled();
     void captureError(flex::voice::AudioCaptureError error, const QString& message);
+    void captureMaxDurationReached();
     void audioLevelChanged(double levelRms);
+
+private slots:
+    void onMaxDurationTimeout();
 
 private:
     std::unique_ptr<AudioCaptureServiceImpl> m_impl;
