@@ -429,6 +429,10 @@ void VoiceConversationController::onSttFinished(const QString& text, int64_t /*d
     finishVoiceCoreOperation();
 
     QString trimmed = text.trimmed();
+    trimmed.remove("[BLANK_AUDIO]", Qt::CaseInsensitive);
+    trimmed.remove("[_BEG_]", Qt::CaseInsensitive);
+    trimmed.remove("[MUSIC]", Qt::CaseInsensitive);
+    trimmed = trimmed.trimmed();
     m_lastTranscript = trimmed;
 
     if (trimmed.isEmpty()) {

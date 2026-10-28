@@ -45,6 +45,9 @@ MainWindow::MainWindow(
 MainWindow::~MainWindow()
 {
     m_healthCheckTimer.stop();
+    if (m_healthCheckThread && m_healthCheckThread->isRunning()) {
+        m_healthCheckThread->wait(1000);
+    }
     if (m_voiceController) {
         m_voiceController->cancelAll();
     }
@@ -269,7 +272,8 @@ void MainWindow::checkAiConnectivity()
     m_isCheckingHealth = true;
 
     auto coord = m_coordinator;
-    auto* thread = QThread::create([this, coord]() {
+    QPointer<MainWindow> safeThis = this;
+    auto* thread = QThread::create([safeThis, coord]() {
         bool ok = false;
         std::string model = "unknown";
         try {
@@ -281,12 +285,17 @@ void MainWindow::checkAiConnectivity()
             ok = false;
         }
 
-        QMetaObject::invokeMethod(this, [this, ok, model]() {
-            m_isCheckingHealth = false;
-            updateTelemetryBar(ok, QString::fromStdString(model));
-        }, Qt::QueuedConnection);
+        if (safeThis) {
+            QMetaObject::invokeMethod(safeThis.data(), [safeThis, ok, model]() {
+                if (safeThis) {
+                    safeThis->m_isCheckingHealth = false;
+                    safeThis->updateTelemetryBar(ok, QString::fromStdString(model));
+                }
+            }, Qt::QueuedConnection);
+        }
     });
 
+    m_healthCheckThread = thread;
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start();
 }
@@ -377,6 +386,9 @@ void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     m_healthCheckTimer.stop();
+    if (m_healthCheckThread && m_healthCheckThread->isRunning()) {
+        m_healthCheckThread->wait(1000);
+    }
     if (m_voiceController) {
         m_voiceController->cancelAll();
     }

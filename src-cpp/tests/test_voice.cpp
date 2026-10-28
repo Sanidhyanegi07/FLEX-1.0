@@ -8,10 +8,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
+#include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryFile>
@@ -112,6 +114,7 @@ public:
         m_contentType = "application/json";
         m_isStreaming = false;
         m_chunks.clear();
+        m_delayMs = 0;
         m_requestCount = 0;
         m_lastRequestBody.clear();
     }
@@ -133,6 +136,11 @@ public:
         m_chunks = chunks;
     }
 
+    void setDelay(int delayMs)
+    {
+        m_delayMs = delayMs;
+    }
+
     int requestCount() const { return m_requestCount; }
     const std::string& lastRequestBody() const { return m_lastRequestBody; }
 
@@ -144,7 +152,15 @@ private slots:
             connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
                 m_lastRequestBody = socket->readAll().toStdString();
                 m_requestCount++;
-                if (m_isStreaming) {
+                if (m_delayMs > 0 && !m_isStreaming) {
+                    QPointer<QTcpSocket> safeSocket = socket;
+                    int delay = m_delayMs;
+                    QTimer::singleShot(delay, this, [this, safeSocket]() {
+                        if (safeSocket) {
+                            sendNormal(safeSocket.data());
+                        }
+                    });
+                } else if (m_isStreaming) {
                     sendStreaming(socket);
                 } else {
                     sendNormal(socket);
@@ -188,6 +204,7 @@ private:
     std::string m_contentType{"application/json"};
     bool m_isStreaming{false};
     std::vector<std::string> m_chunks;
+    int m_delayMs{0};
     int m_requestCount{0};
     std::string m_lastRequestBody;
 };
@@ -313,6 +330,7 @@ public:
 
     void setFailInitialize(bool fail) { m_failInit = fail; }
     void setFailSpeak(bool fail) { m_failSpeak = fail; }
+    void setAutoFinish(bool autoFinish) { m_autoFinish = autoFinish; }
 
     bool initialize() override
     {
@@ -334,6 +352,11 @@ public:
         m_spokenTexts.push_back(text);
         m_isSpeaking = true;
         notifyStarted();
+        if (m_autoFinish) {
+            QTimer::singleShot(10, [this]() {
+                notifyFinished();
+            });
+        }
         return true;
     }
 
@@ -368,6 +391,7 @@ private:
     bool m_initialized{true};
     bool m_failInit{false};
     bool m_failSpeak{false};
+    bool m_autoFinish{false};
     bool m_isSpeaking{false};
     int m_stopCalledCount{0};
     std::vector<std::string> m_spokenTexts;
@@ -987,9 +1011,25 @@ void test_tts_queue_fifo_and_clearing()
 void test_real_sapi_initialization_smoke()
 {
     std::cout << "[Test 18] Real Windows SAPI engine initialization smoke test...\n";
+
+    // Regression check for Issue 2: intercept any Qt "No such method" warnings
+    // during SapiWorker invocations (stopSpeech, initCom, speakText, checkIsSpeaking, cleanup).
+    static bool s_sawNoSuchMethodWarning = false;
+    s_sawNoSuchMethodWarning = false;
+    auto prevHandler = qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString& msg) {
+        if (msg.contains("No such method")) {
+            s_sawNoSuchMethodWarning = true;
+            std::cerr << "MOC Warning intercepted: " << msg.toStdString() << "\n";
+        }
+    });
+
     flex::voice::TextToSpeechService service; // Constructs default SapiTtsEngine
     EXPECT_FALSE(service.isSpeaking());
     EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Idle), static_cast<int>(service.state()));
+
+    // Test SAPI stop on idle (invokes SapiWorker::stopSpeech)
+    service.stop();
+    EXPECT_FALSE(s_sawNoSuchMethodWarning);
 
     // Test SAPI initialization by calling speak on a non-blocking background phrase
     bool ok = service.speak("FLEX SAPI smoke initialization test.", true);
@@ -1001,6 +1041,9 @@ void test_real_sapi_initialization_smoke()
         EXPECT_FALSE(service.isSpeaking());
         EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Idle), static_cast<int>(service.state()));
     }
+
+    qInstallMessageHandler(prevHandler);
+    EXPECT_FALSE(s_sawNoSuchMethodWarning);
 }
 #endif
 
@@ -1496,6 +1539,595 @@ void test_stt_real_model_smoke_test()
     std::cout << "  [PASS] Real whisper.cpp engine loaded and inferred without error!\n";
 }
 
+// -----------------------------------------------------------------------------
+// Voice Conversation Pipeline Tests (Tests 30 to 48)
+// -----------------------------------------------------------------------------
+
+inline bool waitForCondition(const std::function<bool()>& condition, int timeoutMs = 3000)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        if (condition()) {
+            return true;
+        }
+        QThread::msleep(10);
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    return condition();
+}
+
+struct VoiceTestContext {
+    MockOllamaServer ollama;
+    TempDbGuard tempDb;
+    std::shared_ptr<flex::ConversationStorage> storage;
+    std::shared_ptr<flex::OllamaClient> client;
+    std::shared_ptr<flex::BackendCoordinator> coordinator;
+    std::shared_ptr<MockAudioCaptureSource> mockCapture;
+    std::shared_ptr<MockSpeechToTextEngine> mockStt;
+    std::shared_ptr<MockTtsEngine> mockTts;
+    std::shared_ptr<flex::voice::AudioCaptureService> captureService;
+    std::shared_ptr<flex::voice::SpeechToTextService> sttService;
+    std::shared_ptr<flex::voice::TextToSpeechService> ttsService;
+    std::unique_ptr<flex::voice::VoiceConversationController> controller;
+
+    VoiceTestContext()
+    {
+        storage = std::make_shared<flex::ConversationStorage>(tempDb.path());
+        flex::OllamaConfig cfg;
+        cfg.baseUrl = ollama.url();
+        cfg.model = "qwen2.5-coder:3b";
+        client = std::make_shared<flex::OllamaClient>(cfg);
+        coordinator = std::make_shared<flex::BackendCoordinator>(storage, client);
+
+        mockCapture = std::make_shared<MockAudioCaptureSource>();
+        mockCapture->setSimulatedSamples(16000, 1000, 440.0f);
+
+        mockStt = std::make_shared<MockSpeechToTextEngine>();
+        mockStt->setModelLoaded(true);
+        mockStt->setTranscriptionText("Hello, how are you today?");
+
+        mockTts = std::make_shared<MockTtsEngine>();
+        mockTts->setAutoFinish(true);
+
+        captureService = std::make_shared<flex::voice::AudioCaptureService>(mockCapture);
+        sttService = std::make_shared<flex::voice::SpeechToTextService>(mockStt);
+        ttsService = std::make_shared<flex::voice::TextToSpeechService>(mockTts);
+
+        controller = std::make_unique<flex::voice::VoiceConversationController>(
+            coordinator, captureService, sttService, ttsService);
+    }
+
+    void setOllamaResponse(const std::string& reply)
+    {
+        ollama.setResponse(200, "OK", "{\n"
+            "  \"model\": \"qwen2.5-coder:3b\",\n"
+            "  \"message\": {\"role\": \"assistant\", \"content\": \"" + reply + "\"},\n"
+            "  \"done\": true,\n"
+            "  \"total_duration\": 100000000,\n"
+            "  \"eval_count\": 10\n"
+            "}");
+    }
+
+    ~VoiceTestContext()
+    {
+        if (controller) {
+            controller->cancelAll();
+            controller.reset();
+        }
+        coordinator.reset();
+    }
+};
+
+void test_voice_controller_successful_recording_to_transcription()
+{
+    std::cout << "[Test 30] VoiceController: successful recording to transcription...\n";
+    VoiceTestContext ctx;
+    ctx.controller->setAutoSubmitEnabled(false);
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Idle), static_cast<int>(ctx.controller->state()));
+    EXPECT_FALSE(ctx.controller->isBusy());
+
+    QString readyTranscript;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::transcriptReadyForReview,
+                     [&](const QString& t) {
+        readyTranscript = t;
+    });
+
+    bool started = ctx.controller->startRecording();
+    EXPECT_TRUE(started);
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Recording), static_cast<int>(ctx.controller->state()));
+    EXPECT_TRUE(ctx.controller->isBusy());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isProcessing());
+    EXPECT_EQ(FLEX_OPERATION_VOICE, ctx.coordinator->coreSession().currentOperation());
+
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+    EXPECT_STR_EQ("Hello, how are you today?", ctx.controller->lastTranscript().toStdString());
+    EXPECT_STR_EQ("Hello, how are you today?", readyTranscript.toStdString());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+}
+
+void test_voice_controller_empty_silent_transcription()
+{
+    std::cout << "[Test 31] VoiceController: empty/silent transcription handling...\n";
+    VoiceTestContext ctx;
+    ctx.mockStt->setTranscriptionText("   \n\t  ");
+
+    QString errEmitted;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::errorOccurred,
+                     [&](const QString& e) {
+        errEmitted = e;
+    });
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Error;
+    }));
+    EXPECT_FALSE(errEmitted.isEmpty());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    EXPECT_EQ(0, ctx.ollama.requestCount());
+}
+
+void test_voice_controller_missing_model()
+{
+    std::cout << "[Test 32] VoiceController: missing/unloadable Whisper model handling...\n";
+    qputenv("FLEX_WHISPER_MODEL_PATH", "C:/nonexistent/whisper/model.bin");
+    VoiceTestContext ctx;
+    ctx.mockStt->setModelLoaded(false);
+
+    QString capturedError;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::errorOccurred,
+                     [&](const QString& err) {
+        capturedError = err;
+    });
+
+    bool started = ctx.controller->startRecording();
+    EXPECT_TRUE(started);
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Error;
+    }));
+    EXPECT_FALSE(capturedError.isEmpty());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    qunsetenv("FLEX_WHISPER_MODEL_PATH");
+}
+
+void test_voice_controller_stt_failure()
+{
+    std::cout << "[Test 33] VoiceController: speech-to-text engine error handling...\n";
+    VoiceTestContext ctx;
+    ctx.mockStt->setModelLoaded(true);
+    ctx.mockStt->setFailTranscribe(true, "Simulated transcription engine failure");
+
+    QString errEmitted;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::errorOccurred,
+                     [&](const QString& e) {
+        errEmitted = e;
+    });
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Error;
+    }));
+    EXPECT_FALSE(errEmitted.isEmpty());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+}
+
+void test_voice_controller_transcript_review_and_editing()
+{
+    std::cout << "[Test 34] VoiceController: transcript review and editing...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Here is the edited response.");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+    EXPECT_STR_EQ("Hello, how are you today?", ctx.controller->lastTranscript().toStdString());
+
+    bool sub = ctx.controller->submitTranscript("How is the weather today?");
+    EXPECT_TRUE(sub);
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Thinking), static_cast<int>(ctx.controller->state()));
+    EXPECT_STR_EQ("How is the weather today?", ctx.controller->lastTranscript().toStdString());
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+    EXPECT_STR_EQ("Here is the edited response.", ctx.controller->lastAssistantResponse().toStdString());
+}
+
+void test_voice_controller_exactly_one_backend_submission()
+{
+    std::cout << "[Test 35] VoiceController: exactly one backend submission per confirmed transcript...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Single request response.");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    int countBefore = ctx.ollama.requestCount();
+    bool sub = ctx.controller->submitTranscript();
+    EXPECT_TRUE(sub);
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+    EXPECT_EQ(countBefore + 1, ctx.ollama.requestCount());
+}
+
+void test_voice_controller_prevent_duplicate_submissions()
+{
+    std::cout << "[Test 36] VoiceController: prevent duplicate submissions while thinking...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Duplicate test response.");
+    ctx.ollama.setDelay(200);
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    bool sub1 = ctx.controller->submitTranscript();
+    EXPECT_TRUE(sub1);
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Thinking), static_cast<int>(ctx.controller->state()));
+
+    bool sub2 = ctx.controller->submitTranscript();
+    EXPECT_FALSE(sub2);
+
+    bool rec = ctx.controller->startRecording();
+    EXPECT_FALSE(rec);
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+}
+
+void test_voice_controller_backend_failure_preserves_transcript()
+{
+    std::cout << "[Test 37] VoiceController: backend failure preserves user transcript...\n";
+    VoiceTestContext ctx;
+    ctx.ollama.setResponse(500, "Internal Server Error", R"({"error": "daemon out of memory"})");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    QString savedTranscript = ctx.controller->lastTranscript();
+    bool sub = ctx.controller->submitTranscript();
+    EXPECT_TRUE(sub);
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Error;
+    }));
+    EXPECT_STR_EQ(savedTranscript.toStdString(), ctx.controller->lastTranscript().toStdString());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+}
+
+void test_voice_controller_successful_chat_persistence()
+{
+    std::cout << "[Test 38] VoiceController: successful chat persistence to SQLite...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Persistent assistant answer.");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    ctx.controller->submitTranscript("Query about persistence.");
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+
+    auto convs = ctx.storage->listConversations();
+    EXPECT_FALSE(convs.empty());
+    if (!convs.empty()) {
+        auto msgs = ctx.storage->getMessages(convs[0].id);
+        EXPECT_TRUE(msgs.size() >= 2);
+        if (msgs.size() >= 2) {
+            EXPECT_STR_EQ("Query about persistence.", msgs[msgs.size() - 2].content);
+            EXPECT_STR_EQ("Persistent assistant answer.", msgs[msgs.size() - 1].content);
+        }
+    }
+}
+
+void test_voice_controller_tts_enabled_and_disabled()
+{
+    std::cout << "[Test 39] VoiceController: TTS enabled and disabled behavior...\n";
+
+    // 1. TTS Enabled
+    {
+        VoiceTestContext ctx;
+        ctx.controller->setVoiceOutputEnabled(true);
+        ctx.setOllamaResponse("Voice output active.");
+        ctx.controller->setAutoSubmitEnabled(true);
+
+        ctx.controller->startRecording();
+        ctx.controller->stopRecording();
+
+        EXPECT_TRUE(waitForCondition([&]() {
+            return !ctx.mockTts->spokenTexts().empty();
+        }));
+        EXPECT_EQ(1, static_cast<int>(ctx.mockTts->spokenTexts().size()));
+        if (!ctx.mockTts->spokenTexts().empty()) {
+            EXPECT_STR_EQ("Voice output active.", ctx.mockTts->spokenTexts()[0]);
+        }
+        EXPECT_TRUE(waitForCondition([&]() {
+            return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+        }));
+    }
+
+    // 2. TTS Disabled
+    {
+        VoiceTestContext ctx2;
+        ctx2.controller->setVoiceOutputEnabled(false);
+        ctx2.setOllamaResponse("Silent response.");
+        ctx2.controller->setAutoSubmitEnabled(true);
+
+        ctx2.controller->startRecording();
+        ctx2.controller->stopRecording();
+
+        EXPECT_TRUE(waitForCondition([&]() {
+            return ctx2.controller->state() == flex::voice::VoiceSessionState::Idle;
+        }));
+        EXPECT_EQ(0, static_cast<int>(ctx2.mockTts->spokenTexts().size()));
+    }
+}
+
+void test_voice_controller_tts_failure_does_not_break_chat()
+{
+    std::cout << "[Test 40] VoiceController: TTS failure does not break chat persistence...\n";
+    VoiceTestContext ctx;
+    ctx.mockTts->setFailSpeak(true);
+    ctx.controller->setVoiceOutputEnabled(true);
+    ctx.setOllamaResponse("Chat completes even if TTS fails.");
+    ctx.controller->setAutoSubmitEnabled(true);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+    EXPECT_STR_EQ("Chat completes even if TTS fails.", ctx.controller->lastAssistantResponse().toStdString());
+
+    auto convs = ctx.storage->listConversations();
+    EXPECT_FALSE(convs.empty());
+    if (!convs.empty()) {
+        auto msgs = ctx.storage->getMessages(convs[0].id);
+        EXPECT_TRUE(msgs.size() >= 2);
+        if (msgs.size() >= 2) {
+            EXPECT_STR_EQ("Chat completes even if TTS fails.", msgs.back().content);
+        }
+    }
+}
+
+void test_voice_controller_cancellation_during_recording()
+{
+    std::cout << "[Test 41] VoiceController: cancellation during recording...\n";
+    VoiceTestContext ctx;
+    ctx.controller->startRecording();
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Recording), static_cast<int>(ctx.controller->state()));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isProcessing());
+
+    ctx.controller->cancelVoiceInput();
+
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Idle), static_cast<int>(ctx.controller->state()));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    EXPECT_FALSE(ctx.mockCapture->isRecording());
+}
+
+void test_voice_controller_cancellation_during_transcription()
+{
+    std::cout << "[Test 42] VoiceController: cancellation during transcription...\n";
+    VoiceTestContext ctx;
+    ctx.mockStt->setSimulateDelay(1000);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Transcribing), static_cast<int>(ctx.controller->state()));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isProcessing());
+
+    ctx.controller->cancelVoiceInput();
+
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Idle), static_cast<int>(ctx.controller->state()));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    EXPECT_TRUE(ctx.mockStt->m_cancelled.load());
+}
+
+void test_voice_controller_cancellation_during_chat()
+{
+    std::cout << "[Test 43] VoiceController: cancellation during chat generation...\n";
+    VoiceTestContext ctx;
+    ctx.ollama.setDelay(1000);
+    ctx.setOllamaResponse("Slow reply");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    ctx.controller->submitTranscript();
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Thinking), static_cast<int>(ctx.controller->state()));
+
+    ctx.controller->cancelAll();
+
+    EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Idle), static_cast<int>(ctx.controller->state()));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+}
+
+void test_voice_controller_repeated_start_stop()
+{
+    std::cout << "[Test 44] VoiceController: repeated start and stop cycles...\n";
+    VoiceTestContext ctx;
+
+    for (int i = 0; i < 3; ++i) {
+        bool ok = ctx.controller->startRecording();
+        EXPECT_TRUE(ok);
+        ctx.controller->stopRecording();
+
+        EXPECT_TRUE(waitForCondition([&]() {
+            return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+        }));
+        ctx.controller->cancelVoiceInput();
+        EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Idle), static_cast<int>(ctx.controller->state()));
+        EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    }
+}
+
+void test_voice_controller_safe_shutdown_with_pending_work()
+{
+    std::cout << "[Test 45] VoiceController: safe shutdown with active async work...\n";
+    std::shared_ptr<MockSpeechToTextEngine> capturedMockStt;
+
+    {
+        VoiceTestContext ctx;
+        capturedMockStt = ctx.mockStt;
+        ctx.mockStt->setSimulateDelay(1000);
+
+        ctx.controller->startRecording();
+        ctx.controller->stopRecording();
+
+        EXPECT_EQ(static_cast<int>(flex::voice::VoiceSessionState::Transcribing), static_cast<int>(ctx.controller->state()));
+    }
+
+    EXPECT_TRUE(capturedMockStt->m_cancelled.load());
+}
+
+void test_voice_controller_c_core_lifecycle_integrity()
+{
+    std::cout << "[Test 46] VoiceController: C core lifecycle integrity...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Lifecycle verified.");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+
+    // 1. Voice operation begins on recording
+    ctx.controller->startRecording();
+    EXPECT_EQ(FLEX_OPERATION_VOICE, ctx.coordinator->coreSession().currentOperation());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isProcessing());
+
+    // 2. Continues through transcription
+    ctx.controller->stopRecording();
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    // 3. Completed when review starts
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    EXPECT_FALSE(ctx.coordinator->coreSession().isProcessing());
+
+    // 4. Chat operation begins on submission
+    ctx.controller->submitTranscript();
+    EXPECT_EQ(FLEX_OPERATION_CHAT, ctx.coordinator->coreSession().currentOperation());
+    EXPECT_TRUE(ctx.coordinator->coreSession().isProcessing());
+
+    // 5. Cleanly returns to Idle after response
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+    EXPECT_TRUE(ctx.coordinator->coreSession().isIdle());
+    EXPECT_FALSE(ctx.coordinator->coreSession().isProcessing());
+}
+
+void test_voice_controller_typed_chat_parity()
+{
+    std::cout << "[Test 47] VoiceController: typed chat vs voice chat database parity...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Parity response.");
+
+    // 1. Direct typed chat
+    flex::ChatRequest req;
+    req.message = "Parity prompt";
+    auto typedRes = ctx.coordinator->sendChatSync(req);
+    EXPECT_TRUE(typedRes.success);
+
+    // 2. Voice controller submitted chat
+    ctx.controller->setAutoSubmitEnabled(false);
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    ctx.controller->submitTranscript("Parity prompt");
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+
+    auto convs = ctx.storage->listConversations();
+    EXPECT_FALSE(convs.empty());
+    int total = 0;
+    for (const auto& conv : convs) {
+        auto m = ctx.storage->getMessages(conv.id);
+        total += m.size();
+        if (m.size() >= 2) {
+            EXPECT_STR_EQ("user", m[0].role);
+            EXPECT_STR_EQ("assistant", m[1].role);
+            EXPECT_STR_EQ("Parity prompt", m[0].content);
+            EXPECT_STR_EQ("Parity response.", m[1].content);
+        }
+    }
+    EXPECT_TRUE(total >= 4);
+}
+
+void test_voice_controller_no_ui_blocking()
+{
+    std::cout << "[Test 48] VoiceController: asynchronous non-blocking event loop execution...\n";
+    VoiceTestContext ctx;
+    ctx.mockStt->setSimulateDelay(200);
+
+    ctx.controller->startRecording();
+    ctx.controller->stopRecording();
+
+    int ticks = 0;
+    QTimer timer;
+    timer.setInterval(10);
+    QObject::connect(&timer, &QTimer::timeout, [&]() { ticks++; });
+    timer.start();
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }, 3000));
+
+    timer.stop();
+    EXPECT_TRUE(ticks > 3);
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -1542,6 +2174,26 @@ int main(int argc, char* argv[])
     test_stt_empty_transcription_output();
     test_stt_real_model_smoke_test();
 
+    test_voice_controller_successful_recording_to_transcription();
+    test_voice_controller_empty_silent_transcription();
+    test_voice_controller_missing_model();
+    test_voice_controller_stt_failure();
+    test_voice_controller_transcript_review_and_editing();
+    test_voice_controller_exactly_one_backend_submission();
+    test_voice_controller_prevent_duplicate_submissions();
+    test_voice_controller_backend_failure_preserves_transcript();
+    test_voice_controller_successful_chat_persistence();
+    test_voice_controller_tts_enabled_and_disabled();
+    test_voice_controller_tts_failure_does_not_break_chat();
+    test_voice_controller_cancellation_during_recording();
+    test_voice_controller_cancellation_during_transcription();
+    test_voice_controller_cancellation_during_chat();
+    test_voice_controller_repeated_start_stop();
+    test_voice_controller_safe_shutdown_with_pending_work();
+    test_voice_controller_c_core_lifecycle_integrity();
+    test_voice_controller_typed_chat_parity();
+    test_voice_controller_no_ui_blocking();
+
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";
     std::cout << "  Total Assertions : " << g_tests_run << "\n";
@@ -1557,3 +2209,5 @@ int main(int argc, char* argv[])
     std::cout << "Result: SUCCESS (All native voice foundation tests passed!)\n";
     return 0;
 }
+
+#include "test_voice.moc"

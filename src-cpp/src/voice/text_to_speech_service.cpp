@@ -41,6 +41,7 @@ public:
         cleanup();
     }
 
+public slots:
     bool initCom()
     {
         HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
@@ -98,13 +99,6 @@ public:
         return false;
     }
 
-signals:
-    void speakStarted();
-    void speakFinished();
-    void speakStopped();
-    void speakFailed(const QString& errorMsg);
-
-public slots:
     void cleanup()
     {
         stopPollTimer();
@@ -118,6 +112,12 @@ public slots:
             m_comInitialized = false;
         }
     }
+
+signals:
+    void speakStarted();
+    void speakFinished();
+    void speakStopped();
+    void speakFailed(const QString& errorMsg);
 
 private slots:
     void onPollTimer()
@@ -183,7 +183,7 @@ public:
     {
         disconnect(m_worker, nullptr, this, nullptr);
         if (m_worker && m_thread && m_thread->isRunning()) {
-            QMetaObject::invokeMethod(m_worker, "cleanup", Qt::BlockingQueuedConnection);
+            QMetaObject::invokeMethod(m_worker, &SapiWorker::cleanup, Qt::BlockingQueuedConnection);
             m_thread->quit();
             m_thread->wait(1000);
         }
@@ -194,8 +194,7 @@ public:
     bool initialize() override
     {
         bool ok = false;
-        QMetaObject::invokeMethod(m_worker, "initCom", Qt::BlockingQueuedConnection,
-                                  Q_RETURN_ARG(bool, ok));
+        QMetaObject::invokeMethod(m_worker, &SapiWorker::initCom, Qt::BlockingQueuedConnection, &ok);
         m_initialized = ok;
         return ok;
     }
@@ -209,16 +208,15 @@ public:
         }
 
         QString qText = QString::fromStdString(text);
-        QMetaObject::invokeMethod(m_worker, "speakText", Qt::QueuedConnection,
-                                  Q_ARG(QString, qText),
-                                  Q_ARG(bool, purgePrevious));
+        QMetaObject::invokeMethod(m_worker, &SapiWorker::speakText, Qt::QueuedConnection,
+                                  qText, purgePrevious);
         return true;
     }
 
     void stop() override
     {
         if (m_worker && m_thread && m_thread->isRunning()) {
-            QMetaObject::invokeMethod(m_worker, "stopSpeech", Qt::BlockingQueuedConnection);
+            QMetaObject::invokeMethod(m_worker, &SapiWorker::stopSpeech, Qt::BlockingQueuedConnection);
         }
     }
 
@@ -228,8 +226,7 @@ public:
             return false;
         }
         bool speaking = false;
-        QMetaObject::invokeMethod(m_worker, "checkIsSpeaking", Qt::BlockingQueuedConnection,
-                                  Q_RETURN_ARG(bool, speaking));
+        QMetaObject::invokeMethod(m_worker, &SapiWorker::checkIsSpeaking, Qt::BlockingQueuedConnection, &speaking);
         return speaking;
     }
 

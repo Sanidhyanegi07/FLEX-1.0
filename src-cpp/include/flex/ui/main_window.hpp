@@ -8,8 +8,10 @@
 
 #include <QMainWindow>
 #include <QLabel>
+#include <QPointer>
 #include <QPushButton>
 #include <QSplitter>
+#include <QThread>
 #include <QTimer>
 
 #include <memory>
@@ -81,6 +83,7 @@ private:
 
     // Background timers
     QTimer m_healthCheckTimer;
+    QPointer<QThread> m_healthCheckThread;
     bool m_isCheckingHealth{false};
     uint64_t m_currentRequestId{0};
 };

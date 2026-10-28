@@ -118,7 +118,11 @@ public:
         for (int i = 0; i < nSegments; ++i) {
             const char* segmentText = whisper_full_get_segment_text(m_ctx, i);
             if (segmentText) {
-                fullText.append(QString::fromUtf8(segmentText));
+                QString seg = QString::fromUtf8(segmentText);
+                seg.remove("[BLANK_AUDIO]", Qt::CaseInsensitive);
+                seg.remove("[_BEG_]", Qt::CaseInsensitive);
+                seg.remove("[MUSIC]", Qt::CaseInsensitive);
+                fullText.append(seg);
             }
         }
 
