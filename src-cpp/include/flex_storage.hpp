@@ -1,0 +1,7 @@
+#ifndef FLEX_STORAGE_CONVENIENCE_HPP
+#define FLEX_STORAGE_CONVENIENCE_HPP
+
+#include "flex/storage.hpp"
+
+#endif // FLEX_STORAGE_CONVENIENCE_HPP
+

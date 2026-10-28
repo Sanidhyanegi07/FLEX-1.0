@@ -12,9 +12,10 @@ Set-Location $scriptDir
 $qtMinGW = "C:\Qt\Tools\mingw1310_64\bin"
 $qtCMake = "C:\Qt\Tools\CMake_64\bin"
 $qtNinja = "C:\Qt\Tools\Ninja"
+$qtBin = "C:\Qt\6.11.1\mingw_64\bin"
 
 if ((Test-Path $qtMinGW) -and (Test-Path $qtCMake)) {
-    $env:PATH = "$qtMinGW;$qtCMake;$qtNinja;" + $env:PATH
+    $env:PATH = "$qtMinGW;$qtCMake;$qtNinja;$qtBin;" + $env:PATH
 }
 
 $cmakeCmd = Get-Command "cmake" -ErrorAction SilentlyContinue
@@ -28,7 +29,7 @@ if ($Clean -and (Test-Path $BuildDir)) {
     Remove-Item -Recurse -Force $BuildDir
 }
 
-Write-Host "Configuring CMake project (64-bit MinGW-w64 / Ninja)..." -ForegroundColor Cyan
+Write-Host "Configuring CMake project (64-bit MinGW-w64 / Qt 6.11.1 / Ninja)..." -ForegroundColor Cyan
 & cmake -B $BuildDir -G "Ninja" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 if ($LASTEXITCODE -ne 0) {
     Write-Error "CMake configuration failed with exit code $LASTEXITCODE."
@@ -49,13 +50,19 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "Running native C++ wrapper test suite directly..." -ForegroundColor Cyan
+Write-Host "Running native C++ wrapper test suite (Stage 1)..." -ForegroundColor Cyan
 & "$BuildDir\flex_cpp_tests.exe"
 if ($LASTEXITCODE -ne 0) {
     Write-Error "C++ wrapper tests failed with exit code $LASTEXITCODE."
     exit $LASTEXITCODE
 }
 
+Write-Host "Running native C++ storage test suite (Stage 2)..." -ForegroundColor Cyan
+& "$BuildDir\flex_storage_tests.exe"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "C++ storage tests failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
+
 Write-Host "All native builds and tests completed successfully." -ForegroundColor Green
 exit 0
-

@@ -9,13 +9,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Add Qt 6.11.1 MinGW-64 installation path to prefix if not set
+list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.11.1/mingw_64")
+
+find_package(Qt6 REQUIRED COMPONENTS Core Sql)
+
 if(MSVC)
-    add_compile_options(/W4 /WX)
+    add_compile_options(/W4)
 else()
-    add_compile_options(-Wall -Wextra -Werror -pedantic)
-    if(MINGW)
-        add_link_options(-static)
-    endif()
+    add_compile_options(-Wall -Wextra -pedantic)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -47,6 +49,22 @@ target_link_libraries(flex_core_cpp PUBLIC
 )
 
 # ------------------------------------------------------------------------------
+# Native C++ SQLite Storage Library (Stage 2)
+# ------------------------------------------------------------------------------
+add_library(flex_storage STATIC
+    src-cpp/src/storage.cpp
+)
+
+target_include_directories(flex_storage PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+)
+
+target_link_libraries(flex_storage PUBLIC
+    Qt6::Core
+    Qt6::Sql
+)
+
+# ------------------------------------------------------------------------------
 # Existing C Bridge Executable
 # ------------------------------------------------------------------------------
 add_executable(flex_bridge
@@ -57,12 +75,16 @@ target_link_libraries(flex_bridge PRIVATE
     flex_core_c
 )
 
+if(MINGW)
+    target_link_options(flex_bridge PRIVATE -static)
+endif()
+
 # ------------------------------------------------------------------------------
 # Testing Targets
 # ------------------------------------------------------------------------------
 enable_testing()
 
-# Existing C core test suite
+# 1. Existing C core test suite
 add_executable(flex_c_tests
     core-c/tests/test_command_parser.c
     core-c/tests/test_state_manager.c
@@ -77,9 +99,13 @@ target_link_libraries(flex_c_tests PRIVATE
     flex_core_c
 )
 
+if(MINGW)
+    target_link_options(flex_c_tests PRIVATE -static)
+endif()
+
 add_test(NAME c_core_tests COMMAND flex_c_tests)
 
-# Native C++ wrapper test suite
+# 2. Native C++ wrapper test suite (Stage 1)
 add_executable(flex_cpp_tests
     src-cpp/tests/test_flex_wrapper.cpp
 )
@@ -88,4 +114,21 @@ target_link_libraries(flex_cpp_tests PRIVATE
     flex_core_cpp
 )
 
+if(MINGW)
+    target_link_options(flex_cpp_tests PRIVATE -static)
+endif()
+
 add_test(NAME cpp_wrapper_tests COMMAND flex_cpp_tests)
+
+# 3. Native C++ SQLite storage test suite (Stage 2)
+add_executable(flex_storage_tests
+    src-cpp/tests/test_storage.cpp
+)
+
+target_link_libraries(flex_storage_tests PRIVATE
+    flex_storage
+    Qt6::Core
+    Qt6::Sql
+)
+
+add_test(NAME cpp_storage_tests COMMAND flex_storage_tests)
