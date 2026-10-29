@@ -83,6 +83,72 @@ void flex_audio_downmix_to_mono(
     uint32_t channel_count
 );
 
+typedef struct {
+    float correlation;       /* Pearson correlation between channel 0 and 1 (-1.0 to +1.0) */
+    float ch0_rms;
+    float ch1_rms;
+    float ch0_peak;
+    float ch1_peak;
+    int downmix_mode;        /* 0 = balanced average, 1 = ch0 only (ch1 dead or anti-phase), 2 = ch1 only (ch0 dead) */
+} flex_stereo_analysis_t;
+
+typedef struct {
+    float peak_before;
+    float rms_before;
+    float peak_after;
+    float rms_after;
+    float gain_applied;
+    bool was_normalized;
+    bool is_silence;
+} flex_audio_norm_result_t;
+
+/**
+ * Analyzes stereo channel energies, peaks, and cross-correlation to detect
+ * phase inversion or dead channels.
+ */
+void flex_audio_analyze_stereo(
+    const float* in_interleaved,
+    size_t frame_count,
+    flex_stereo_analysis_t* out_analysis
+);
+
+/**
+ * Downmixes multi-channel interleaved float samples to mono using the analyzed
+ * channel balance and correlation policy to avoid destructive phase cancellation.
+ */
+void flex_audio_downmix_to_mono_safe(
+    const float* in_interleaved,
+    float* out_mono,
+    size_t frame_count,
+    uint32_t channel_count,
+    const flex_stereo_analysis_t* analysis_hint
+);
+
+/**
+ * Bandlimited windowed-sinc resampler with anti-aliasing low-pass filtering.
+ * Attenuates frequencies above target Nyquist limit (e.g. 8 kHz for 16 kHz output).
+ */
+size_t flex_audio_resample_bandlimited(
+    const float* in_samples,
+    size_t in_count,
+    uint32_t in_rate,
+    float* out_samples,
+    size_t out_capacity,
+    uint32_t out_rate
+);
+
+/**
+ * Applies conservative peak/RMS normalization for quiet speech recordings while
+ * preserving noise gate to prevent boosting background ambient noise or silence.
+ */
+flex_audio_norm_result_t flex_audio_normalize_speech(
+    float* samples,
+    size_t count,
+    float target_peak,
+    float max_gain,
+    float noise_gate_rms
+);
+
 /**
  * High-quality linear interpolation resampler to 16 kHz Mono.
  */

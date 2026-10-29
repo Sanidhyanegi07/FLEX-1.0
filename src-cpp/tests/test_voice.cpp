@@ -911,6 +911,137 @@ void test_audio_conversion_silence_nonzero_and_clipping()
     }
 }
 
+void test_audio_conversion_bandlimited_resampling_and_antialiasing()
+{
+    std::cout << "[Test 12b] Audio DSP: bandlimited resampling & anti-aliasing stopband suppression...\n";
+
+    // 1. 48 kHz to 16 kHz: 1 kHz tone passband preservation
+    const int numSamples48k = 4800; // 100 ms
+    std::vector<float> sine1k_48k(numSamples48k);
+    for (int i = 0; i < numSamples48k; ++i) {
+        sine1k_48k[i] = 0.65f * std::sin(2.0f * 3.14159265f * 1000.0f * (static_cast<float>(i) / 48000.0f));
+    }
+
+    auto res1k = flex::voice::convertAndResampleTo16kMono(
+        sine1k_48k.data(),
+        sine1k_48k.size() * sizeof(float),
+        48000,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+
+    EXPECT_TRUE(res1k.success);
+    EXPECT_EQ(16000, res1k.buffer.sampleRate);
+    EXPECT_EQ(std::size_t(1600), res1k.buffer.sampleCount());
+
+    float peak1k = 0.0f;
+    for (size_t i = 15; i < res1k.buffer.samples.size() - 15; ++i) {
+        float a = std::abs(res1k.buffer.samples[i]);
+        if (a > peak1k) peak1k = a;
+    }
+    EXPECT_TRUE(std::abs(peak1k - 0.65f) < 0.08f);
+
+    // 2. 48 kHz to 16 kHz: 12 kHz tone (stopband, above 8 kHz Nyquist limit)
+    std::vector<float> sine12k_48k(numSamples48k);
+    for (int i = 0; i < numSamples48k; ++i) {
+        sine12k_48k[i] = 0.65f * std::sin(2.0f * 3.14159265f * 12000.0f * (static_cast<float>(i) / 48000.0f));
+    }
+
+    auto res12k = flex::voice::convertAndResampleTo16kMono(
+        sine12k_48k.data(),
+        sine12k_48k.size() * sizeof(float),
+        48000,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+
+    EXPECT_TRUE(res12k.success);
+    float peak12k = 0.0f;
+    for (size_t i = 25; i < res12k.buffer.samples.size() - 25; ++i) {
+        float a = std::abs(res12k.buffer.samples[i]);
+        if (a > peak12k) peak12k = a;
+    }
+    // Sinc filter stopband must suppress 12 kHz aliasing by >20 dB (< 0.065 from 0.65)
+    EXPECT_TRUE(peak12k < 0.07f);
+}
+
+void test_audio_conversion_stereo_antiphase_and_normalization()
+{
+    std::cout << "[Test 12c] Audio DSP: stereo anti-phase avoidance & speech gain normalization...\n";
+
+    // 1. Anti-phase stereo input (180 deg out-of-phase: L = +val, R = -val)
+    const int numFrames = 1600; // 100 ms at 16 kHz
+    std::vector<float> antiPhaseStereo(numFrames * 2);
+    for (int i = 0; i < numFrames; ++i) {
+        float val = 0.50f * std::sin(2.0f * 3.14159265f * 440.0f * (static_cast<float>(i) / 16000.0f));
+        antiPhaseStereo[i * 2] = val;
+        antiPhaseStereo[i * 2 + 1] = -val;
+    }
+
+    auto resAntiPhase = flex::voice::convertAndResampleTo16kMono(
+        antiPhaseStereo.data(),
+        antiPhaseStereo.size() * sizeof(float),
+        16000,
+        2,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+
+    EXPECT_TRUE(resAntiPhase.success);
+    float apPeak = 0.0f;
+    for (float s : resAntiPhase.buffer.samples) {
+        float a = std::abs(s);
+        if (a > apPeak) apPeak = a;
+    }
+    // Naive (L+R)/2 would result in apPeak == 0.0; safe policy preserves channel 0 (> 0.40)
+    EXPECT_TRUE(apPeak > 0.40f);
+
+    // 2. Quiet speech normalization (peak 0.05, RMS ~0.035, above noise gate 0.003)
+    std::vector<float> quietSpeech(1600);
+    for (int i = 0; i < 1600; ++i) {
+        quietSpeech[i] = 0.05f * std::sin(2.0f * 3.14159265f * 440.0f * (static_cast<float>(i) / 16000.0f));
+    }
+
+    auto resQuiet = flex::voice::convertAndResampleTo16kMono(
+        quietSpeech.data(),
+        quietSpeech.size() * sizeof(float),
+        16000,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+
+    EXPECT_TRUE(resQuiet.success);
+    float qPeak = 0.0f;
+    for (float s : resQuiet.buffer.samples) {
+        float a = std::abs(s);
+        if (a > qPeak) qPeak = a;
+    }
+    // Quiet speech should be normalized to target peak (~0.75 +/- 0.05)
+    EXPECT_TRUE(qPeak >= 0.70f && qPeak <= 0.80f);
+
+    // 3. Ambient room noise below noise gate (peak 0.001)
+    std::vector<float> roomNoise(1600);
+    for (int i = 0; i < 1600; ++i) {
+        roomNoise[i] = 0.001f * std::sin(2.0f * 3.14159265f * 300.0f * (static_cast<float>(i) / 16000.0f));
+    }
+
+    auto resNoise = flex::voice::convertAndResampleTo16kMono(
+        roomNoise.data(),
+        roomNoise.size() * sizeof(float),
+        16000,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+
+    EXPECT_TRUE(resNoise.success);
+    float nPeak = 0.0f;
+    for (float s : resNoise.buffer.samples) {
+        float a = std::abs(s);
+        if (a > nPeak) nPeak = a;
+    }
+    // Room noise must NOT be amplified by normalization (must remain < 0.003)
+    EXPECT_TRUE(nPeak < 0.003f);
+}
+
 // -----------------------------------------------------------------------------
 // Text-to-Speech Tests
 // -----------------------------------------------------------------------------
@@ -2426,6 +2557,8 @@ int main(int argc, char* argv[])
     test_audio_conversion_48k_int16_stereo();
     test_audio_conversion_invalid_and_unsupported_formats();
     test_audio_conversion_silence_nonzero_and_clipping();
+    test_audio_conversion_bandlimited_resampling_and_antialiasing();
+    test_audio_conversion_stereo_antiphase_and_normalization();
 
     test_tts_service_lifecycle_and_mock_synthesis();
     test_tts_completion_propagation();

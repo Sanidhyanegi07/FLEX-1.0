@@ -71,12 +71,11 @@ AudioResampleResult convertAndResampleTo16kMono(
     }
 
     size_t numInputFrames = byteCount / frameSize;
-    std::vector<float> monoInput;
-    monoInput.reserve(numInputFrames);
+    std::vector<float> interleavedFloats;
+    interleavedFloats.reserve(numInputFrames * static_cast<size_t>(sourceChannels));
 
     const auto* bytePtr = static_cast<const uint8_t*>(data);
     for (size_t i = 0; i < numInputFrames; ++i) {
-        double sum = 0.0;
         const uint8_t* frameStart = bytePtr + (i * frameSize);
 
         for (int ch = 0; ch < sourceChannels; ++ch) {
@@ -112,26 +111,40 @@ AudioResampleResult convertAndResampleTo16kMono(
                 default:
                     break;
             }
-            sum += norm;
+            if (std::isnan(norm) || std::isinf(norm)) {
+                norm = 0.0;
+            }
+            if (norm > 1.0) norm = 1.0;
+            if (norm < -1.0) norm = -1.0;
+            interleavedFloats.push_back(static_cast<float>(norm));
         }
-
-        double mono = sum / static_cast<double>(sourceChannels);
-        if (std::isnan(mono)) {
-            mono = 0.0;
-        }
-        if (mono > 1.0) mono = 1.0;
-        if (mono < -1.0) mono = -1.0;
-        monoInput.push_back(static_cast<float>(mono));
     }
 
+    // Downmix multi-channel audio to mono using C core safe downmixing policy
+    std::vector<float> monoInput(numInputFrames);
+    if (sourceChannels == 1) {
+        std::memcpy(monoInput.data(), interleavedFloats.data(), numInputFrames * sizeof(float));
+    } else if (sourceChannels == 2) {
+        flex_stereo_analysis_t analysis;
+        flex_audio_analyze_stereo(interleavedFloats.data(), numInputFrames, &analysis);
+        flex_audio_downmix_to_mono_safe(interleavedFloats.data(), monoInput.data(), numInputFrames, 2, &analysis);
+        std::cout << "[AudioConversion] Stereo downmix: mode=" << analysis.downmix_mode
+                  << ", corr=" << std::fixed << std::setprecision(2) << analysis.correlation
+                  << ", L(rms=" << analysis.ch0_rms << ", pk=" << analysis.ch0_peak << ")"
+                  << ", R(rms=" << analysis.ch1_rms << ", pk=" << analysis.ch1_peak << ")\n";
+    } else {
+        flex_audio_downmix_to_mono_safe(interleavedFloats.data(), monoInput.data(), numInputFrames, static_cast<uint32_t>(sourceChannels), nullptr);
+    }
+
+    // Resample to target sample rate using bandlimited windowed-sinc anti-aliasing filter
     std::vector<float> resampled;
     if (sourceSampleRate == targetSampleRate) {
         resampled = std::move(monoInput);
     } else {
         double ratio = static_cast<double>(targetSampleRate) / static_cast<double>(sourceSampleRate);
-        size_t numOut = static_cast<size_t>(std::round(static_cast<double>(numInputFrames) * ratio));
-        resampled.resize(numOut + 16);
-        size_t actualOut = flex_audio_resample_linear(
+        size_t numOut = static_cast<size_t>(std::ceil(static_cast<double>(numInputFrames) * ratio));
+        resampled.resize(numOut + 32);
+        size_t actualOut = flex_audio_resample_bandlimited(
             monoInput.data(), monoInput.size(),
             static_cast<uint32_t>(sourceSampleRate),
             resampled.data(), resampled.size(),
@@ -139,6 +152,9 @@ AudioResampleResult convertAndResampleTo16kMono(
         );
         resampled.resize(actualOut);
     }
+
+    // Measure and apply conservative speech gain normalization (with noise gate)
+    auto normRes = flex_audio_normalize_speech(resampled.data(), resampled.size(), 0.75f, 15.0f, 0.003f);
 
     QByteArray pcmBytes;
     pcmBytes.resize(static_cast<qsizetype>(resampled.size() * sizeof(int16_t)));
@@ -159,23 +175,15 @@ AudioResampleResult convertAndResampleTo16kMono(
     result.buffer.durationMs = static_cast<int64_t>(
         (static_cast<double>(result.buffer.sampleCount()) / static_cast<double>(targetSampleRate)) * 1000.0);
 
-    // Diagnostic signal measurement and health checks via C DSP core
-    float c_rms = 0.0f;
-    float peakAmp = 0.0f;
-    flex_audio_calculate_rms(result.buffer.samples.data(), result.buffer.samples.size(), &c_rms, &peakAmp);
-    double rms = static_cast<double>(c_rms);
-    double zeroPct = 0.0;
-    bool allFinite = true;
-
     std::cout << "[AudioConversion] Resampled: " << result.buffer.samples.size() << " samples ("
-              << result.buffer.durationMs << " ms) at 16000 Hz Mono\n";
-    std::cout << "[AudioConversion] Signal analysis: Peak=" << peakAmp
-              << " (" << std::fixed << std::setprecision(2) << (peakAmp * 100.0f) << "%), RMS=" << rms
-              << ", Zero/near-zero samples=" << zeroPct << "%, allFinite=" << (allFinite ? "true" : "false") << "\n";
-
-    if (peakAmp < 0.005f && rms < 0.001) {
-        std::cout << "[AudioConversion] Warning: Audio signal level is extremely low/silent (Peak < 0.005, RMS < 0.001). Check microphone mute and hardware levels.\n";
-    }
+              << result.buffer.durationMs << " ms) at 16000 Hz Mono (bandlimited sinc)\n";
+    std::cout << "[AudioConversion] Signal levels: Peak before=" << normRes.peak_before
+              << ", RMS before=" << normRes.rms_before
+              << ", Peak after=" << normRes.peak_after
+              << ", RMS after=" << normRes.rms_after
+              << ", Gain applied=" << normRes.gain_applied
+              << ", Normalized=" << (normRes.was_normalized ? "YES" : "NO")
+              << ", Silence=" << (normRes.is_silence ? "YES" : "NO") << "\n";
 
     return result;
 }

@@ -318,7 +318,130 @@ static void test_audio_dsp_suite(int *total_run, int *total_passed, int *total_f
     size_t resampled_count = flex_audio_resample_linear(in_48k, 12, 48000, out_16k, 4, 16000);
     C_ASSERT(resampled_count == 4, "Resampled count matches ratio");
 
-    /* 4. RMS and dB */
+    /* 4. Bandlimited sinc resampling: 48 kHz -> 16 kHz passband preservation */
+    #define DSP_48K_SAMPLES 480
+    #define DSP_16K_SAMPLES 160
+    float sine_1k_48k[DSP_48K_SAMPLES];
+    for (int i = 0; i < DSP_48K_SAMPLES; ++i) {
+        sine_1k_48k[i] = 0.75f * sinf(2.0f * 3.14159265f * 1000.0f * (float)i / 48000.0f);
+    }
+    float sinc_out_16k[DSP_16K_SAMPLES];
+    size_t sinc_count = flex_audio_resample_bandlimited(
+        sine_1k_48k, DSP_48K_SAMPLES, 48000,
+        sinc_out_16k, DSP_16K_SAMPLES, 16000
+    );
+    C_ASSERT(sinc_count == DSP_16K_SAMPLES, "Bandlimited resample count matches 3:1 decimation");
+    float sinc_rms = 0.0f, sinc_peak = 0.0f;
+    /* Skip filter warmup edge (first 10 samples) */
+    flex_audio_calculate_rms(sinc_out_16k + 10, DSP_16K_SAMPLES - 20, &sinc_rms, &sinc_peak);
+    C_ASSERT(fabsf(sinc_peak - 0.75f) < 0.05f, "1 kHz passband peak preserved accurately (~0.75)");
+    C_ASSERT(fabsf(sinc_rms - (0.75f / 1.4142f)) < 0.05f, "1 kHz passband RMS preserved accurately");
+
+    /* 5. Anti-aliasing stopband attenuation (12 kHz in 48k audio -> above 8 kHz Nyquist) */
+    float sine_12k_48k[DSP_48K_SAMPLES];
+    for (int i = 0; i < DSP_48K_SAMPLES; ++i) {
+        sine_12k_48k[i] = 0.75f * sinf(2.0f * 3.14159265f * 12000.0f * (float)i / 48000.0f);
+    }
+    float stopband_out[DSP_16K_SAMPLES];
+    flex_audio_resample_bandlimited(
+        sine_12k_48k, DSP_48K_SAMPLES, 48000,
+        stopband_out, DSP_16K_SAMPLES, 16000
+    );
+    float stop_rms = 0.0f, stop_peak = 0.0f;
+    flex_audio_calculate_rms(stopband_out + 15, DSP_16K_SAMPLES - 30, &stop_rms, &stop_peak);
+    C_ASSERT(stop_peak < 0.05f, "12 kHz stopband peak attenuated by >23 dB (<0.05 from 0.75)");
+    C_ASSERT(stop_rms < 0.03f, "12 kHz stopband RMS heavily attenuated (<0.03)");
+
+    /* 6. Bandlimited resampling from 44.1 kHz -> 16 kHz */
+    #define DSP_44K_SAMPLES 441
+    float sine_800_44k[DSP_44K_SAMPLES];
+    for (int i = 0; i < DSP_44K_SAMPLES; ++i) {
+        sine_800_44k[i] = 0.60f * sinf(2.0f * 3.14159265f * 800.0f * (float)i / 44100.0f);
+    }
+    float out_44k_to_16k[165];
+    size_t count_44k = flex_audio_resample_bandlimited(
+        sine_800_44k, DSP_44K_SAMPLES, 44100,
+        out_44k_to_16k, 165, 16000
+    );
+    C_ASSERT(count_44k == 160, "44.1 kHz to 16 kHz decimation produces exact sample count (160)");
+    float peak_44k = 0.0f, rms_44k = 0.0f;
+    flex_audio_calculate_rms(out_44k_to_16k + 15, 130, &rms_44k, &peak_44k);
+    C_ASSERT(fabsf(peak_44k - 0.60f) < 0.06f, "44.1k -> 16k passband peak preserved");
+
+    /* 7. Stereo Analysis & Safe Downmixing (Anti-Phase Cancellation Protection) */
+    float anti_phase[200];
+    for (int i = 0; i < 100; ++i) {
+        float val = 0.5f * sinf((float)i);
+        anti_phase[i * 2] = val;       /* Channel 0: Left */
+        anti_phase[i * 2 + 1] = -val;  /* Channel 1: Right (180 deg out-of-phase) */
+    }
+    flex_stereo_analysis_t analysis_ap;
+    flex_audio_analyze_stereo(anti_phase, 100, &analysis_ap);
+    C_ASSERT(analysis_ap.correlation < -0.95f, "Anti-phase correlation detected as negative (~ -1.0)");
+    C_ASSERT(analysis_ap.downmix_mode == 1, "Downmix mode selected channel 0 (primary) to avoid 0-cancellation");
+    float mono_ap[100];
+    flex_audio_downmix_to_mono_safe(anti_phase, mono_ap, 100, 2, &analysis_ap);
+    float ap_rms = 0.0f, ap_peak = 0.0f;
+    flex_audio_calculate_rms(mono_ap, 100, &ap_rms, &ap_peak);
+    C_ASSERT(ap_peak > 0.40f, "Anti-phase downmix preserved signal amplitude without cancellation");
+
+    /* 8. Stereo Channel Imbalance (One Channel Dead) */
+    float single_ended[200];
+    for (int i = 0; i < 100; ++i) {
+        single_ended[i * 2] = 0.5f * sinf((float)i);
+        single_ended[i * 2 + 1] = 0.0f; /* dead right channel */
+    }
+    flex_stereo_analysis_t analysis_se;
+    flex_audio_analyze_stereo(single_ended, 100, &analysis_se);
+    C_ASSERT(analysis_se.downmix_mode == 1, "Dead right channel detected, downmix mode 1 (ch0 only)");
+    float mono_se[100];
+    flex_audio_downmix_to_mono_safe(single_ended, mono_se, 100, 2, &analysis_se);
+    float se_rms = 0.0f, se_peak = 0.0f;
+    flex_audio_calculate_rms(mono_se, 100, &se_rms, &se_peak);
+    C_ASSERT(fabsf(se_peak - 0.5f) < 0.05f, "Single-ended mic preserved full dynamic range");
+
+    /* 9. Speech Level Normalization & Noise Gate */
+    float quiet_speech[100];
+    for (int i = 0; i < 100; ++i) {
+        quiet_speech[i] = 0.05f * sinf((float)i); /* very quiet speech (peak 0.05) */
+    }
+    flex_audio_norm_result_t norm_res = flex_audio_normalize_speech(
+        quiet_speech, 100, 0.75f, 15.0f, 0.003f
+    );
+    C_ASSERT(norm_res.was_normalized, "Quiet speech was normalized");
+    C_ASSERT(!norm_res.is_silence, "Quiet speech was not rejected as silence");
+    C_ASSERT(norm_res.peak_after >= 0.70f && norm_res.peak_after <= 0.76f, "Peak normalized to target ~0.75");
+    C_ASSERT(norm_res.gain_applied > 14.0f, "Correct gain applied (~15x)");
+
+    /* 10. Normalization Noise Gate: Ambient Silence Must NOT Be Amplified */
+    float room_noise[100];
+    for (int i = 0; i < 100; ++i) {
+        room_noise[i] = 0.001f * sinf((float)i); /* below noise gate 0.003 RMS */
+    }
+    flex_audio_norm_result_t noise_res = flex_audio_normalize_speech(
+        room_noise, 100, 0.75f, 10.0f, 0.003f
+    );
+    C_ASSERT(!noise_res.was_normalized, "Room noise below gate was NOT normalized");
+    C_ASSERT(noise_res.is_silence, "Room noise classified as silence");
+    C_ASSERT(noise_res.gain_applied == 1.0f, "Room noise kept at unity gain 1.0 (no amplification)");
+
+    /* 11. Clipping Prevention & Finite Range */
+    float hot_audio[10] = { 0.95f, 1.20f, -1.30f, 0.50f, -0.99f, 0.80f, -0.80f, 0.10f, -0.10f, 0.0f };
+    flex_audio_norm_result_t hot_res = flex_audio_normalize_speech(
+        hot_audio, 10, 0.75f, 2.0f, 0.003f
+    );
+    C_ASSERT(!hot_res.was_normalized, "Hot audio with peak >= 0.50 not amplified");
+    for (int i = 0; i < 10; ++i) {
+        C_ASSERT(hot_audio[i] >= -1.0f && hot_audio[i] <= 1.0f, "Hot audio clamped safely inside [-1.0, 1.0]");
+    }
+
+    /* 12. Boundary and Invalid Argument Handling */
+    C_ASSERT(flex_audio_resample_bandlimited(NULL, 100, 48000, sinc_out_16k, 100, 16000) == 0, "NULL input rejected");
+    C_ASSERT(flex_audio_resample_bandlimited(sine_1k_48k, 0, 48000, sinc_out_16k, 100, 16000) == 0, "0 count rejected");
+    C_ASSERT(flex_audio_resample_bandlimited(sine_1k_48k, 100, 0, sinc_out_16k, 100, 16000) == 0, "0 in_rate rejected");
+    C_ASSERT(flex_audio_resample_bandlimited(sine_1k_48k, 100, 48000, sinc_out_16k, 100, 0) == 0, "0 out_rate rejected");
+
+    /* 13. RMS and dB */
     float tone[4] = { 0.5f, -0.5f, 0.5f, -0.5f };
     float rms = 0.0f, peak = 0.0f;
     flex_audio_calculate_rms(tone, 4, &rms, &peak);
@@ -328,7 +451,7 @@ static void test_audio_dsp_suite(int *total_run, int *total_passed, int *total_f
     float db = flex_audio_rms_to_db(rms);
     C_ASSERT(fabsf(db - (-6.02f)) < 0.1f, "RMS to dB calculated (-6 dB for 0.5)");
 
-    /* 5. VAD detector */
+    /* 14. VAD detector */
     flex_vad_detector_t vad;
     flex_vad_init(&vad, 0.01f, 3.0f);
     float silence[160];
