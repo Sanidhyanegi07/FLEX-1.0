@@ -89,7 +89,7 @@ class ConversationStorageImpl;
 
 /**
  * Thread-safe persistent SQLite storage for conversations and messages.
- * Matches schema, foreign-key constraints, sequence numbering, and lifecycle of backend/ai/storage.py.
+ * Enforces schema versioning, foreign-key constraints, monotonic sequence numbering, and lifecycle states.
  */
 class ConversationStorage {
 public:

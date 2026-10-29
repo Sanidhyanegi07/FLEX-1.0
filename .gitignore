@@ -1,23 +1,54 @@
-# Build artifacts
+# ==============================================================================
+# FLEX 1.0 — Native C11 / C++17 Qt 6 Repository Git Ignore
+# ==============================================================================
+
+# Build Output Directories
+build/
+build-*/
+bin/
+out/
+dist/
+
+# Compiled Binaries & Object Files
 *.exe
-*.o
-*.obj
 *.dll
 *.so
 *.dylib
 *.a
+*.lib
+*.o
+*.obj
+*.exp
+*.ilk
+*.pdb
 
-# Build directories
-build/
-bin/
-out/
+# CMake Artifacts & Caches
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+CMakeScripts/
+Testing/
+compile_commands.json
 
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
+# Qt Auto-Generated Files & Metadata
+*_autogen/
+*.moc
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+.qmake.stash
 
-# SQLite database files
+# IDE & Editor Configuration
+.vs/
+.vscode/
+.idea/
+*.user
+*.user.*
+*.suo
+*.VC.db
+
+# SQLite Database Files & Temporary Journals
 *.db
 *.db-journal
 *.db-wal
@@ -26,7 +57,28 @@ __pycache__/
 *.sqlite3
 *.corrupt*
 
-# AI & Speech model files (keep outside Git)
+# Speech & AI Model Binaries (Stored in ~/.flex/models or downloaded via script)
 models/
 *.bin
 *.gguf
+
+# Audio Recordings & Caches
+*.wav
+*.pcm
+*.raw
+*.mp3
+
+# Application Logs & Diagnostics
+*.log
+logs/
+*.dmp
+
+# OS Generated Files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Legacy Python Residue (Prevent accidental commits)
+__pycache__/
+*.py[cod]
+*$py.class

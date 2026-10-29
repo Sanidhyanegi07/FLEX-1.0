@@ -1,168 +1,217 @@
-# FLEX 1.0 — College PBL Demonstration Guide
+# FLEX 1.0 — Native C/C++ Qt 6 Desktop AI Assistant
 
-> **Project Based Learning (PBL) Final Submission**  
-> **Architecture**: Native C Core (C11) + Python Line Bridge + Local Ollama AI Engine + Polished Desktop UI
-
----
-
-## 1. Quick Launch (One Command)
-
-To launch the desktop application:
-
-```powershell
-python main.py
-```
-
-*Note: Ensure the local Ollama daemon is running in a terminal (`ollama serve`) to enable live model responses.*
+> **College Project Based Learning (PBL) Final Submission**
+> **Architecture**: Strict C11 Core + C++17 Backend + Qt 6 Desktop UI + Local Ollama LLM + Local whisper.cpp STT + Windows SAPI TTS + SQLite Storage
 
 ---
 
-## 2. Executive Summary & Architecture
+## 1. Executive Summary
 
-FLEX 1.0 is a hybrid embedded-and-desktop AI assistant. It couples a strict, deterministic **native C core** with an asynchronous **Python orchestration layer** and **local Ollama inference**.
+**FLEX 1.0** is an offline, native desktop AI assistant engineered in **strict C11** and **C++17** using **Qt 6**. Designed to demonstrate low-level systems programming, determinism, and high-performance desktop architecture, FLEX 1.0 operates with **zero Python runtime dependencies**.
+
+The application unifies a memory-safe, zero-allocation C core gatekeeper with an asynchronous C++ desktop workstation. It features local speech-to-text powered by embedded **whisper.cpp**, low-latency audio capture via Windows **WASAPI**, Windows **SAPI** text-to-speech, local LLM streaming via **Ollama**, and ACID-compliant persistence with **SQLite**.
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor User as User / Presenter
-    participant UI as Desktop App (main.py / Tkinter)
-    participant Coord as AICoordinator (backend/coordinator.py)
-    participant Bridge as Native C Bridge (flex_bridge.exe)
-    participant Ollama as Local Ollama (qwen2.5-coder:3b)
+graph TD
+    subgraph UI ["Qt 6 Native Desktop Workstation (flex_desktop / flex_ui)"]
+        Nav["Navigation Sidebar"]
+        Chat["Chat View"]
+        VoiceStudio["Voice Studio"]
+        Memory["Memory View"]
+        Projects["Projects Explorer"]
+        Settings["Settings View"]
+        Telemetry["Right Sidebar (Telemetry & Badges)"]
+    end
 
-    User->>UI: Types query & clicks Send
-    UI->>Coord: send_chat("What are pointers in C?")
-    Note over Coord: Serializes bridge access (RLock)
-    Coord->>Bridge: DISPATCH\tchat What are pointers in C?\n
-    Note over Bridge: C Parser validates syntax & length <= 1024B<br/>C State Manager transitions IDLE -> PROCESSING<br/>Assigns monotonic Operation ID #1
-    Bridge-->>Coord: {"action":"DISPATCH","success":true,"operation_id":1,"lifecycle":"PROCESSING"}
-    Note over Coord: C Core dispatch verified.<br/>Now begins local AI inference.
-    Coord->>Ollama: POST /api/chat (prompt, history, system_prompt)
-    Ollama-->>Coord: Real model response text
-    Note over Coord: try ... finally guarantees cleanup
-    Coord->>Bridge: FINISH\n
-    Note over Bridge: C State Manager transitions PROCESSING -> IDLE
-    Bridge-->>Coord: {"action":"FINISH","success":true,"lifecycle":"IDLE"}
-    Coord-->>UI: CoordinatorChatResult (text, op_id, C statuses, latency)
-    UI-->>User: Displays assistant reply with live C Core verification tag
+    subgraph Backend ["Native C++ Backend Layer (flex_backend)"]
+        Coordinator["BackendCoordinator"]
+        Storage["ConversationStorage (flex_storage / SQLite)"]
+        OllamaClient["OllamaClient (flex_ai / Qt Network)"]
+    end
+
+    subgraph VoiceSubsystem ["Native Voice Subsystem (flex_voice)"]
+        WASAPI["AudioCaptureService (WASAPI 16kHz Float)"]
+        WhisperSTT["SpeechToTextService (whisper.cpp v1.7.4)"]
+        SAPITTS["TextToSpeechService (Windows SAPI 5.4 COM)"]
+        VoiceCtrl["VoiceConversationController"]
+    end
+
+    subgraph CoreBridge ["RAII Core Wrapper (flex_core_cpp)"]
+        Session["CoreSession"]
+    end
+
+    subgraph CEngine ["Strict C11 Core Engine (core-c/)"]
+        Parser["command_parser.c (<=1024B Bounded Scan)"]
+        FSM["state_manager.c (IDLE -> PROCESSING FSM)"]
+        Orchestrator["orchestrator.c (Atomic Dispatch & Mutex)"]
+    end
+
+    subgraph LocalDaemons ["Local Daemons & Storage"]
+        OllamaDaemon["Local Ollama Daemon (http://127.0.0.1:11434)"]
+        SQLiteDB["conversations.db (%LOCALAPPDATA%/FLEX)"]
+        WhisperWeights["ggml-tiny.en.bin (~77.7 MB)"]
+    end
+
+    Chat --> Coordinator
+    VoiceStudio --> VoiceCtrl
+    VoiceCtrl --> Coordinator
+    WASAPI --> VoiceCtrl
+    VoiceCtrl --> WhisperSTT
+    WhisperSTT -.-> WhisperWeights
+    Coordinator --> Session
+    Coordinator --> Storage
+    Coordinator --> OllamaClient
+    OllamaClient --> OllamaDaemon
+    Storage --> SQLiteDB
+    Session --> Orchestrator
+    Orchestrator --> Parser
+    Orchestrator --> FSM
+    Coordinator --> SAPITTS
 ```
-
-### Layer Responsibilities
-
-1. **Native C Core (`core-c/`)**:
-   - **Command Parser** ([`command_parser.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/command_parser.c)): Zero dynamic heap allocation, bounded input scan (`FLEX_MAX_INPUT_LEN = 1024 bytes`), whitespace normalization, argument extraction.
-   - **State Manager** ([`state_manager.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/state_manager.c)): Lifecycle enforcement (`IDLE`, `PROCESSING`, `STOPPING`), monotonic 64-bit operation IDs, atomic operation tracking (`NONE`, `CHAT`, `VOICE`, `MEMORY`).
-   - **Orchestrator** ([`orchestrator.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/orchestrator.c)): Atomic command-to-state dispatch; rejects concurrent commands while busy.
-   - **Native Bridge Executable** ([`flex_bridge.exe`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/flex_bridge.exe)): Line-based IPC protocol over standard I/O; isolates JSON outputs to `stdout` and debug logs to `stderr`; strips UTF-8 BOMs.
-
-2. **Python Backend & Coordinator (`backend/`)**:
-   - **Bridge Client** ([`core_bridge.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/core_bridge.py)): Persistent subprocess management, background reader threads, non-blocking I/O queues.
-   - **AI Coordinator** ([`coordinator.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/coordinator.py)): Guarantees C dispatch succeeds before AI inference begins, guarantees valid C operation cleanup via `finally`, preserves primary errors if cleanup fails, serializes bridge access via `RLock`.
-   - **Ollama Provider** ([`ai/ollama_provider.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/ai/ollama_provider.py)): Standard-library HTTP client (`urllib.request`) communicating with local daemon; zero hallucinations fabricated.
-   - **Conversation History** ([`ai/history.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/ai/history.py)): Bounded 50-turn in-memory FIFO conversation history.
-
-3. **Desktop Interface (`backend/app.py` & `main.py`)**:
-   - Space-inspired dark visual theme (`#0B0E14` background, electric cyan & pulsar blue accents).
-   - Real-time telemetry badges for C Core PID, Lifecycle status, Ollama model availability, and active Operation ID.
-   - Non-blocking threaded execution keeping the UI smooth during model inference.
-   - Explicit C operation metadata badge attached to every assistant turn.
 
 ---
 
-## 3. Feature Status Matrix
+## 2. Core Features & Capabilities
 
-| Subsystem / Feature | Status | Notes |
-|---|---|---|
-| **C11 Command Parser** | **Complete** | 541 unit assertions passing; strict 1024-byte buffer bound. |
-| **C11 State Manager** | **Complete** | Monotonic operation IDs, strict state validation. |
-| **C11 Orchestrator** | **Complete** | Rejects overlapping concurrent operations. |
-| **Native IPC Line Bridge** | **Complete** | 74 automated PowerShell smoke tests passing. |
-| **Python Bridge Client** | **Complete** | Zero third-party dependencies, context-manager support. |
-| **Python AI Coordinator** | **Complete** | Guaranteed C lifecycle synchronization and cleanup. |
-| **Local Ollama Integration** | **Complete** | Connects to `qwen2.5-coder:3b` with zero fabricated text. |
-| **Desktop GUI Application** | **Complete** | Tkinter dark space theme with telemetry badges and threaded worker. |
-| **In-Memory Multi-Turn History** | **Complete** | Ephemeral bounded 50-turn conversation buffer. |
-| *Voice Capture & Synthesis (STT/TTS)* | *Planned (Stage 1G)* | Reserved for future stage. |
-| *Persistent Database / Vector Memory* | *Planned (Stage 1G)* | Reserved for future stage (SQLite / vector embeddings). |
-| *Firebase Cloud Sync* | *Planned (Stage 2)* | Future remote telemetry integration. |
-| *Android Companion App* | *Planned (Stage 2)* | Future mobile frontend. |
-| *BLE Hardware Peripherals* | *Planned (Stage 3)* | Future microcontroller connectivity. |
-
----
-
-## 4. Step-by-Step PBL Demo Sequence
-
-Follow this exact walkthrough during the college PBL evaluation:
-
-### Step 1: Pre-Flight Verification (30 Seconds)
-Open PowerShell at the project root and run the aggregate build and test script:
-```powershell
-.\build_test.ps1
-```
-**Talking Point**: *"Our automated pipeline compiles the C11 core with GCC `-std=c11 -Wall -Wextra -Werror -pedantic`, executes 541 C unit assertions, validates 74 IPC bridge protocol tests, and runs 108 Python unit and integration tests with zero failures."*
-
-### Step 2: Ensure Local Ollama Service is Active
-Check or launch Ollama in a separate terminal:
-```powershell
-ollama serve
-```
-Verify model availability:
-```powershell
-ollama list
-```
-*(Notice `qwen2.5-coder:3b` is listed locally).*
-
-### Step 3: Launch Desktop Application
-```powershell
-python main.py
-```
-**Talking Point**: *"Notice the space-inspired dark interface. In the top-right header, observe the live telemetry: the C Core reports `IDLE` with its native process PID, and Ollama reports `qwen2.5-coder:3b (ONLINE)`."*
-
-### Step 4: Live Interactive Query
-Type the following prompt in the input box and press **Enter** or click **SEND**:
-```text
-Explain what a pointer is in C, and why buffer bounds checking matters.
-```
-**Talking Point**:
-1. *"As soon as Send is clicked, the query is dispatched into `flex_bridge.exe`. The C command parser verifies the syntax, and the C state manager transitions from `IDLE` to `PROCESSING`, assigning a monotonic Operation ID."*
-2. *"The Python coordinator then calls the local Ollama instance running `qwen2.5-coder:3b` entirely offline."*
-3. *"Notice the metadata tag rendered beneath the response: `[C Core Verified: Op #1 • Parser: FLEX_STATUS_OK • State: FLEX_STATE_OK]`. This proves that the C core was in the loop and that the state manager safely completed cleanup back to `IDLE`."*
-
-### Step 5: Demonstrate State Protection & Bounds
-Type an overlong string or test input rejection.
-Notice that if C parser limits are exceeded, the C core safely rejects the input without buffer overflow, and the UI reports the exact parser error.
-
-### Step 6: Multi-turn Context & Reset
-Send a follow-up query:
-```text
-Can you show a 3-line example of that?
-```
-Notice that the assistant remembers the context of pointers.
-Click **Clear Conversation** to demonstrate buffer reset, or type `exit` / close the window to verify clean process shutdown.
+- **Strict C11 Gatekeeper Core (`core-c/`)**:
+  - Deterministic command parser with **zero dynamic heap allocations**.
+  - Strict input bound enforcement (`FLEX_MAX_INPUT_LEN = 1024` bytes).
+  - Explicit finite state machine (`IDLE` -> `PROCESSING` -> `STOPPING`) with monotonic operation tracking.
+  - Concurrency control: Rejects concurrent requests while processing an active command.
+- **Modern Qt 6 Desktop Interface (`src-cpp/src/ui/`)**:
+  - Responsive three-pane workstation: Navigation Sidebar, Dynamic Workspace Deck, and Collapsible Telemetry Panel.
+  - Dedicated functional views: **Chat**, **Voice Studio**, **Memory**, **Projects**, and **Settings**.
+  - High-contrast, space-inspired dark theme (`#0A0D14` obsidian, `#00D2FF` electric cyan, `#3B82F6` cobalt accents).
+  - Telemetry badges displaying live C core lifecycle, Ollama model health, and operation latency.
+- **Embedded Local Voice Subsystem (`src-cpp/src/voice/`)**:
+  - **Audio Capture**: Windows WASAPI low-latency recording normalized to 16 kHz Mono float with bounded buffers (30s max).
+  - **Speech-to-Text**: Offline transcription via vendored `whisper.cpp` v1.7.4 with quantized `ggml-tiny.en.bin`.
+  - **Transcript Review Deck**: Editable transcript confirmation prevents misrecognized audio from reaching the model.
+  - **Text-to-Speech**: Native Windows SAPI 5.4 COM integration running on an asynchronous worker queue.
+- **Local AI Inference (`src-cpp/src/ollama_client.cpp`)**:
+  - Fully asynchronous streaming HTTP client using `Qt6::Network`.
+  - Streams chunked NDJSON tokens directly into the chat interface from local Ollama (`qwen2.5-coder:3b`).
+- **ACID Persistent SQLite Storage (`src-cpp/src/storage.cpp`)**:
+  - Stores conversations, messages, role tags, and sequence numbers at `%LOCALAPPDATA%\FLEX\conversations.db`.
+  - Schema versioning, cascading deletes, and busy timeout handling.
 
 ---
 
-## 5. C-Focused Technical Explanation for Evaluators
+## 3. Quick Start (Windows)
 
-### Why use C11 for the foundational core?
-1. **Deterministic Execution**: The C core has zero dynamic memory allocations (`malloc`/`free`) on the request path. All parsing and state tracking use bounded static buffers (`FLEX_MAX_INPUT_LEN = 1024`).
-2. **Buffer Overflow Immunity**: By enforcing strict input boundary checks at the C level, malformed or malicious inputs are rejected before they reach backend business logic.
-3. **State Machine Integrity**: Modern AI assistants often suffer from race conditions when users send overlapping requests. The C State Manager strictly enforces that only one operation can be in `PROCESSING` at a time, preventing state corruption.
-4. **Separation of Concerns**: Safety-critical command parsing and lifecycle tracking belong in a low-level native language, while AI inference and presentation belong in higher-level languages.
+### 3.1 Prerequisites
+- **OS**: Windows 10 or Windows 11 (64-bit)
+- **Compiler**: MinGW-w64 GCC 13.1.0+ (with C11 & C++17 support)
+- **Build System**: CMake 3.20+ and Ninja
+- **Qt Framework**: Qt 6.5+ (Qt 6.11.1 recommended) with `Core`, `Sql`, `Network`, `Widgets`, `Multimedia`
+- **Ollama**: Local Ollama service running (`ollama serve`) with `qwen2.5-coder:3b`
+
+### 3.2 Step 1 — Download the Speech Recognition Model
+Download the lightweight offline Whisper model (~77.7 MB) with the automated PowerShell script:
+```powershell
+.\scripts\download_whisper_model.ps1
+```
+The model will be placed in `%USERPROFILE%\.flex\models\whisper\ggml-tiny.en.bin`.
+
+### 3.3 Step 2 — Build the Application & Run Tests
+Execute the automated one-click build and test wrapper:
+```powershell
+.\build_native.ps1
+```
+This builds all targets using Ninja, compiles the desktop executable, and runs all 7 native test suites.
+
+To perform a clean rebuild:
+```powershell
+.\build_native.ps1 -Clean
+```
+
+### 3.4 Step 3 — Launch FLEX 1.0
+Start the native desktop assistant:
+```powershell
+.\build\flex_desktop.exe
+```
 
 ---
 
-## 6. Automated Test Commands
+## 4. Repository Structure
 
-- **Run Everything (C tests + Bridge smoke tests + Python tests)**:
-  ```powershell
-  .\build_test.ps1
-  ```
-- **Run Only Python Unit & Integration Tests**:
-  ```powershell
-  python -m unittest discover -s backend/tests -v
-  ```
-- **Run Live Ollama Pipeline Integration Tests**:
-  ```powershell
-  $env:FLEX_RUN_OLLAMA_TESTS="1"; python -m unittest backend.tests.test_coordinator.TestAICoordinatorLiveIntegration -v
-  ```
+```
+FLEX-1.0/
+├── core-c/                     # Deterministic C11 Core Engine
+│   ├── include/                # Core C headers (command_parser.h, state_manager.h, orchestrator.h)
+│   ├── src/                    # C11 implementation files (zero dynamic allocations)
+│   │   ├── command_parser.c    # Bounded 1024-byte input validation & normalization
+│   │   ├── state_manager.c     # Lifecycle FSM & monotonic operation tracking
+│   │   ├── orchestrator.c      # Atomic dispatch & mutex concurrency control
+│   │   └── bridge_main.c       # Standalone C bridge CLI utility
+│   └── tests/                  # C unit test suite (541 assertions)
+├── src-cpp/                    # Native C++17 Desktop Subsystem
+│   ├── include/flex/           # Public headers (CoreSession, Storage, Ollama, Backend)
+│   │   ├── ui/                 # Qt 6 Desktop UI headers (Views, Navigation, Theme)
+│   │   └── voice/              # Voice Subsystem headers (WASAPI, Whisper, SAPI)
+│   ├── src/                    # C++ implementations
+│   │   ├── core_session.cpp    # RAII lifecycle wrapper around C Core
+│   │   ├── storage.cpp         # Persistent SQLite conversation storage
+│   │   ├── ollama_client.cpp   # Asynchronous Qt network client for Ollama
+│   │   ├── backend.cpp         # Backend Coordinator unifying core, AI, and storage
+│   │   ├── main.cpp            # Desktop GUI application entry point
+│   │   ├── ui/                 # Modular Qt 6 desktop views and widgets
+│   │   └── voice/              # Audio capture, whisper.cpp STT, and SAPI TTS
+│   └── tests/                  # C++ integration and behavior test suites
+├── third_party/                # Vendored dependencies
+│   └── whisper.cpp/            # Vendored official whisper.cpp v1.7.4 (MIT License)
+├── scripts/                    # Standardized PowerShell management scripts
+│   ├── build.ps1               # Portable CMake/Ninja build runner
+│   ├── test.ps1                # CTest and individual test suite runner
+│   └── download_whisper_model.ps1 # Automated Whisper model downloader
+├── docs/                       # Comprehensive documentation
+│   ├── architecture.md         # System design and component interactions
+│   ├── building.md             # Compilation prerequisites and CMake options
+│   ├── testing.md              # Test suite specifications and assertion counts
+│   ├── voice.md                # Voice pipeline, WASAPI, Whisper, and SAPI details
+│   └── troubleshooting.md      # Common setup issues and diagnostics
+├── CMakeLists.txt              # Authoritative multi-target CMake configuration
+├── CMakePresets.json           # Standardized CMake Presets for Ninja/MinGW/Clang/MSVC
+├── build_native.ps1            # Root convenience build and test wrapper
+└── .gitignore                  # Git ignore rules for builds, caches, and models
+```
+
+---
+
+## 5. Automated Test Suites
+
+FLEX 1.0 enforces comprehensive verification across **7 native test suites** totaling over **66,000 automated assertions** with zero failures:
+
+| Test Suite | Binary Target | Assertions | Subsystem Tested |
+|---|---|---|---|
+| `c_core_tests` | `flex_c_tests.exe` | 541 | Bounded parser, state FSM, orchestrator |
+| `cpp_wrapper_tests` | `flex_cpp_tests.exe` | 214 | RAII `CoreSession` lifecycle |
+| `cpp_storage_tests` | `flex_storage_tests.exe` | 98 | SQLite schema v1, cascade, sequencing |
+| `cpp_ollama_tests` | `flex_ollama_tests.exe` | 67 | Mock HTTP server, streaming NDJSON |
+| `cpp_backend_tests` | `flex_backend_tests.exe` | Complete | Coordinator pipeline & error mapping |
+| `cpp_ui_tests` | `flex_ui_tests.exe` | 72 | View navigation, sidebar toggle, chips |
+| `cpp_voice_tests` | `flex_voice_tests.exe` | 65,371+ | Audio capture, Whisper STT, SAPI TTS |
+
+To run all tests:
+```powershell
+.\scripts\test.ps1
+```
+
+---
+
+## 6. Documentation Directory
+
+For in-depth details, refer to the documentation in [`docs/`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/docs/):
+- **[Architecture & System Design](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/docs/architecture.md)**
+- **[Building & Compiling Guide](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/docs/building.md)**
+- **[Native Testing Guide](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/docs/testing.md)**
+- **[Voice Subsystem Guide](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/docs/voice.md)**
+- **[Troubleshooting & Diagnostics](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/docs/troubleshooting.md)**
+
+---
+
+## 7. License & Credits
+
+- **FLEX 1.0**: Educational Project Based Learning (PBL) submission.
+- **whisper.cpp**: Licensed under the MIT License (Georgi Gerganov & whisper.cpp contributors).
+- **Qt 6**: Licensed under LGPLv3 / Commercial (The Qt Company).

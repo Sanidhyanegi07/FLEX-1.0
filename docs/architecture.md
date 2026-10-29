@@ -2,262 +2,140 @@
 
 ## 1. Executive Summary
 
-FLEX 1.0 is designed as a hybrid native-core assistant system. The foundational core is implemented in portable, strict C11 (`core-c/`) for deterministic state tracking, command syntax normalization, and memory safety without dynamic heap allocations. Communicating over a line-based standard input/output (IPC) bridge, the Python client (`backend/core_bridge.py`) manages the native process lifecycle and provides a robust, Pythonic interface for higher-level application components.
+FLEX 1.0 is a native desktop AI assistant built in strict **C11** and **C++17** using **Qt 6**. It combines a deterministic, memory-safe C core with a modular C++ desktop architecture, local Ollama LLM inference, persistent SQLite storage, and a fully local voice subsystem powered by WASAPI, whisper.cpp, and Windows SAPI.
 
-> [!NOTE]
-> **Stage 1F Completed Scope**:
-> Command dispatch is fully integrated into the live AI inference pipeline. Dispatched chat commands transition the C core from `IDLE` to `PROCESSING`, trigger local Ollama inference (`qwen2.5-coder:3b`), and guarantee valid C state cleanup back to `IDLE` via `backend/coordinator.py`. The system is controllable via the desktop client (`main.py` / `backend/app.py`).
+The project contains **zero Python runtime dependencies**. All components—command parsing, state management, storage, networking, AI streaming, audio capture, speech recognition, speech synthesis, and desktop rendering—run as native 64-bit machine code.
 
 ---
 
-## 2. Component Architecture
+## 2. High-Level Architecture
 
-```mermaid
-graph TD
-    subgraph PresentationLayer ["Desktop Presentation Layer"]
-        DesktopApp["Desktop App (main.py / backend/app.py)"]
-    end
-
-    subgraph PythonLayer ["Python Backend Layer"]
-        Coord["AICoordinator (backend/coordinator.py)"]
-        History["InMemoryConversationHistory (backend/ai/history.py)"]
-        Ollama["OllamaProvider (backend/ai/ollama_provider.py)"]
-        Client["FlexBridgeClient (backend/core_bridge.py)"]
-        ReaderOut["Stdout Reader Thread (Queue)"]
-        ReaderErr["Stderr Reader Thread (Diagnostics)"]
-    end
-
-    subgraph NativeBridge ["Native C11 Executable (flex_bridge.exe)"]
-        BridgeMain["bridge_main.c (Stdin/Stdout Protocol)"]
-        JSONEsc["JSON Serializer & Escaper"]
-    end
-
-    subgraph NativeCore ["Core C Engine (core-c/)"]
-        Orchestrator["orchestrator.c (Unified Dispatch)"]
-        Parser["command_parser.c (Syntax & Args)"]
-        StateManager["state_manager.c (Lifecycle & Ops)"]
-    end
-
-    subgraph LocalAI ["Local Inference Daemon"]
-        OllamaDaemon["Ollama Service (http://127.0.0.1:11434)"]
-    end
-
-    DesktopApp -->|"send_chat()"| Coord
-    Coord -->|"dispatch(), finish()"| Client
-    Coord -->|"generate()"| Ollama
-    Ollama -->|"HTTP POST /api/chat"| OllamaDaemon
-    Coord -->|"add_message()"| History
-    Client -->|"stdin (DISPATCH\t<cmd>\n)"| BridgeMain
-    BridgeMain -->|"Calls flex_dispatch_command()"| Orchestrator
-    Orchestrator -->|"Parses input"| Parser
-    Orchestrator -->|"Transitions state"| StateManager
-    BridgeMain -->|"Formats JSON via"| JSONEsc
-    JSONEsc -->|"stdout (JSON\n)"| ReaderOut
-    BridgeMain -->|"stderr (Diagnostics\n)"| ReaderErr
-    ReaderOut -->|"queue.get()"| Client
-    Client -->|"Returns Dict"| Coord
-    Coord -->|"CoordinatorChatResult"| DesktopApp
 ```
-
-### Module Responsibilities
-
-| Component | Language / Location | Primary Responsibility |
-|---|---|---|
-| **Command Parser** | C11 ([`core-c/src/command_parser.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/command_parser.c)) | Validates command verbs, trims whitespace, extracts arguments, normalizes command names, and enforces bounds (`FLEX_MAX_INPUT_LEN = 1024`). Zero dynamic heap allocations. |
-| **State Manager** | C11 ([`core-c/src/state_manager.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/state_manager.c)) | Enforces the application lifecycle (`IDLE`, `PROCESSING`, `STOPPING`), tracks the active operation (`NONE`, `CHAT`, `VOICE`, `MEMORY`), assigns monotonic 64-bit operation IDs, and protects against invalid transitions. |
-| **Orchestrator** | C11 ([`core-c/src/orchestrator.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/orchestrator.c)) | Combines parser and state manager into an atomic dispatch routine. Evaluates syntax first; transitions state only if syntax is valid and state permits. Rejects concurrent operations while busy. |
-| **Bridge Executable** | C11 ([`core-c/src/bridge_main.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/bridge_main.c)) | Standalone executable (`flex_bridge.exe`). Reads line-based requests from `stdin`, runs orchestrator actions, drains oversized lines, strips UTF-8 BOM, serializes responses to JSON on `stdout`, and isolates diagnostics to `stderr`. |
-| **Bridge Client** | Python ([`backend/core_bridge.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/core_bridge.py)) | Manages the persistent subprocess (`subprocess.Popen`), runs background reader threads, enforces bounded timeouts, decodes JSON responses, and exposes clean Python APIs and context managers. |
-| **AI Coordinator** | Python ([`backend/coordinator.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/coordinator.py)) | Guarantees C dispatch succeeds before AI inference begins, enforces thread-safe RLock serialization, guarantees C state cleanup via `finally`, and preserves primary inference errors. |
-| **Ollama Provider** | Python ([`backend/ai/ollama_provider.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/ai/ollama_provider.py)) | Performs local LLM chat completions (`qwen2.5-coder:3b`) using Python standard library `urllib.request`. Zero third-party dependencies. |
-| **Desktop Application** | Python ([`backend/app.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/backend/app.py), [`main.py`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/main.py)) | Space-inspired dark desktop GUI (Tkinter) featuring live C Core + Ollama telemetry, background worker threads, and live C operation metadata tags. |
-
++-----------------------------------------------------------------------------------+
+|                            FLEX 1.0 Desktop (flex_desktop)                         |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
+|  +-----------------------------------------------------------------------------+  |
+|  |                            Qt 6 Desktop UI (flex_ui)                        |  |
+|  |  MainWindow | NavigationSidebar | ChatView | VoiceStudioView | MemoryView   |  |
+|  |  ProjectsView | SettingsView | RightSidebar (Telemetry) | Theme System      |  |
+|  +-----------------------------------------------------------------------------+  |
+|                                       |                                           |
+|         +-----------------------------+-----------------------------+             |
+|         |                                                           |             |
+|  +------v-----------------------------+   +-------------------------v----------+  |
+|  |   BackendCoordinator (flex_backend)|   |  Voice Conversation Controller     |  |
+|  |  - Orchestrates lifecycle & chat   |   |  - Audio capture & STT review      |  |
+|  |  - Streaming token dispatch        |   |  - Windows SAPI TTS playback       |  |
+|  |  - Monotonic error classification  |   |  (flex_voice)                      |  |
+|  +------+-----------------------+-----+   +-------------+----------------------+  |
+|         |                       |                       |                         |
+|  +------v----------+     +------v----------+     +------v----------------------+  |
+|  | SQLite Storage  |     | Ollama Client   |     | Voice Subsystem Submodules  |  |
+|  | (flex_storage)  |     | (flex_ai)       |     | - AudioCapture (WASAPI)     |  |
+|  | - Schema v1     |     | - HTTP /api/chat|     | - Whisper STT (whisper.cpp) |  |
+|  | - Thread-safe   |     | - NDJSON stream |     | - TextToSpeech (Win SAPI)   |  |
+|  | - SQLite3 / Qt  |     | - Qt Network    |     | - WhisperModelResolver      |  |
+|  +-----------------+     +-----------------+     +-----------------------------+  |
+|                                                                                   |
+|  +-----------------------------------------------------------------------------+  |
+|  |                      C++ Core Wrapper (flex_core_cpp)                       |  |
+|  |  - CoreSession RAII Lifecycle Guard                                         |  |
+|  +-----------------------------------------------------------------------------+  |
+|                                       |                                           |
+|  +------------------------------------v----------------------------------------+  |
+|  |                      Deterministic C11 Core (flex_core_c)                   |  |
+|  |  - command_parser.c : Bounded 1024-byte input validation, zero allocations  |  |
+|  |  - state_manager.c  : Strict FSM (IDLE -> PROCESSING -> STOPPING)          |  |
+|  |  - orchestrator.c   : Atomic command dispatch & concurrency control         |  |
+|  +-----------------------------------------------------------------------------+  |
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+```
 
 ---
 
-## 3. Communication Protocol Specification
+## 3. Subsystem Breakdown
 
-Communication between Python and the native bridge occurs over standard pipes using a line-based request protocol and single-line JSON responses.
+### 3.1 Strict C11 Core (`core-c/`)
+The foundational core is written in portable C11 with zero dynamic heap allocations:
+- **`command_parser.c`**: Normalizes input strings, validates bounds against `FLEX_MAX_INPUT_LEN = 1024` bytes, strips control characters, and extracts command verbs and argument vectors.
+- **`state_manager.c`**: Implements a deterministic finite state machine (`FLEX_STATE_IDLE`, `FLEX_STATE_PROCESSING`, `FLEX_STATE_STOPPING`). Issues monotonic 64-bit operation IDs and tracks active operation categories (`NONE`, `CHAT`, `VOICE`, `MEMORY`).
+- **`orchestrator.c`**: Provides atomic command-to-lifecycle dispatch. Thread-safe mutex locking prevents concurrent command executions while the core is in `PROCESSING` state.
+- **`bridge_main.c`**: Lightweight command-line interface executable (`flex_bridge.exe`) providing JSON-delimited line protocol access for scripting or external harnesses.
 
-### 3.1 Request Framing (stdin)
-Requests must be terminated by a newline (`\n` or `\r\n`).
+### 3.2 C++ Core Wrapper (`src-cpp/src/core_session.cpp`)
+- Encapsulates the C core in an RAII C++ class `CoreSession`.
+- Automatically calls `flex_orchestrator_init()` on construction and `flex_orchestrator_shutdown()` on destruction.
+- Provides type-safe wrappers for `dispatch()`, `finish()`, and `reset()`.
 
-| Request Command | Delimiter | Arguments / Remainder | Description |
-|---|---|---|---|
-| `DISPATCH` | `\t` (Literal Tab) | `<command>` | Dispatches a command string to the core orchestrator. |
-| `FINISH` | None | None | Explicitly completes the active operation and returns lifecycle to `IDLE` (or keeps `STOPPING`). |
-| `STATUS` | None | None | Queries the current lifecycle state, active operation, operation ID, and last error. |
-| `RESET_ERROR` | None | None | Resets recoverable state manager error status to `FLEX_STATE_OK`. |
+### 3.3 Persistent SQLite Storage (`src-cpp/src/storage.cpp`)
+- Built on `Qt6::Sql` utilizing the native SQLite3 driver.
+- Stores user conversations, message turns, role annotations, timestamps, and monotonic sequence numbers.
+- Default path: `%LOCALAPPDATA%\FLEX\conversations.db`.
+- Schema Versioning: Automatically checks and migrates database schemas to ensure compatibility.
+- Thread Safety: Employs SQLite busy timeout (5,000 ms) and connection-isolated transactions.
 
-> [!WARNING]
-> Requests must **not** contain embedded newlines. In Python, `FlexBridgeClient.dispatch()` verifies this and raises `ValueError` before transmission to avoid framing corruption.
+### 3.4 Native Ollama AI Client (`src-cpp/src/ollama_client.cpp`)
+- Fully asynchronous client using `QNetworkAccessManager`.
+- Connects to local Ollama daemon (`http://127.0.0.1:11434`).
+- Parses chunked NDJSON responses from `/api/chat` and emits streaming tokens in real time.
+- Validates model availability via `/api/tags` and handles graceful abort / cancellation.
 
-### 3.2 Response Framing (stdout)
-Every accepted or rejected request produces **exactly one JSON object** on `stdout` followed by a single newline (`\n`), flushed immediately with `fflush(stdout)`.
+### 3.5 Voice Subsystem (`src-cpp/src/voice/`)
+- **Audio Capture (`audio_capture_service.cpp`)**: Captures native Windows microphone input via WASAPI through `QAudioSource`. Resamples and converts raw audio into normalized 16 kHz Mono 32-bit floating-point samples stored in an bounded `AudioBuffer` (max 30 seconds).
+- **Speech-to-Text (`speech_to_text_service.cpp`)**: Bundles `whisper.cpp` (v1.7.4). Performs in-process transcription of PCM float audio using quantized models (`ggml-tiny.en.bin`).
+- **Model Resolver (`whisper_model_resolver.cpp`)**: Resolves Whisper model files across standard search paths:
+  1. `%USERPROFILE%\.flex\models\whisper\ggml-tiny.en.bin`
+  2. `./models/whisper/ggml-tiny.en.bin`
+  3. Custom path defined in settings.
+- **Text-to-Speech (`text_to_speech_service.cpp`)**: Windows SAPI 5.4 COM integration. Queues spoken utterances in a thread-safe worker queue (`tts_queue.hpp`), supporting non-blocking audio playback, pause, resume, and cancellation.
+- **Voice Conversation Controller (`voice_conversation_controller.cpp`)**: Coordinates the voice interaction loop:
+  1. User speaks -> WASAPI captures audio.
+  2. whisper.cpp transcribes speech to text.
+  3. UI displays editable review deck (User can edit or confirm).
+  4. Confirmed text dispatched through C core and submitted to Ollama.
+  5. Assistant response persisted in SQLite and optionally read aloud via SAPI TTS.
 
-#### Response Schemas
+### 3.6 Backend Coordinator (`src-cpp/src/backend.cpp`)
+- Connects `CoreSession`, `ConversationStorage`, and `OllamaClient` into a unified pipeline.
+- Handles user message submission, verifies C core dispatch, streams incoming LLM tokens, saves completed turns to SQLite, and transitions C core back to `IDLE`.
+- Emits Qt signals for UI updates: `chatChunkReceived`, `chatFinished`, `chatError`.
 
-##### 1. `DISPATCH` Response
-```json
-{
-  "action": "DISPATCH",
-  "success": true,
-  "parser_status": "FLEX_STATUS_OK",
-  "state_status": "FLEX_STATE_OK",
-  "command_type": "FLEX_COMMAND_CHAT",
-  "operation": "FLEX_OPERATION_CHAT",
-  "operation_id": 1,
-  "operation_started": true,
-  "shutdown_requested": false,
-  "command_name": "chat",
-  "args": "Explain pointers in C",
-  "lifecycle": "FLEX_LIFECYCLE_PROCESSING",
-  "active_operation": "FLEX_OPERATION_CHAT"
-}
-```
-
-##### 2. `FINISH` Response
-```json
-{
-  "action": "FINISH",
-  "success": true,
-  "state_status": "FLEX_STATE_OK",
-  "lifecycle": "FLEX_LIFECYCLE_IDLE",
-  "active_operation": "FLEX_OPERATION_NONE",
-  "operation_id": 1
-}
-```
-
-##### 3. `STATUS` Response
-```json
-{
-  "action": "STATUS",
-  "success": true,
-  "lifecycle": "FLEX_LIFECYCLE_IDLE",
-  "active_operation": "FLEX_OPERATION_NONE",
-  "operation_id": 1,
-  "last_error": "FLEX_STATE_OK"
-}
-```
-
-##### 4. `RESET_ERROR` Response
-```json
-{
-  "action": "RESET_ERROR",
-  "success": true,
-  "state_status": "FLEX_STATE_OK",
-  "last_error": "FLEX_STATE_OK"
-}
-```
-
-##### 5. `ERROR` Response (Protocol & Framing Errors)
-```json
-{
-  "action": "ERROR",
-  "success": false,
-  "error": "MALFORMED_REQUEST",
-  "message": "DISPATCH requires <TAB> separator before command"
-}
-```
-
-Common error codes returned in `ERROR` response:
-- `EMPTY_REQUEST`: An empty line or carriage return was sent.
-- `MALFORMED_REQUEST`: Missing `<TAB>` separator after `DISPATCH`.
-- `UNKNOWN_ACTION`: Action verb is not one of `DISPATCH`, `FINISH`, `STATUS`, `RESET_ERROR`.
-- `REQUEST_TOO_LONG`: The request line exceeded the bridge line buffer (`BRIDGE_BUFFER_SIZE = 2048`). Excess characters are consumed until newline.
+### 3.7 Native Qt 6 Desktop UI (`src-cpp/src/ui/`)
+- **MainWindow**: Three-pane responsive workstation:
+  - Left Sidebar: Navigation between primary functional views and conversation history.
+  - Central Workspace: Swappable view deck with smooth stack transitions.
+  - Right Sidebar: Collapsible telemetry panel with live C core state badge, Ollama status, and active operation metrics.
+- **Views**:
+  - `ChatView`: AI conversation view with message bubbles, code block styling, and composer.
+  - `VoiceStudioView`: Dedicated audio laboratory with live RMS level meter, waveform indicator, recording controls, transcript editor, and TTS playground.
+  - `MemoryView`: Searchable database inspector for stored conversations.
+  - `ProjectsView`: Dynamic directory tree view anchored to the active workspace.
+  - `SettingsView`: User preference pane for AI models, Whisper paths, voice selection, and speech rates.
+- **Theme (`theme.cpp`)**: High-contrast dark visual design system (`#0A0D14` background, `#00D2FF` electric cyan accents, `#3B82F6` cobalt secondary accents).
 
 ---
 
-## 4. State Model and Operation Lifecycle
+## 4. Concurrency and Threading Model
 
-### 4.1 Lifecycle States
-- **`FLEX_LIFECYCLE_IDLE` (0)**: Initial ready state. No operations running. New operations accepted.
-- **`FLEX_LIFECYCLE_PROCESSING` (1)**: An operation is actively running (`CHAT`, `VOICE`, or `MEMORY`). Concurrent operations are rejected with `FLEX_STATE_ERROR_ALREADY_PROCESSING`.
-- **`FLEX_LIFECYCLE_STOPPING` (2)**: Shutdown has been requested (e.g. via `exit`). No new operations can start (`FLEX_STATE_ERROR_STOPPING`). An in-flight operation is permitted to complete.
-
-### 4.2 State Transition Diagram
-
-```mermaid
-stateDiagram-v2
-    [*] --> IDLE : flex_state_init()
-
-    IDLE --> PROCESSING : DISPATCH(chat | voice | memory) [operation_id++]
-    PROCESSING --> IDLE : FINISH [success]
-    
-    IDLE --> STOPPING : DISPATCH(exit)
-    PROCESSING --> STOPPING : DISPATCH(exit) [in-flight operation preserved]
-    
-    STOPPING --> STOPPING : FINISH [completes in-flight operation]
-    
-    STOPPING --> [*] : Client closes stdin (clean EOF exit 0)
-    IDLE --> [*] : Client closes stdin (clean EOF exit 0)
+```
++---------------------------------------------------------------------------------+
+|                                 MAIN THREAD (Qt Event Loop)                     |
+|                                                                                 |
+|  - UI Widgets, animations, user events                                          |
+|  - OllamaClient async network callbacks                                         |
+|  - BackendCoordinator signal emission & slots                                   |
++------------------------+------------------------------------+-------------------+
+                         |                                    |
++------------------------v-----------+            +-----------v-------------------+
+|     AUDIO WORKER THREAD            |            |     TTS WORKER THREAD         |
+|  - WASAPI audio stream reader      |            |  - COM initialized thread     |
+|  - Sample normalization & RMS      |            |  - SAPI ISpVoice playback     |
+|  - whisper.cpp inference execution |            |  - Non-blocking queue         |
++------------------------------------+            +-------------------------------+
 ```
 
-### 4.3 Monotonic Operation Identifiers
-- Each successful transition from `IDLE` to `PROCESSING` increments `current_operation_id` by 1.
-- Operation IDs are 64-bit unsigned integers (`uint64_t`).
-- Failed or rejected dispatches do **not** increment the operation ID.
-- The operation ID persists across `FINISH` and is reported in subsequent `STATUS` queries, enabling callers to track operation sequencing.
-- Overflow protection guards at `UINT64_MAX` with `FLEX_STATE_ERROR_ID_OVERFLOW`.
-
----
-
-## 5. Buffer Limits, UTF-8, and Memory Boundaries
-
-| Boundary | Value | Definition Location | Description |
-|---|---|---|---|
-| Command Limit | 1024 bytes | [`core-c/include/command_parser.h`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/include/command_parser.h) (`FLEX_MAX_INPUT_LEN`) | Maximum command length accepted by parser. Longer commands return `FLEX_STATUS_INPUT_TOO_LONG`. |
-| Verb Limit | 64 bytes | [`core-c/include/command_parser.h`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/include/command_parser.h) (`FLEX_MAX_COMMAND_LEN`) | Maximum length of normalized command verb. |
-| Args Limit | 1024 bytes | [`core-c/include/command_parser.h`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/include/command_parser.h) (`FLEX_MAX_ARGS_LEN`) | Maximum length of parsed argument buffer. |
-| Bridge Line Buffer | 2048 bytes | [`core-c/src/bridge_main.c`](file:///c:/Users/sanid/Documents/GitHub/FLEX-1.0/core-c/src/bridge_main.c) (`BRIDGE_BUFFER_SIZE`) | Line buffer capacity for reading `stdin`. Overlong lines trigger `REQUEST_TOO_LONG` and line drainage. |
-
-### Unicode Byte Count vs. Character Count
-- Python measures string length (`len(s)`) in Unicode characters (code points).
-- The C core measures string length in UTF-8 bytes using bounded linear scans (`while (input[len] != '\0')`).
-- Multi-byte characters consume 2 to 4 UTF-8 bytes per character:
-  - English ASCII (`A`): 1 char = 1 byte
-  - Accented Latin (`é`): 1 char = 2 bytes
-  - Devanagari (`ह`): 1 char = 3 bytes
-  - Emoji (`🚀`): 1 char = 4 bytes
-- A 400-character string of emojis requires 1600 UTF-8 bytes and will be rejected by the C parser with `FLEX_STATUS_INPUT_TOO_LONG` despite being only 400 characters in Python.
-
----
-
-## 6. Process Lifecycle, Concurrency, and Restarts
-
-### 6.1 Subprocess Management
-- The native bridge executable is launched as a persistent subprocess via Python's standard `subprocess.Popen`.
-- Two background daemon threads read pipes asynchronously:
-  - **Stdout Reader Thread**: Reads lines into a thread-safe `queue.Queue`.
-  - **Stderr Reader Thread**: Collects diagnostic lines into a thread-safe list.
-- Standard output is never mixed with diagnostic messages or compiler output.
-
-### 6.2 Strict No-Silent-Restart Rule
-- The C state manager maintains state entirely in process memory.
-- If the native bridge process terminates or crashes, all state (lifecycle, in-flight operations, operation IDs) is permanently lost.
-- **Therefore, `FlexBridgeClient` never automatically restarts a failed process.**
-- A broken pipe or dead process raises `FlexBridgeProcessError` with the process exit code and captured stderr diagnostics.
-- Callers must explicitly decide to reinitialize by calling `client.restart(force=True)`. Calling `restart(force=False)` will fail if an operation is known to be in flight.
-
-### 6.3 Concurrency and Thread Safety
-- The C bridge executable is single-threaded and expects sequential request-response turns.
-- A single `FlexBridgeClient` instance is designed for single-thread operation or serialized calls. Concurrent calls on the same client instance without external synchronization will interleave request lines and corrupt response order.
-- Multiple independent client instances running separate subprocesses are fully isolated.
-
----
-
-## 7. Feature Implementation Status
-
-| Feature / Capability | Status | Implementation Details |
-|---|---|---|
-| C Command Parser | **Implemented & Tested** | Full regression and structured parser tests (Stage 1A & 1B). |
-| C State Manager | **Implemented & Tested** | In-memory lifecycle and operation tracking (Stage 1C). |
-| C Orchestrator | **Implemented & Tested** | Atomic dispatch connecting parser and state manager (Stage 1D). |
-| Native Bridge Executable | **Implemented & Tested** | Stdin/stdout line IPC, RFC 8259 escaping, drainage (Stage 1E.1). |
-| Python Client (`FlexBridgeClient`) | **Implemented & Tested** | Subprocess management, timeouts, custom exceptions (Stage 1E.2). |
-| End-to-End Integration Suite | **Implemented & Tested** | Full Python-to-C pipeline test suite with 20 tests (Stage 1E.3). |
-| Local AI / Ollama Inference | **Planned (Not Implemented)** | Dispatching `chat` currently only moves state to `PROCESSING`. |
-| Voice Capture / STT / TTS | **Planned (Not Implemented)** | Dispatching `voice` only moves state to `PROCESSING`. |
-| Persistent Memory / Database | **Planned (Not Implemented)** | Dispatching `memory` only moves state to `PROCESSING`. |
-| Firebase Cloud Integration | **Planned (Not Implemented)** | No cloud networking exists in the codebase. |
-| UI / Android Application | **Planned (Not Implemented)** | No graphical interface or mobile bindings exist yet. |
+1. **Main UI Thread**: Runs the Qt event loop, renders all UI components, and handles non-blocking network I/O from Ollama via `QNetworkAccessManager`.
+2. **Audio Worker Thread**: Handles audio sample acquisition and heavy Whisper neural network inference without blocking UI responsiveness.
+3. **TTS Worker Thread**: Initializes COM (`CoInitializeEx`) and dispatches speech synthesis asynchronously to Windows audio output.

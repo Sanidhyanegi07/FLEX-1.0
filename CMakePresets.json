@@ -1,0 +1,99 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ninja-mingw-debug",
+      "displayName": "Ninja MinGW Debug",
+      "description": "Build with Ninja generator and MinGW GCC in Debug mode",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "FLEX_BUILD_DESKTOP": true,
+        "FLEX_BUILD_TESTS": true,
+        "FLEX_BUILD_BRIDGE": true
+      }
+    },
+    {
+      "name": "ninja-mingw-release",
+      "displayName": "Ninja MinGW Release",
+      "description": "Build with Ninja generator and MinGW GCC in Release mode",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "FLEX_BUILD_DESKTOP": true,
+        "FLEX_BUILD_TESTS": true,
+        "FLEX_BUILD_BRIDGE": true
+      }
+    },
+    {
+      "name": "ninja-clang-debug",
+      "displayName": "Ninja Clang Debug",
+      "description": "Build with Ninja generator and Clang in Debug mode",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "FLEX_BUILD_DESKTOP": true,
+        "FLEX_BUILD_TESTS": true,
+        "FLEX_BUILD_BRIDGE": true
+      }
+    },
+    {
+      "name": "msvc-debug",
+      "displayName": "MSVC Debug",
+      "description": "Build with Visual Studio MSVC in Debug mode",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build-msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FLEX_BUILD_DESKTOP": true,
+        "FLEX_BUILD_TESTS": true,
+        "FLEX_BUILD_BRIDGE": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ninja-mingw-debug",
+      "displayName": "Build MinGW Debug",
+      "configurePreset": "ninja-mingw-debug"
+    },
+    {
+      "name": "ninja-mingw-release",
+      "displayName": "Build MinGW Release",
+      "configurePreset": "ninja-mingw-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "ninja-mingw-debug",
+      "displayName": "Test MinGW Debug",
+      "configurePreset": "ninja-mingw-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ninja-mingw-release",
+      "displayName": "Test MinGW Release",
+      "configurePreset": "ninja-mingw-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
+
