@@ -9,6 +9,7 @@ typedef struct {
     const char* str;
     size_t pos;
     size_t len;
+    size_t depth;
     FlexMathResult result;
 } MathParser;
 
@@ -203,15 +204,28 @@ static double parse_term(MathParser* p) {
 }
 
 static double parse_expression(MathParser* p) {
+    if (p->depth >= 64) {
+        p->result.status = FLEX_MATH_ERR_SYNTAX;
+        p->result.error_pos = p->pos;
+        snprintf(p->result.error_msg, sizeof(p->result.error_msg), "Recursion depth limit exceeded (max 64)");
+        return 0.0;
+    }
+    p->depth++;
     double val = parse_term(p);
-    if (p->result.status != FLEX_MATH_OK) return 0.0;
+    if (p->result.status != FLEX_MATH_OK) {
+        p->depth--;
+        return 0.0;
+    }
     
     while (true) {
         char op = peek(p);
         if (op == '+' || op == '-') {
             get_char(p);
             double next = parse_term(p);
-            if (p->result.status != FLEX_MATH_OK) return 0.0;
+            if (p->result.status != FLEX_MATH_OK) {
+                p->depth--;
+                return 0.0;
+            }
             
             if (op == '+') {
                 val += next;
@@ -222,6 +236,7 @@ static double parse_expression(MathParser* p) {
             break;
         }
     }
+    p->depth--;
     return val;
 }
 
@@ -247,6 +262,7 @@ FlexMathResult flex_math_evaluate(const char* expr) {
     p.str = expr;
     p.pos = 0;
     p.len = len;
+    p.depth = 0;
     p.result = res;
     
     double val = parse_expression(&p);

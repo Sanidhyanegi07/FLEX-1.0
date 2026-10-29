@@ -114,13 +114,13 @@ To ensure genuine low-level systems programming rigor, FLEX 1.0 maintains **at l
 =================================================================
  PRODUCTION RATIO SUMMARY (First-Party Non-Comment Lines)
 =================================================================
-  Total Executable SLOC: 14,509
-  C Production SLOC:       7,286 (50.22%)
-  C++ Production SLOC:     7,223 (49.78%)
+  Total Executable SLOC: 14,622
+  C Production SLOC:       7,398 (50.59%)
+  C++ Production SLOC:     7,224 (49.41%)
 -----------------------------------------------------------------
-  Total Raw Lines:        17,363
-  C Raw Lines:             8,610 (49.59%)
-  C++ Raw Lines:           8,753 (50.41%)
+  Total Raw Lines:        17,505
+  C Raw Lines:             8,751 (49.99%)
+  C++ Raw Lines:           8,754 (50.01%)
 =================================================================
 ```
 

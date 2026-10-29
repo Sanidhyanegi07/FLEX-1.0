@@ -10,9 +10,17 @@ uint32_t flex_ht_hash_fnv1a(const char* key) {
     if (!key) return 0;
     
     uint32_t hash = 2166136261u;
-    for (size_t i = 0; key[i] != '\0'; ++i) {
-        hash ^= (unsigned char)key[i];
-        hash *= 16777619u;
+    size_t i = 0;
+    /* 4-byte unrolled loop for fast string hashing */
+    while (key[i] != '\0' && key[i+1] != '\0' && key[i+2] != '\0' && key[i+3] != '\0') {
+        hash = (hash ^ (unsigned char)key[i]) * 16777619u;
+        hash = (hash ^ (unsigned char)key[i+1]) * 16777619u;
+        hash = (hash ^ (unsigned char)key[i+2]) * 16777619u;
+        hash = (hash ^ (unsigned char)key[i+3]) * 16777619u;
+        i += 4;
+    }
+    while (key[i] != '\0') {
+        hash = (hash ^ (unsigned char)key[i++]) * 16777619u;
     }
     return hash;
 }
@@ -22,9 +30,10 @@ bool flex_ht_put(FlexHashTable* ht, const char* key, const char* value) {
     
     uint32_t hash = flex_ht_hash_fnv1a(key);
     size_t first_tombstone = FLEX_HT_CAPACITY;
+    const size_t mask = FLEX_HT_CAPACITY - 1;
     
     for (size_t i = 0; i < FLEX_HT_CAPACITY; ++i) {
-        size_t idx = (hash + i + (i * i)) % FLEX_HT_CAPACITY;
+        size_t idx = (hash + i + (i * i)) & mask;
         
         if (ht->entries[idx].state == FLEX_HT_SLOT_OCCUPIED) {
             if (ht->entries[idx].hash == hash && strcmp(ht->entries[idx].key, key) == 0) {
@@ -72,9 +81,10 @@ const char* flex_ht_get(const FlexHashTable* ht, const char* key) {
     if (!ht || !key) return NULL;
     
     uint32_t hash = flex_ht_hash_fnv1a(key);
+    const size_t mask = FLEX_HT_CAPACITY - 1;
     
     for (size_t i = 0; i < FLEX_HT_CAPACITY; ++i) {
-        size_t idx = (hash + i + (i * i)) % FLEX_HT_CAPACITY;
+        size_t idx = (hash + i + (i * i)) & mask;
         
         if (ht->entries[idx].state == FLEX_HT_SLOT_OCCUPIED) {
             if (ht->entries[idx].hash == hash && strcmp(ht->entries[idx].key, key) == 0) {
@@ -95,9 +105,10 @@ bool flex_ht_remove(FlexHashTable* ht, const char* key) {
     if (!ht || !key) return false;
     
     uint32_t hash = flex_ht_hash_fnv1a(key);
+    const size_t mask = FLEX_HT_CAPACITY - 1;
     
     for (size_t i = 0; i < FLEX_HT_CAPACITY; ++i) {
-        size_t idx = (hash + i + (i * i)) % FLEX_HT_CAPACITY;
+        size_t idx = (hash + i + (i * i)) & mask;
         
         if (ht->entries[idx].state == FLEX_HT_SLOT_OCCUPIED) {
             if (ht->entries[idx].hash == hash && strcmp(ht->entries[idx].key, key) == 0) {

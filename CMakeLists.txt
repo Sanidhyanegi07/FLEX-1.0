@@ -30,6 +30,11 @@ if(MSVC)
     add_compile_options(/W4)
 else()
     add_compile_options(-Wall -Wextra -pedantic)
+    add_compile_options($<$<NOT:$<CONFIG:Debug>>:-O3>)
+    add_compile_options(-ffunction-sections -fdata-sections)
+    if(NOT APPLE AND NOT MSVC)
+        add_link_options(-Wl,--gc-sections)
+    endif()
 endif()
 
 # ------------------------------------------------------------------------------

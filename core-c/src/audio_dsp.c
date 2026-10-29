@@ -64,10 +64,10 @@ void flex_pcm16_to_float(
     if (!in_pcm || !out_float) return;
     const float scale = 1.0f / 32768.0f;
 
+    /* Vectorizable clamping conversion using standard math intrinsics */
     for (size_t i = 0; i < sample_count; ++i) {
         float val = (float)in_pcm[i] * scale;
-        if (val > 1.0f) val = 1.0f;
-        else if (val < -1.0f) val = -1.0f;
+        val = fminf(fmaxf(val, -1.0f), 1.0f);
         out_float[i] = val;
     }
 }
@@ -86,8 +86,7 @@ void flex_pcm24_to_float(
                                  (in_bytes[byte_idx + 1] << 8) |
                                  ((int8_t)in_bytes[byte_idx + 2] << 16));
         float val = (float)val32 * scale;
-        if (val > 1.0f) val = 1.0f;
-        else if (val < -1.0f) val = -1.0f;
+        val = fminf(fmaxf(val, -1.0f), 1.0f);
         out_float[i] = val;
     }
 }
@@ -137,7 +136,24 @@ size_t flex_audio_resample_linear(
     size_t estimated_out = (size_t)ceil((double)in_count / ratio);
     size_t out_count = (estimated_out < out_capacity) ? estimated_out : out_capacity;
 
-    for (size_t i = 0; i < out_count; ++i) {
+    /* Compute safe boundary where idx1 is guaranteed < in_count to avoid inner branches */
+    size_t safe_count = 0;
+    if (in_count > 1) {
+        double max_in_pos = (double)(in_count - 2);
+        safe_count = (size_t)(max_in_pos / ratio);
+        if (safe_count > out_count) safe_count = out_count;
+    }
+
+    /* Fast branchless inner loop */
+    for (size_t i = 0; i < safe_count; ++i) {
+        double in_pos = (double)i * ratio;
+        size_t idx0 = (size_t)in_pos;
+        double frac = in_pos - (double)idx0;
+        out_samples[i] = (float)((1.0 - frac) * in_samples[idx0] + frac * in_samples[idx0 + 1]);
+    }
+
+    /* Boundary tail handling */
+    for (size_t i = safe_count; i < out_count; ++i) {
         double in_pos = (double)i * ratio;
         size_t idx0 = (size_t)in_pos;
         size_t idx1 = idx0 + 1;
@@ -167,13 +183,41 @@ void flex_audio_calculate_rms(
         return;
     }
 
-    double sum_sq = 0.0;
+    /* 4-way parallel accumulators for auto-vectorization without extra fabsf on squaring */
+    double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
     float peak = 0.0f;
+    size_t i = 0;
 
-    for (size_t i = 0; i < count; ++i) {
-        float val = fabsf(samples[i]);
-        if (val > peak) peak = val;
+    while (i + 4 <= count) {
+        float v0 = samples[i];
+        float v1 = samples[i + 1];
+        float v2 = samples[i + 2];
+        float v3 = samples[i + 3];
+
+        sum0 += (double)v0 * (double)v0;
+        sum1 += (double)v1 * (double)v1;
+        sum2 += (double)v2 * (double)v2;
+        sum3 += (double)v3 * (double)v3;
+
+        float a0 = fabsf(v0);
+        float a1 = fabsf(v1);
+        float a2 = fabsf(v2);
+        float a3 = fabsf(v3);
+        if (a0 > peak) peak = a0;
+        if (a1 > peak) peak = a1;
+        if (a2 > peak) peak = a2;
+        if (a3 > peak) peak = a3;
+
+        i += 4;
+    }
+
+    double sum_sq = sum0 + sum1 + sum2 + sum3;
+    while (i < count) {
+        float val = samples[i];
+        float a = fabsf(val);
+        if (a > peak) peak = a;
         sum_sq += (double)val * (double)val;
+        i++;
     }
 
     if (out_rms) {

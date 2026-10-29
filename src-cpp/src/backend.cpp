@@ -277,16 +277,17 @@ public:
         }
 
         // 5. Assemble context messages from storage
+        int histLimit = request.maxHistoryMessages > 0 ? request.maxHistoryMessages : 20;
         std::vector<ChatMessage> ollamaMessages;
+        ollamaMessages.reserve(histLimit + 2);
         std::string sysPrompt = request.systemPrompt.value_or(BackendCoordinator::DEFAULT_SYSTEM_PROMPT);
         if (!sysPrompt.empty()) {
             ollamaMessages.push_back(ChatMessage{"system", sysPrompt});
         }
         try {
-            int histLimit = request.maxHistoryMessages > 0 ? request.maxHistoryMessages : 20;
             auto historyRecords = m_storage->getMessages(targetCid, histLimit);
-            for (const auto& rec : historyRecords) {
-                ollamaMessages.push_back(ChatMessage{rec.role, rec.content});
+            for (auto& rec : historyRecords) {
+                ollamaMessages.push_back(ChatMessage{std::move(rec.role), std::move(rec.content)});
             }
         } catch (const StorageError& exc) {
             m_core.finishOperation();

@@ -141,9 +141,20 @@ bool flex_tokenizer_is_stopword(const char* word) {
     }
     lower[i] = '\0';
     
-    for (size_t k = 0; S_STOPWORDS[k] != NULL; ++k) {
-        if (strcmp(lower, S_STOPWORDS[k]) == 0) {
+    /* Binary search across alphabetically sorted stopword dictionary (O(log N)) */
+    static const size_t s_stopword_count = (sizeof(S_STOPWORDS) / sizeof(S_STOPWORDS[0])) - 1;
+    size_t low = 0;
+    size_t high = s_stopword_count;
+
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        int cmp = strcmp(lower, S_STOPWORDS[mid]);
+        if (cmp == 0) {
             return true;
+        } else if (cmp < 0) {
+            high = mid;
+        } else {
+            low = mid + 1;
         }
     }
     return false;
