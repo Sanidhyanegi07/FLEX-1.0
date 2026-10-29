@@ -2,7 +2,8 @@
 ## Settings Persistence & Hardware Preferences
 
 **Date:** 2026-10-29  
-**Branch:** `main` (baseline `a01787a` / `cfe2981`)  
+**Branch:** `main` (commit `3ee47c8`)  
+**Baseline:** `a01787a`  
 **Status:** Completed & Fully Verified  
 
 ---
@@ -150,17 +151,24 @@ Total Test time (real) = 13.51 sec
 
 ## 6. Git Working-Tree Status
 
-All changes are preserved uncommitted in the local working tree:
+All Track A changes are cleanly integrated into `main` across commits `cfe2981` and `3ee47c8`:
 - `core-c/include/config_validator.h`
 - `core-c/src/config_validator.c`
-- `src-cpp/include/flex/ui/settings_view.hpp`
-- `src-cpp/include/flex/voice/text_to_speech_service.hpp`
+- `core-c/include/kv_store.h`
+- `core-c/src/kv_store.c`
+- `core-c/tests/test_c_core_modules.c`
+- `src-cpp/include/flex/settings_persistence_service.hpp`
 - `src-cpp/src/settings_persistence_service.cpp`
-- `src-cpp/src/ui/main_window.cpp`
+- `src-cpp/include/flex/ui/settings_view.hpp`
 - `src-cpp/src/ui/settings_view.cpp`
+- `src-cpp/src/ui/main_window.cpp`
+- `src-cpp/include/flex/voice/audio_capture_service.hpp`
+- `src-cpp/src/voice/audio_capture_service.cpp`
+- `src-cpp/include/flex/voice/text_to_speech_service.hpp`
 - `src-cpp/src/voice/text_to_speech_service.cpp`
+- `src-cpp/tests/test_storage.cpp`
 - `src-cpp/tests/test_ui.cpp`
 - `src-cpp/tests/test_voice.cpp`
 
-No Python files or unintended dependencies were added. Git diff is clean with 0 whitespace errors.
+Working tree is clean (`git status` reports nothing to commit). No Python files or unintended dependencies exist. Git diff is clean with 0 whitespace errors.
 
