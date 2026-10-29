@@ -1606,21 +1606,38 @@ void test_stt_real_model_with_speech_fixture()
     std::cout << "[Test 29b] SpeechToText: real neural model transcription with known speech WAV fixture...\n";
 
     auto resolution = flex::voice::WhisperModelResolver::resolveModelPath();
+    EXPECT_TRUE(resolution.isFound());
     if (!resolution.isFound()) {
-        std::cout << "  [SKIP] Local Whisper model not found. Skipping real speech fixture test.\n";
+        std::cerr << "  [FATAL] Local Whisper model not found at canonical locations. Run scripts/download_whisper_model.ps1\n";
         return;
     }
 
-    QString wavPath = "third_party/whisper.cpp/bindings/go/samples/jfk.wav";
+    QString fixtureRel = "third_party/whisper.cpp/bindings/go/samples/jfk.wav";
+    QString wavPath;
+#ifdef FLEX_REPO_ROOT
+    wavPath = QDir(QString::fromUtf8(FLEX_REPO_ROOT)).filePath(fixtureRel);
+#endif
+    if (wavPath.isEmpty() || !QFileInfo::exists(wavPath)) {
+        wavPath = QDir(QCoreApplication::applicationDirPath()).filePath("../" + fixtureRel);
+    }
+    if (!QFileInfo::exists(wavPath)) {
+        wavPath = QDir::current().filePath(fixtureRel);
+    }
+    wavPath = QDir::cleanPath(wavPath);
+    std::cout << "  [INFO] Resolved speech fixture WAV at: " << wavPath.toStdString() << "\n";
+
     QFile wavFile(wavPath);
-    if (!wavFile.exists() || !wavFile.open(QIODevice::ReadOnly)) {
-        std::cout << "  [SKIP] Speech fixture WAV not found at: " << wavPath.toStdString() << "\n";
+    EXPECT_TRUE(wavFile.exists());
+    EXPECT_TRUE(wavFile.open(QIODevice::ReadOnly));
+    if (!wavFile.isOpen()) {
+        std::cerr << "  [FATAL] Failed to open speech fixture WAV at: " << wavPath.toStdString() << "\n";
         return;
     }
 
     QByteArray bytes = wavFile.readAll();
+    EXPECT_TRUE(bytes.size() > 44);
     if (bytes.size() <= 44) {
-        std::cout << "  [SKIP] Speech fixture WAV is invalid or truncated.\n";
+        std::cerr << "  [FATAL] Speech fixture WAV is invalid or truncated.\n";
         return;
     }
 

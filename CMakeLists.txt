@@ -182,6 +182,23 @@ if(FLEX_BUILD_DESKTOP OR FLEX_BUILD_TESTS)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
     add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
 
+    # MinGW x64 + AVX tensor inference: In Debug builds (-O0), out-of-line ABI calls
+    # for 256-bit AVX intrinsics (such as ggml_v_expf in ggml_vec_soft_max_f32) spill
+    # vector registers to the stack with 32-byte aligned moves (vmovaps), which fault
+    # with 0xC0000005 on 16-byte aligned Windows thread stacks.
+    # Applying -O3 to GGML CPU and Whisper targets forces inlining into vector registers
+    # and generates unaligned vmovups moves, eliminating the stack spill alignment fault
+    # while preserving Debug symbols and debuggability for the rest of the application.
+    if(TARGET ggml-cpu)
+        target_compile_options(ggml-cpu PRIVATE -O3)
+    endif()
+    if(TARGET ggml-base)
+        target_compile_options(ggml-base PRIVATE -O3)
+    endif()
+    if(TARGET whisper)
+        target_compile_options(whisper PRIVATE -O3)
+    endif()
+
     # Native C++ Voice Subsystem Library
     add_library(flex_voice STATIC
         src-cpp/include/flex/voice/audio_buffer.hpp
@@ -418,6 +435,10 @@ if(FLEX_BUILD_TESTS)
     )
 
     set_target_properties(flex_voice_tests PROPERTIES AUTOMOC ON)
+
+    target_compile_definitions(flex_voice_tests PRIVATE
+        FLEX_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
 
     target_include_directories(flex_voice_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
