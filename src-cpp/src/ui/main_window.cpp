@@ -1,5 +1,6 @@
 #include "flex/ui/main_window.hpp"
 #include "flex/ui/theme.hpp"
+#include "flex/settings_persistence_service.hpp"
 
 #include <QCloseEvent>
 #include <QHBoxLayout>
@@ -16,8 +17,25 @@ MainWindow::MainWindow(
     : QMainWindow(parent)
     , m_coordinator(std::move(coordinator))
 {
+    bool isDefaultCoordinator = false;
     if (!m_coordinator) {
         m_coordinator = std::make_shared<BackendCoordinator>();
+        isDefaultCoordinator = true;
+    }
+
+    // Load persisted settings at startup
+    auto loadRes = SettingsPersistenceService::loadSettings();
+    if (loadRes.success && m_coordinator && m_coordinator->ollamaClient()) {
+        // If coordinator was created by default or client baseUrl is standard, apply persisted config
+        if (isDefaultCoordinator || m_coordinator->ollamaClient()->config().baseUrl == "http://127.0.0.1:11434") {
+            OllamaConfig cfg = m_coordinator->ollamaClient()->config();
+            cfg.baseUrl = loadRes.settings.ollamaEndpoint;
+            cfg.model = loadRes.settings.ollamaModel;
+            cfg.options.temperature = loadRes.settings.ollamaTemperature;
+            cfg.options.numCtx = loadRes.settings.ollamaNumCtx;
+            cfg.timeoutSeconds = loadRes.settings.ollamaTimeout;
+            m_coordinator->ollamaClient()->setConfig(cfg);
+        }
     }
 
     setupUi();
@@ -34,6 +52,25 @@ MainWindow::MainWindow(
     m_chatView->setVoiceController(m_voiceController);
     if (m_voiceStudioView) {
         m_voiceStudioView->setVoiceController(m_voiceController);
+    }
+
+    // Apply hardware preferences to services and wire SettingsView
+    if (loadRes.success) {
+        if (!loadRes.settings.audioInputDevice.empty() && m_chatView->audioCaptureService()) {
+            m_chatView->audioCaptureService()->setPreferredDeviceId(loadRes.settings.audioInputDevice);
+        }
+        if (m_chatView->textToSpeechService()) {
+            m_chatView->textToSpeechService()->setRate(loadRes.settings.ttsRate);
+            m_chatView->textToSpeechService()->setVolume(loadRes.settings.ttsVolume);
+        }
+        if (!loadRes.settings.whisperModelPath.empty() && m_voiceController->speechToTextService()) {
+            m_voiceController->speechToTextService()->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
+        }
+    }
+    m_settingsView->setAudioCaptureService(m_chatView->audioCaptureService());
+    m_settingsView->setTextToSpeechService(m_chatView->textToSpeechService());
+    if (m_voiceController) {
+        m_settingsView->setSpeechToTextService(m_voiceController->speechToTextService());
     }
 
     // Configure health check timer (every 10 seconds, non-blocking)
@@ -219,6 +256,7 @@ void MainWindow::switchView(const QString& viewKey)
     } else if (viewKey == "tools") {
         m_viewStack->setCurrentWidget(m_toolsView);
     } else if (viewKey == "settings") {
+        m_settingsView->loadCurrentConfig();
         m_viewStack->setCurrentWidget(m_settingsView);
     }
 }

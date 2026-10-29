@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <cstring>
 
 namespace flex {
 
@@ -28,45 +29,45 @@ std::string SettingsPersistenceService::defaultConfigurationPath()
     return QDir::cleanPath(QDir(baseDir).filePath("config.ini")).toStdString();
 }
 
+static void appSettingsToCConfig(const AppSettings& src, FlexAppConfig* dst)
+{
+    std::memset(dst, 0, sizeof(FlexAppConfig));
+    std::strncpy(dst->endpoint, src.ollamaEndpoint.c_str(), sizeof(dst->endpoint) - 1);
+    std::strncpy(dst->model, src.ollamaModel.c_str(), sizeof(dst->model) - 1);
+    dst->temperature = src.ollamaTemperature;
+    dst->num_ctx = src.ollamaNumCtx;
+    dst->timeout_seconds = src.ollamaTimeout;
+    std::strncpy(dst->audio_input_device, src.audioInputDevice.c_str(), sizeof(dst->audio_input_device) - 1);
+    dst->tts_rate = src.ttsRate;
+    dst->tts_volume = src.ttsVolume;
+    std::strncpy(dst->whisper_model_path, src.whisperModelPath.c_str(), sizeof(dst->whisper_model_path) - 1);
+}
+
+static void cConfigToAppSettings(const FlexAppConfig& src, AppSettings* dst)
+{
+    dst->ollamaEndpoint = src.endpoint;
+    dst->ollamaModel = src.model;
+    dst->ollamaTemperature = src.temperature;
+    dst->ollamaNumCtx = src.num_ctx;
+    dst->ollamaTimeout = src.timeout_seconds;
+    dst->audioInputDevice = src.audio_input_device;
+    dst->ttsRate = src.tts_rate;
+    dst->ttsVolume = src.tts_volume;
+    dst->whisperModelPath = src.whisper_model_path;
+}
+
 std::vector<std::string> SettingsPersistenceService::validateSettings(const AppSettings& settings)
 {
+    FlexAppConfig cConfig;
+    appSettingsToCConfig(settings, &cConfig);
+
+    FlexAppConfigValidation val;
+    flex_validate_app_config(&cConfig, &val);
+
     std::vector<std::string> errors;
-    flex_cfg_result_t res;
-
-    if (flex_validate_endpoint_url(settings.ollamaEndpoint.c_str(), &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("ollama.endpoint: ") + res.error_detail);
+    for (int i = 0; i < val.error_count; ++i) {
+        errors.push_back(val.errors[i]);
     }
-
-    if (flex_validate_model_name(settings.ollamaModel.c_str(), &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("ollama.model: ") + res.error_detail);
-    }
-
-    if (flex_validate_temperature(settings.ollamaTemperature, &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("ollama.temperature: ") + res.error_detail);
-    }
-
-    if (flex_validate_context_window(settings.ollamaNumCtx, &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("ollama.num_ctx: ") + res.error_detail);
-    }
-
-    if (flex_validate_timeout(settings.ollamaTimeout, &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("ollama.timeout: ") + res.error_detail);
-    }
-
-    if (flex_validate_tts_rate(settings.ttsRate, &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("tts.rate: ") + res.error_detail);
-    }
-
-    if (flex_validate_tts_volume(settings.ttsVolume, &res) != FLEX_CFG_VALID) {
-        errors.push_back(std::string("tts.volume: ") + res.error_detail);
-    }
-
-    if (!settings.whisperModelPath.empty()) {
-        if (flex_validate_whisper_path(settings.whisperModelPath.c_str(), &res) != FLEX_CFG_VALID) {
-            errors.push_back(std::string("whisper.model_path: ") + res.error_detail);
-        }
-    }
-
     return errors;
 }
 
@@ -105,111 +106,15 @@ SettingsLoadResult SettingsPersistenceService::loadSettings(const std::optional<
         return result;
     }
 
+    FlexAppConfig cConfig;
+    FlexAppConfigValidation valRes;
+    flex_app_config_from_kv(&store, &cConfig, &valRes);
+
     result.success = true;
+    cConfigToAppSettings(cConfig, &result.settings);
 
-    // 1. Ollama Endpoint
-    const char* endpointVal = flex_kv_get_str(&store, "ollama.endpoint");
-    if (endpointVal) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_endpoint_url(endpointVal, &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ollamaEndpoint = endpointVal;
-        } else {
-            result.warnings.push_back(std::string("Invalid ollama.endpoint in config: ") + cfgRes.error_detail);
-        }
-    }
-
-    // 2. Ollama Model
-    const char* modelVal = flex_kv_get_str(&store, "ollama.model");
-    if (modelVal) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_model_name(modelVal, &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ollamaModel = modelVal;
-        } else {
-            result.warnings.push_back(std::string("Invalid ollama.model in config: ") + cfgRes.error_detail);
-        }
-    }
-
-    // 3. Temperature
-    double tempVal = 0.0;
-    FlexKvStatus st = flex_kv_parse_float(&store, "ollama.temperature", &tempVal);
-    if (st == FLEX_KV_OK) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_temperature(tempVal, &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ollamaTemperature = tempVal;
-        } else {
-            result.warnings.push_back(std::string("Invalid ollama.temperature: ") + cfgRes.error_detail);
-        }
-    } else if (st != FLEX_KV_ERR_NOT_FOUND) {
-        result.warnings.push_back(std::string("Malformed ollama.temperature: ") + flex_kv_status_str(st));
-    }
-
-    // 4. Num Ctx
-    long long ctxVal = 0;
-    st = flex_kv_parse_int(&store, "ollama.num_ctx", &ctxVal);
-    if (st == FLEX_KV_OK) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_context_window(static_cast<int>(ctxVal), &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ollamaNumCtx = static_cast<int>(ctxVal);
-        } else {
-            result.warnings.push_back(std::string("Invalid ollama.num_ctx: ") + cfgRes.error_detail);
-        }
-    } else if (st != FLEX_KV_ERR_NOT_FOUND) {
-        result.warnings.push_back(std::string("Malformed ollama.num_ctx: ") + flex_kv_status_str(st));
-    }
-
-    // 5. Timeout
-    long long timeoutVal = 0;
-    st = flex_kv_parse_int(&store, "ollama.timeout", &timeoutVal);
-    if (st == FLEX_KV_OK) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_timeout(static_cast<int>(timeoutVal), &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ollamaTimeout = static_cast<int>(timeoutVal);
-        } else {
-            result.warnings.push_back(std::string("Invalid ollama.timeout: ") + cfgRes.error_detail);
-        }
-    } else if (st != FLEX_KV_ERR_NOT_FOUND) {
-        result.warnings.push_back(std::string("Malformed ollama.timeout: ") + flex_kv_status_str(st));
-    }
-
-    // 6. Audio input device
-    const char* audioDev = flex_kv_get_str(&store, "audio.input_device");
-    if (audioDev) {
-        result.settings.audioInputDevice = audioDev;
-    }
-
-    // 7. TTS Rate
-    long long rateVal = 0;
-    st = flex_kv_parse_int(&store, "tts.rate", &rateVal);
-    if (st == FLEX_KV_OK) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_tts_rate(static_cast<int>(rateVal), &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ttsRate = static_cast<int>(rateVal);
-        } else {
-            result.warnings.push_back(std::string("Invalid tts.rate: ") + cfgRes.error_detail);
-        }
-    }
-
-    // 8. TTS Volume
-    long long volVal = 0;
-    st = flex_kv_parse_int(&store, "tts.volume", &volVal);
-    if (st == FLEX_KV_OK) {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_tts_volume(static_cast<int>(volVal), &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.ttsVolume = static_cast<int>(volVal);
-        } else {
-            result.warnings.push_back(std::string("Invalid tts.volume: ") + cfgRes.error_detail);
-        }
-    }
-
-    // 9. Whisper model path
-    const char* whisperPath = flex_kv_get_str(&store, "whisper.model_path");
-    if (whisperPath && whisperPath[0] != '\0') {
-        flex_cfg_result_t cfgRes;
-        if (flex_validate_whisper_path(whisperPath, &cfgRes) == FLEX_CFG_VALID) {
-            result.settings.whisperModelPath = whisperPath;
-        } else {
-            result.warnings.push_back(std::string("Invalid whisper.model_path: ") + cfgRes.error_detail);
-        }
+    for (int i = 0; i < valRes.error_count; ++i) {
+        result.warnings.push_back(valRes.errors[i]);
     }
 
     return result;
@@ -220,35 +125,23 @@ SettingsSaveResult SettingsPersistenceService::saveSettings(
     const std::optional<std::string>& customPath)
 {
     // Step 1: Pre-validate settings using C core validator
-    auto errors = validateSettings(settings);
-    if (!errors.empty()) {
+    FlexAppConfig cConfig;
+    appSettingsToCConfig(settings, &cConfig);
+
+    FlexAppConfigValidation validation;
+    if (!flex_validate_app_config(&cConfig, &validation)) {
         std::string errStr = "Validation failed: ";
-        for (size_t i = 0; i < errors.size(); ++i) {
+        for (int i = 0; i < validation.error_count; ++i) {
             if (i > 0) errStr += "; ";
-            errStr += errors[i];
+            errStr += validation.errors[i];
         }
         return {false, errStr};
     }
 
-    // Step 2: Populate C kv_store
+    // Step 2: Populate C kv_store via C core schema mapper
     FlexKvStore store;
-    flex_kv_init(&store);
-
-    if (!flex_kv_set(&store, "ollama.endpoint", settings.ollamaEndpoint.c_str()) ||
-        !flex_kv_set(&store, "ollama.model", settings.ollamaModel.c_str()) ||
-        !flex_kv_set_float(&store, "ollama.temperature", settings.ollamaTemperature) ||
-        !flex_kv_set_int(&store, "ollama.num_ctx", settings.ollamaNumCtx) ||
-        !flex_kv_set_int(&store, "ollama.timeout", settings.ollamaTimeout) ||
-        !flex_kv_set(&store, "audio.input_device", settings.audioInputDevice.c_str()) ||
-        !flex_kv_set_int(&store, "tts.rate", settings.ttsRate) ||
-        !flex_kv_set_int(&store, "tts.volume", settings.ttsVolume)) {
+    if (!flex_app_config_to_kv(&cConfig, &store)) {
         return {false, "Failed to assemble key-value store pairs (capacity exceeded)"};
-    }
-
-    if (!settings.whisperModelPath.empty()) {
-        if (!flex_kv_set(&store, "whisper.model_path", settings.whisperModelPath.c_str())) {
-            return {false, "Failed to store whisper.model_path"};
-        }
     }
 
     // Step 3: Serialize to buffer
@@ -313,4 +206,3 @@ SettingsSaveResult SettingsPersistenceService::saveSettings(
 }
 
 } // namespace flex
-

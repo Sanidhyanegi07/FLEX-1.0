@@ -89,6 +89,10 @@ public:
     // Speech Controls
     bool speak(const QString& text, bool purgePrevious = true);
     void stop();
+    void setRate(int rate);
+    [[nodiscard]] int rate() const;
+    void setVolume(int volume);
+    [[nodiscard]] int volume() const;
 
     // State Inspection
     [[nodiscard]] bool isSpeaking() const;

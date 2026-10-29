@@ -1,5 +1,7 @@
 #include "flex_ui.hpp"
 #include "flex/backend.hpp"
+#include "flex/settings_persistence_service.hpp"
+#include <QTemporaryDir>
 
 #include <QApplication>
 #include <QDateTime>
@@ -689,6 +691,46 @@ void test_projects_and_memory_views()
     EXPECT_TRUE(QDir(projView.currentRootPath()).exists());
 }
 
+void test_settings_view_ui_persistence()
+{
+    std::cout << "[Test 14] SettingsView UI controls and isolated disk persistence...\n";
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+
+    QString testConfigPath = tempDir.filePath("ui_test_config.ini");
+    qputenv("FLEX_CONFIG_PATH", testConfigPath.toUtf8());
+
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, nullptr);
+
+    flex::ui::SettingsView settingsView(coordinator);
+    QCoreApplication::processEvents();
+
+    // Verify UI defaults were loaded
+    auto initialLoad = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(initialLoad.success);
+    EXPECT_STR_EQ("qwen2.5-coder:3b", initialLoad.settings.ollamaModel);
+
+    // Save settings explicitly via UI
+    auto* saveBtn = settingsView.findChild<QPushButton*>("PrimaryButton");
+    EXPECT_TRUE(saveBtn != nullptr);
+    if (saveBtn) {
+        saveBtn->click();
+        QCoreApplication::processEvents();
+    }
+
+    // Verify config file was created on disk
+    EXPECT_TRUE(QFile::exists(testConfigPath));
+
+    auto savedLoad = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(savedLoad.success);
+    EXPECT_TRUE(savedLoad.fileExisted);
+    EXPECT_STR_EQ("qwen2.5-coder:3b", savedLoad.settings.ollamaModel);
+
+    qunsetenv("FLEX_CONFIG_PATH");
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -717,6 +759,7 @@ int main(int argc, char* argv[])
     test_chat_view_voice_controls();
     test_shell_restoration_and_view_switching();
     test_projects_and_memory_views();
+    test_settings_view_ui_persistence();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

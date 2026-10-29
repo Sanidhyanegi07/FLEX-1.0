@@ -52,7 +52,28 @@ public slots:
         m_comInitialized = true;
 
         hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (void**)&m_voice);
-        return SUCCEEDED(hr) && (m_voice != nullptr);
+        if (SUCCEEDED(hr) && (m_voice != nullptr)) {
+            m_voice->SetRate(static_cast<long>(m_rate));
+            m_voice->SetVolume(static_cast<USHORT>(m_volume));
+            return true;
+        }
+        return false;
+    }
+
+    void setRate(int rate)
+    {
+        m_rate = rate;
+        if (m_voice) {
+            m_voice->SetRate(static_cast<long>(rate));
+        }
+    }
+
+    void setVolume(int volume)
+    {
+        m_volume = volume;
+        if (m_voice) {
+            m_voice->SetVolume(static_cast<USHORT>(volume));
+        }
     }
 
     void speakText(const QString& text, bool purgePrevious)
@@ -149,6 +170,8 @@ private:
     ISpVoice* m_voice{nullptr};
     bool m_comInitialized{false};
     QTimer* m_pollTimer{nullptr};
+    int m_rate{0};
+    int m_volume{100};
 };
 
 /**
@@ -231,12 +254,34 @@ public:
         return speaking;
     }
 
+    void setRate(int rate) override
+    {
+        m_rate = rate;
+        if (m_worker && m_thread && m_thread->isRunning()) {
+            QMetaObject::invokeMethod(m_worker, "setRate", Qt::QueuedConnection, Q_ARG(int, rate));
+        }
+    }
+
+    [[nodiscard]] int rate() const override { return m_rate; }
+
+    void setVolume(int volume) override
+    {
+        m_volume = volume;
+        if (m_worker && m_thread && m_thread->isRunning()) {
+            QMetaObject::invokeMethod(m_worker, "setVolume", Qt::QueuedConnection, Q_ARG(int, volume));
+        }
+    }
+
+    [[nodiscard]] int volume() const override { return m_volume; }
+
     SapiWorker* worker() const { return m_worker; }
 
 private:
     QThread* m_thread{nullptr};
     SapiWorker* m_worker{nullptr};
     bool m_initialized{false};
+    int m_rate{0};
+    int m_volume{100};
 };
 
 #else
@@ -398,6 +443,36 @@ TtsError TextToSpeechService::lastError() const
 QString TextToSpeechService::lastErrorMessage() const
 {
     return m_impl->m_lastErrorMessage;
+}
+
+void TextToSpeechService::setRate(int rate)
+{
+    if (m_impl->m_engine) {
+        m_impl->m_engine->setRate(rate);
+    }
+}
+
+int TextToSpeechService::rate() const
+{
+    if (m_impl->m_engine) {
+        return m_impl->m_engine->rate();
+    }
+    return 0;
+}
+
+void TextToSpeechService::setVolume(int volume)
+{
+    if (m_impl->m_engine) {
+        m_impl->m_engine->setVolume(volume);
+    }
+}
+
+int TextToSpeechService::volume() const
+{
+    if (m_impl->m_engine) {
+        return m_impl->m_engine->volume();
+    }
+    return 100;
 }
 
 void TextToSpeechService::setEngine(std::shared_ptr<ITextToSpeechEngine> engine)

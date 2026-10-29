@@ -477,3 +477,155 @@ const char* flex_cfg_status_to_string(flex_cfg_status_t status) {
         default: return "UNKNOWN";
     }
 }
+
+void flex_app_config_init_defaults(FlexAppConfig* config) {
+    if (!config) return;
+    memset(config, 0, sizeof(FlexAppConfig));
+    strncpy(config->endpoint, "http://127.0.0.1:11434", sizeof(config->endpoint) - 1);
+    strncpy(config->model, "qwen2.5-coder:3b", sizeof(config->model) - 1);
+    config->temperature = 0.2;
+    config->num_ctx = 4096;
+    config->timeout_seconds = 30;
+    config->audio_input_device[0] = '\0';
+    config->tts_rate = 0;
+    config->tts_volume = 100;
+    config->whisper_model_path[0] = '\0';
+}
+
+bool flex_validate_app_config(
+    const FlexAppConfig* config,
+    FlexAppConfigValidation* out_validation
+) {
+    if (out_validation) {
+        memset(out_validation, 0, sizeof(FlexAppConfigValidation));
+        out_validation->is_valid = true;
+    }
+    if (!config) {
+        if (out_validation) {
+            out_validation->is_valid = false;
+            out_validation->error_count = 1;
+            snprintf(out_validation->errors[0], sizeof(out_validation->errors[0]), "Configuration is NULL");
+        }
+        return false;
+    }
+
+    bool valid = true;
+    flex_cfg_result_t res;
+
+    #define RECORD_CFG_ERR(func_call, field_name) do { \
+        if ((func_call) != FLEX_CFG_VALID) { \
+            valid = false; \
+            if (out_validation && out_validation->error_count < 8) { \
+                snprintf(out_validation->errors[out_validation->error_count], \
+                         sizeof(out_validation->errors[0]), "%s: %s", field_name, res.error_detail); \
+                out_validation->error_count++; \
+            } \
+        } \
+    } while(0)
+
+    RECORD_CFG_ERR(flex_validate_endpoint_url(config->endpoint, &res), "endpoint");
+    RECORD_CFG_ERR(flex_validate_model_name(config->model, &res), "model");
+    RECORD_CFG_ERR(flex_validate_temperature(config->temperature, &res), "temperature");
+    RECORD_CFG_ERR(flex_validate_context_window(config->num_ctx, &res), "num_ctx");
+    RECORD_CFG_ERR(flex_validate_timeout(config->timeout_seconds, &res), "timeout_seconds");
+    RECORD_CFG_ERR(flex_validate_tts_rate(config->tts_rate, &res), "tts_rate");
+    RECORD_CFG_ERR(flex_validate_tts_volume(config->tts_volume, &res), "tts_volume");
+
+    if (config->whisper_model_path[0] != '\0') {
+        RECORD_CFG_ERR(flex_validate_whisper_path(config->whisper_model_path, &res), "whisper_model_path");
+    }
+
+    #undef RECORD_CFG_ERR
+
+    if (out_validation) {
+        out_validation->is_valid = valid;
+    }
+    return valid;
+}
+
+bool flex_app_config_from_kv(
+    const FlexKvStore* store,
+    FlexAppConfig* out_config,
+    FlexAppConfigValidation* out_validation
+) {
+    if (!store || !out_config) return false;
+    flex_app_config_init_defaults(out_config);
+
+    const char* ep = flex_kv_get_str(store, "ollama.endpoint");
+    if (ep && ep[0] != '\0') {
+        strncpy(out_config->endpoint, ep, sizeof(out_config->endpoint) - 1);
+        out_config->endpoint[sizeof(out_config->endpoint) - 1] = '\0';
+    }
+
+    const char* mdl = flex_kv_get_str(store, "ollama.model");
+    if (mdl && mdl[0] != '\0') {
+        strncpy(out_config->model, mdl, sizeof(out_config->model) - 1);
+        out_config->model[sizeof(out_config->model) - 1] = '\0';
+    }
+
+    double temp = 0.0;
+    if (flex_kv_parse_float(store, "ollama.temperature", &temp) == FLEX_KV_OK) {
+        out_config->temperature = temp;
+    }
+
+    long long ctx = 0;
+    if (flex_kv_parse_int(store, "ollama.num_ctx", &ctx) == FLEX_KV_OK) {
+        out_config->num_ctx = (int)ctx;
+    }
+
+    long long timeout = 0;
+    if (flex_kv_parse_int(store, "ollama.timeout", &timeout) == FLEX_KV_OK) {
+        out_config->timeout_seconds = (int)timeout;
+    }
+
+    const char* audio = flex_kv_get_str(store, "audio.input_device");
+    if (audio) {
+        strncpy(out_config->audio_input_device, audio, sizeof(out_config->audio_input_device) - 1);
+        out_config->audio_input_device[sizeof(out_config->audio_input_device) - 1] = '\0';
+    }
+
+    long long rate = 0;
+    if (flex_kv_parse_int(store, "tts.rate", &rate) == FLEX_KV_OK) {
+        out_config->tts_rate = (int)rate;
+    }
+
+    long long vol = 0;
+    if (flex_kv_parse_int(store, "tts.volume", &vol) == FLEX_KV_OK) {
+        out_config->tts_volume = (int)vol;
+    }
+
+    const char* whisper = flex_kv_get_str(store, "whisper.model_path");
+    if (whisper && whisper[0] != '\0') {
+        strncpy(out_config->whisper_model_path, whisper, sizeof(out_config->whisper_model_path) - 1);
+        out_config->whisper_model_path[sizeof(out_config->whisper_model_path) - 1] = '\0';
+    }
+
+    return flex_validate_app_config(out_config, out_validation);
+}
+
+bool flex_app_config_to_kv(
+    const FlexAppConfig* config,
+    FlexKvStore* out_store
+) {
+    if (!config || !out_store) return false;
+    flex_kv_init(out_store);
+
+    if (!flex_kv_set(out_store, "ollama.endpoint", config->endpoint) ||
+        !flex_kv_set(out_store, "ollama.model", config->model) ||
+        !flex_kv_set_float(out_store, "ollama.temperature", config->temperature) ||
+        !flex_kv_set_int(out_store, "ollama.num_ctx", config->num_ctx) ||
+        !flex_kv_set_int(out_store, "ollama.timeout", config->timeout_seconds) ||
+        !flex_kv_set(out_store, "audio.input_device", config->audio_input_device) ||
+        !flex_kv_set_int(out_store, "tts.rate", config->tts_rate) ||
+        !flex_kv_set_int(out_store, "tts.volume", config->tts_volume)) {
+        return false;
+    }
+
+    if (config->whisper_model_path[0] != '\0') {
+        if (!flex_kv_set(out_store, "whisper.model_path", config->whisper_model_path)) {
+            return false;
+        }
+    }
+
+    return true;
+}

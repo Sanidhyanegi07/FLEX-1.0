@@ -1,6 +1,7 @@
 #ifndef FLEX_CONFIG_VALIDATOR_H
 #define FLEX_CONFIG_VALIDATOR_H
 
+#include "kv_store.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -8,6 +9,54 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct {
+    char endpoint[128];
+    char model[128];
+    double temperature;
+    int num_ctx;
+    int timeout_seconds;
+    char audio_input_device[128];
+    int tts_rate;
+    int tts_volume;
+    char whisper_model_path[256];
+} FlexAppConfig;
+
+typedef struct {
+    bool is_valid;
+    int error_count;
+    char errors[8][128];
+} FlexAppConfigValidation;
+
+/**
+ * Initializes FlexAppConfig with production defaults.
+ */
+void flex_app_config_init_defaults(FlexAppConfig* config);
+
+/**
+ * Validates complete application configuration against all policy bounds.
+ */
+bool flex_validate_app_config(
+    const FlexAppConfig* config,
+    FlexAppConfigValidation* out_validation
+);
+
+/**
+ * Maps and validates a FlexKvStore into a FlexAppConfig structure.
+ */
+bool flex_app_config_from_kv(
+    const FlexKvStore* store,
+    FlexAppConfig* out_config,
+    FlexAppConfigValidation* out_validation
+);
+
+/**
+ * Serializes a FlexAppConfig into a FlexKvStore.
+ */
+bool flex_app_config_to_kv(
+    const FlexAppConfig* config,
+    FlexKvStore* out_store
+);
 
 typedef enum {
     FLEX_CFG_VALID = 0,

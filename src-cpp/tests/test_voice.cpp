@@ -410,6 +410,11 @@ public:
         return m_isSpeaking;
     }
 
+    void setRate(int rate) override { m_rate = rate; }
+    void setVolume(int volume) override { m_volume = volume; }
+    [[nodiscard]] int rate() const override { return m_rate; }
+    [[nodiscard]] int volume() const override { return m_volume; }
+
     [[nodiscard]] const std::vector<std::string>& spokenTexts() const { return m_spokenTexts; }
     [[nodiscard]] int stopCalledCount() const { return m_stopCalledCount; }
 
@@ -418,6 +423,8 @@ private:
     bool m_failInit{false};
     bool m_failSpeak{false};
     bool m_autoFinish{false};
+    int m_rate{0};
+    int m_volume{100};
     bool m_isSpeaking{false};
     int m_stopCalledCount{0};
     std::vector<std::string> m_spokenTexts;
@@ -933,6 +940,14 @@ void test_tts_service_lifecycle_and_mock_synthesis()
     EXPECT_EQ(static_cast<int>(flex::voice::TtsState::Speaking), static_cast<int>(service.state()));
     EXPECT_EQ(std::size_t(1), mockEngine->spokenTexts().size());
     EXPECT_STR_EQ("FLEX 1.0 speech foundation operational.", mockEngine->spokenTexts()[0]);
+
+    // Track A Hardware Preferences: Rate and Volume
+    EXPECT_EQ(0, service.rate());
+    EXPECT_EQ(100, service.volume());
+    service.setRate(3);
+    EXPECT_EQ(3, service.rate());
+    service.setVolume(75);
+    EXPECT_EQ(75, service.volume());
 }
 
 void test_tts_completion_propagation()
