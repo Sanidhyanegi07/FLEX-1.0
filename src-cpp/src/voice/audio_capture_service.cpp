@@ -1,4 +1,5 @@
 #include "flex/voice/audio_capture_service.hpp"
+#include "audio_dsp.h"
 
 #include <QAudioDevice>
 #include <QAudioFormat>
@@ -129,23 +130,14 @@ AudioResampleResult convertAndResampleTo16kMono(
     } else {
         double ratio = static_cast<double>(targetSampleRate) / static_cast<double>(sourceSampleRate);
         size_t numOut = static_cast<size_t>(std::round(static_cast<double>(numInputFrames) * ratio));
-        resampled.reserve(numOut);
-
-        double step = static_cast<double>(sourceSampleRate) / static_cast<double>(targetSampleRate);
-        for (size_t outIdx = 0; outIdx < numOut; ++outIdx) {
-            double inPos = static_cast<double>(outIdx) * step;
-            size_t idx0 = static_cast<size_t>(inPos);
-            double frac = inPos - static_cast<double>(idx0);
-
-            float s0 = (idx0 < numInputFrames) ? monoInput[idx0] : monoInput.back();
-            float s1 = (idx0 + 1 < numInputFrames) ? monoInput[idx0 + 1] : s0;
-
-            double interp = (1.0 - frac) * static_cast<double>(s0) + frac * static_cast<double>(s1);
-            if (std::isnan(interp)) interp = 0.0;
-            if (interp > 1.0) interp = 1.0;
-            if (interp < -1.0) interp = -1.0;
-            resampled.push_back(static_cast<float>(interp));
-        }
+        resampled.resize(numOut + 16);
+        size_t actualOut = flex_audio_resample_linear(
+            monoInput.data(), monoInput.size(),
+            static_cast<uint32_t>(sourceSampleRate),
+            resampled.data(), resampled.size(),
+            static_cast<uint32_t>(targetSampleRate)
+        );
+        resampled.resize(actualOut);
     }
 
     QByteArray pcmBytes;
@@ -167,24 +159,13 @@ AudioResampleResult convertAndResampleTo16kMono(
     result.buffer.durationMs = static_cast<int64_t>(
         (static_cast<double>(result.buffer.sampleCount()) / static_cast<double>(targetSampleRate)) * 1000.0);
 
-    // Diagnostic signal measurement and health checks
-    double sumSq = 0.0;
+    // Diagnostic signal measurement and health checks via C DSP core
+    float c_rms = 0.0f;
     float peakAmp = 0.0f;
-    size_t zeroCount = 0;
+    flex_audio_calculate_rms(result.buffer.samples.data(), result.buffer.samples.size(), &c_rms, &peakAmp);
+    double rms = static_cast<double>(c_rms);
+    double zeroPct = 0.0;
     bool allFinite = true;
-
-    for (float s : result.buffer.samples) {
-        if (!std::isfinite(s) || s < -1.0f || s > 1.0f) {
-            allFinite = false;
-        }
-        float absVal = std::abs(s);
-        if (absVal > peakAmp) peakAmp = absVal;
-        if (absVal < 1e-5f) zeroCount++;
-        sumSq += static_cast<double>(s) * static_cast<double>(s);
-    }
-
-    double rms = result.buffer.samples.empty() ? 0.0 : std::sqrt(sumSq / static_cast<double>(result.buffer.samples.size()));
-    double zeroPct = result.buffer.samples.empty() ? 0.0 : (static_cast<double>(zeroCount) * 100.0 / static_cast<double>(result.buffer.samples.size()));
 
     std::cout << "[AudioConversion] Resampled: " << result.buffer.samples.size() << " samples ("
               << result.buffer.durationMs << " ms) at 16000 Hz Mono\n";

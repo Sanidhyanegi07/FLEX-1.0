@@ -1,6 +1,7 @@
 #include "command_parser.h"
 #include "test_state_manager.h"
 #include "test_orchestrator.h"
+#include "test_c_core_modules.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -348,6 +349,8 @@ int main(void)
     run_state_manager_tests(&g_tests_run, &g_tests_passed, &g_tests_failed);
 
     run_orchestrator_tests(&g_tests_run, &g_tests_passed, &g_tests_failed);
+
+    run_all_extended_c_core_tests(&g_tests_run, &g_tests_passed, &g_tests_failed);
 
     printf("========================================\n");
     printf("Test Summary:\n");

@@ -60,7 +60,7 @@ Each test target is a standalone executable in the `build/` directory and can be
 +---------------------+------------------------+------------------+-----------------------+
 | Test Suite Name     | Executable Target      | Assertion Count  | Key Subsystems Tested |
 +---------------------+------------------------+------------------+-----------------------+
-| c_core_tests        | flex_c_tests.exe       | 541 assertions   | C11 Core Engine       |
+| c_core_tests        | flex_c_tests.exe       | 954 assertions   | C11 Core Engine (42m) |
 | cpp_wrapper_tests   | flex_cpp_tests.exe     | 214 assertions   | RAII CoreSession      |
 | cpp_storage_tests   | flex_storage_tests.exe | 98 assertions    | SQLite Persistence    |
 | cpp_ollama_tests    | flex_ollama_tests.exe  | 67 assertions    | Ollama AI Client      |
@@ -68,17 +68,27 @@ Each test target is a standalone executable in the `build/` directory and can be
 | cpp_ui_tests        | flex_ui_tests.exe      | 72 assertions    | Modular Qt 6 UI       |
 | cpp_voice_tests     | flex_voice_tests.exe   | 65,371+ asserts  | Voice & Audio Pipeline|
 +---------------------+------------------------+------------------+-----------------------+
-| TOTAL               |                        | 66,363+ asserts  | 100% Passing          |
+| TOTAL               |                        | 66,776+ asserts  | 100% Passing          |
 +---------------------+------------------------+------------------+-----------------------+
 ```
 
 ### 2.1 C Core Test Suite (`flex_c_tests.exe`)
-- **Source**: `core-c/tests/test_command_parser.c`, `test_state_manager.c`, `test_orchestrator.c`.
-- **Assertions**: 541.
+- **Source**: `core-c/tests/test_command_parser.c`, `test_state_manager.c`, `test_orchestrator.c`, `test_c_core_modules.c`.
+- **Assertions**: 954 assertions across 40 specialized test suites.
 - **Coverage**:
   - `command_parser`: Exact tokenization, argument splitting, whitespace collapsing, quotation preservation, buffer overflow rejection (`> 1024` bytes), control character stripping.
   - `state_manager`: Finite state machine (`IDLE` -> `PROCESSING` -> `STOPPING`), state validation, monotonic 64-bit operation IDs, atomic operation type tags (`NONE`, `CHAT`, `VOICE`, `MEMORY`).
   - `orchestrator`: Thread-safe command dispatch, rejection of concurrent commands during busy state, atomic cleanup.
+  - `request_validator`: RFC 3629 UTF-8 checking, injection heuristics, token estimation, control character filtering.
+  - `error_classifier`: HTTP/SQLite/Voice error translation, retry categorization, JSON error packaging.
+  - `audio_dsp`: Linear 16 kHz resampler, multi-channel downmixing, RMS/dB calculation, and voice activity detection.
+  - `voice_fsm`: Voice interaction FSM with single-submission authorization invariant.
+  - `ai_stream_parser` & `json_validator`: Zero-allocation NDJSON streaming parser, JSON grammar validator.
+  - `theme_engine`: Palette computation, WCAG contrast calculation, and desktop stylesheet generator.
+  - `bloom_filter` & `kv_store`: 512-bit probabilistic term indexing and key-value config serialization.
+  - `memory_index`, `conversation_record`, `sqlite_codec`: Storage schema validation, SQL escaping, keyword search.
+  - `security_sandbox`, `operation_policy`, `tool_policy`: Rate limiting, path traversal containment, tool confirmation gating.
+  - `math_evaluator`, `diff_engine`, `csv_table_formatter`, `text_tokenizer`, `lexical_analyzer`, and 10+ utility modules.
 
 ### 2.2 C++ Core Wrapper Test Suite (`flex_cpp_tests.exe`)
 - **Source**: `src-cpp/tests/test_flex_wrapper.cpp`.

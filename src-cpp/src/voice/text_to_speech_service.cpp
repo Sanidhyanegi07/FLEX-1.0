@@ -1,4 +1,5 @@
 #include "flex/voice/text_to_speech_service.hpp"
+#include "tts_pipeline.h"
 
 #include <QCoreApplication>
 #include <QMetaObject>
@@ -343,7 +344,12 @@ bool TextToSpeechService::speak(const QString& text, bool purgePrevious)
         return false;
     }
 
-    bool ok = m_impl->m_engine->speak(trimmed.toStdString(), purgePrevious);
+    char norm_buf[1024];
+    std::string raw_str = trimmed.toStdString();
+    size_t norm_len = flex_tts_normalize_text(raw_str.c_str(), norm_buf, sizeof(norm_buf));
+    std::string speech_input = (norm_len > 0) ? std::string(norm_buf, norm_len) : raw_str;
+
+    bool ok = m_impl->m_engine->speak(speech_input, purgePrevious);
     if (!ok) {
         m_impl->m_state = TtsState::Error;
         m_impl->m_lastError = TtsError::SynthesisFailed;

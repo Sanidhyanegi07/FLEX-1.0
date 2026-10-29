@@ -33,12 +33,54 @@ else()
 endif()
 
 # ------------------------------------------------------------------------------
-# Core C Library (C11 bounded command parser, state manager, orchestrator)
+# Core C Library (C11 bounded engine, validation, policy, DSP, stream parser)
 # ------------------------------------------------------------------------------
 add_library(flex_core_c STATIC
     core-c/src/command_parser.c
     core-c/src/state_manager.c
     core-c/src/orchestrator.c
+    core-c/src/request_validator.c
+    core-c/src/error_classifier.c
+    core-c/src/session_state.c
+    core-c/src/operation_policy.c
+    core-c/src/tool_policy.c
+    core-c/src/ai_stream_parser.c
+    core-c/src/audio_dsp.c
+    core-c/src/config_validator.c
+    core-c/src/voice_fsm.c
+    core-c/src/memory_index.c
+    core-c/src/conversation_record.c
+    core-c/src/workspace_analyzer.c
+    core-c/src/telemetry_collector.c
+    core-c/src/response_formatter.c
+    core-c/src/ai_payload_builder.c
+    core-c/src/theme_engine.c
+    core-c/src/prompt_template.c
+    core-c/src/whisper_pipeline.c
+    core-c/src/tts_pipeline.c
+    core-c/src/command_dispatcher.c
+    core-c/src/context_compressor.c
+    core-c/src/sqlite_codec.c
+    core-c/src/markdown_parser.c
+    core-c/src/text_tokenizer.c
+    core-c/src/json_validator.c
+    core-c/src/security_sandbox.c
+    core-c/src/lexical_analyzer.c
+    core-c/src/math_evaluator.c
+    core-c/src/csv_table_formatter.c
+    core-c/src/diff_engine.c
+    core-c/src/cache_table.c
+    core-c/src/sysinfo_collector.c
+    core-c/src/color_palette.c
+    core-c/src/unicode_support.c
+    core-c/src/hash_table.c
+    core-c/src/base64_codec.c
+    core-c/src/url_parser.c
+    core-c/src/regex_matcher.c
+    core-c/src/crc32.c
+    core-c/src/ansi_escape.c
+    core-c/src/bloom_filter.c
+    core-c/src/kv_store.c
 )
 
 target_include_directories(flex_core_c PUBLIC
@@ -253,11 +295,12 @@ endif()
 if(FLEX_BUILD_TESTS)
     enable_testing()
 
-    # 1. Existing C core test suite
+    # 1. C core test suite
     add_executable(flex_c_tests
         core-c/tests/test_command_parser.c
         core-c/tests/test_state_manager.c
         core-c/tests/test_orchestrator.c
+        core-c/tests/test_c_core_modules.c
     )
 
     target_include_directories(flex_c_tests PRIVATE

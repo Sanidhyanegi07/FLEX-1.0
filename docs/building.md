@@ -129,7 +129,7 @@ After a successful build, the following binaries are produced inside the build d
 |---|---|
 | `build/flex_desktop.exe` | **Native Qt 6 Desktop Application** |
 | `build/flex_bridge.exe` | Standalone C Core Bridge CLI |
-| `build/flex_c_tests.exe` | C Core Test Runner (541 assertions) |
+| `build/flex_c_tests.exe` | C Core Test Runner (954 assertions across 40 suites) |
 | `build/flex_cpp_tests.exe` | C++ Core Wrapper Test Runner (214 assertions) |
 | `build/flex_storage_tests.exe` | Native SQLite Storage Test Runner (98 assertions) |
 | `build/flex_ollama_tests.exe` | Native Ollama Client Test Runner (67 assertions) |

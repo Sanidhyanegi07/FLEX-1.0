@@ -1,4 +1,6 @@
 #include "flex/backend.hpp"
+#include "request_validator.h"
+#include "error_classifier.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -149,7 +151,9 @@ public:
         std::function<void(const std::string&)> onToken)
     {
         std::string cleanMsg = trimString(request.message);
-        if (cleanMsg.empty()) {
+        flex_prompt_validation_result_t val_res;
+        flex_req_status_t vstatus = flex_validate_chat_prompt(cleanMsg.c_str(), 1024, &val_res);
+        if (cleanMsg.empty() || vstatus == FLEX_REQ_ERR_NULL_PTR || vstatus == FLEX_REQ_ERR_EMPTY) {
             BackendError err{
                 BackendErrorCategory::InvalidInput, 0,
                 "User message cannot be empty or whitespace-only."

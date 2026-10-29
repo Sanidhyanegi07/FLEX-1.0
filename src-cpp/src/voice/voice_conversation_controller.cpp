@@ -1,5 +1,6 @@
 #include "flex/voice/voice_conversation_controller.hpp"
 #include "flex/voice/whisper_model_resolver.hpp"
+#include "voice_fsm.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -285,6 +286,20 @@ bool VoiceConversationController::submitTranscript(const QString& transcriptText
 
     if (m_coordinator->coreSession().isProcessing()) {
         m_lastErrorMessage = "System is currently busy with another operation.";
+        emit errorOccurred(m_lastErrorMessage);
+        return false;
+    }
+
+    // Authoritative Voice FSM check: verify submission invariant
+    flex_voice_fsm_t fsm;
+    flex_voice_fsm_init(&fsm);
+    flex_voice_fsm_handle_event(&fsm, FLEX_VOICE_EVT_START_LISTEN, nullptr);
+    flex_voice_fsm_handle_event(&fsm, FLEX_VOICE_EVT_STOP_LISTEN, nullptr);
+    QByteArray utf8Bytes = trimmed.toUtf8();
+    flex_voice_fsm_handle_event(&fsm, FLEX_VOICE_EVT_TRANSCRIPT_READY, utf8Bytes.constData());
+    char auth_buf[1024];
+    if (!flex_voice_fsm_authorize_submission(&fsm, auth_buf, sizeof(auth_buf))) {
+        m_lastErrorMessage = "Submission blocked by Voice FSM safety invariant.";
         emit errorOccurred(m_lastErrorMessage);
         return false;
     }
