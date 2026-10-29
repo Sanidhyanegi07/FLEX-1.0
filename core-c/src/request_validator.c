@@ -1,4 +1,5 @@
 #include "request_validator.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -110,23 +111,6 @@ bool flex_is_valid_utf8(const char* text, size_t len, size_t* out_error_offset) 
     return true;
 }
 
-static bool contains_case_insensitive(const char* haystack, const char* needle) {
-    if (!haystack || !needle) return false;
-    size_t needle_len = strlen(needle);
-    if (needle_len == 0) return true;
-
-    for (const char* h = haystack; *h; ++h) {
-        size_t j = 0;
-        while (h[j] && needle[j] && (tolower((unsigned char)h[j]) == tolower((unsigned char)needle[j]))) {
-            j++;
-        }
-        if (j == needle_len) {
-            return true;
-        }
-    }
-    return false;
-}
-
 flex_req_status_t flex_validate_chat_prompt(
     const char* prompt,
     size_t max_len,
@@ -224,7 +208,7 @@ flex_req_status_t flex_validate_chat_prompt(
     /* Check for suspicious prompt injection patterns */
     bool has_suspicious = false;
     for (size_t k = 0; S_SUSPICIOUS_PATTERNS[k] != NULL; ++k) {
-        if (contains_case_insensitive(prompt, S_SUSPICIOUS_PATTERNS[k])) {
+        if (flex_str_casestr(prompt, S_SUSPICIOUS_PATTERNS[k]) != NULL) {
             has_suspicious = true;
             break;
         }

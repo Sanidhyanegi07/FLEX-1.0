@@ -1,4 +1,5 @@
 #include "memory_index.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -46,25 +47,14 @@ bool flex_memory_index_add(
 static float score_record_match(const char* text, const char* query, size_t* out_offset) {
     if (!text || !query || *query == '\0') return 0.0f;
 
-    size_t text_len = strlen(text);
-    size_t query_len = strlen(query);
-
     float score = 0.0f;
     *out_offset = 0;
 
-    /* Check exact case-insensitive substring match if query fits */
-    if (query_len <= text_len) {
-        for (size_t i = 0; i + query_len <= text_len; ++i) {
-            size_t j = 0;
-            while (j < query_len && (tolower((unsigned char)text[i + j]) == tolower((unsigned char)query[j]))) {
-                j++;
-            }
-            if (j == query_len) {
-                score += 10.0f; /* High reward for substring match */
-                *out_offset = i;
-                break;
-            }
-        }
+    /* Check exact case-insensitive substring match */
+    const char* sub = flex_str_casestr(text, query);
+    if (sub) {
+        score += 10.0f; /* High reward for substring match */
+        *out_offset = (size_t)(sub - text);
     }
 
     /* Word token matching with plural stem support */
@@ -82,14 +72,10 @@ static float score_record_match(const char* text, const char* query, size_t* out
                 stem[--stem_len] = '\0';
             }
 
-            for (size_t i = 0; i + stem_len <= text_len; ++i) {
-                size_t j = 0;
-                while (j < stem_len && (tolower((unsigned char)text[i + j]) == tolower((unsigned char)stem[j]))) {
-                    j++;
-                }
-                if (j == stem_len) {
-                    score += 2.0f;
-                }
+            const char* match = text;
+            while ((match = flex_str_casestr(match, stem)) != NULL) {
+                score += 2.0f;
+                match++;
             }
         }
         token = strtok(NULL, " \t\r\n.,?!;:");

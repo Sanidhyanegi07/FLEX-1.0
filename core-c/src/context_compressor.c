@@ -1,4 +1,5 @@
 #include "context_compressor.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -34,12 +35,7 @@ size_t flex_extract_key_terms(
         size_t len = strlen(token);
         if (len >= 3) {
             char lower[32];
-            size_t j = 0;
-            while (token[j] && j + 1 < sizeof(lower)) {
-                lower[j] = (char)tolower((unsigned char)token[j]);
-                j++;
-            }
-            lower[j] = '\0';
+            flex_str_tolower(token, lower, sizeof(lower));
 
             if (!is_common_stopword(lower)) {
                 /* Check duplicate */

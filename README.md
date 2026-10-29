@@ -79,8 +79,8 @@ graph TD
 
 ## 2. Core Features & Capabilities
 
-- **Authoritative C11 Core Engine (`core-c/` — 50.22% Production SLOC)**:
-  - **42 Production C Modules**: Over 7,280 lines of hand-crafted, bounded, zero-allocation C11 systems logic.
+- **Authoritative C11 Core Engine (`core-c/` — 50.66% Production SLOC)**:
+  - **47 Production C Modules**: Over 7,410 lines of hand-crafted, bounded, zero-allocation C11 systems logic.
   - **Strict Input Validation**: Bounded 1024-byte input validation (`FLEX_MAX_INPUT_LEN = 1024`), RFC 3629 UTF-8 checking, control character stripping, and prompt injection detection.
   - **Deterministic State Machines**: Explicit FSMs (`IDLE` -> `PROCESSING` -> `STOPPING`), monotonic operation tracking, and strict voice submission invariants (at most one backend dispatch per confirmed transcript).
   - **Native Audio DSP**: 16 kHz linear downsampling, RMS/dB metering, float conversions, and voice activity detection in pure C.
@@ -114,13 +114,13 @@ To ensure genuine low-level systems programming rigor, FLEX 1.0 maintains **at l
 =================================================================
  PRODUCTION RATIO SUMMARY (First-Party Non-Comment Lines)
 =================================================================
-  Total Executable SLOC: 14,622
-  C Production SLOC:       7,398 (50.59%)
-  C++ Production SLOC:     7,224 (49.41%)
+  Total Executable SLOC: 14,631
+  C Production SLOC:       7,412 (50.66%)
+  C++ Production SLOC:     7,219 (49.34%)
 -----------------------------------------------------------------
-  Total Raw Lines:        17,505
-  C Raw Lines:             8,751 (49.99%)
-  C++ Raw Lines:           8,754 (50.01%)
+  Total Raw Lines:        17,526
+  C Raw Lines:             8,779 (50.09%)
+  C++ Raw Lines:           8,747 (49.91%)
 =================================================================
 ```
 

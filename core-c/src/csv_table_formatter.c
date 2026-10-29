@@ -1,21 +1,8 @@
 #include "csv_table_formatter.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
-
-static void trim_cell(char* cell) {
-    size_t len = strlen(cell);
-    while (len > 0 && isspace((unsigned char)cell[len - 1])) {
-        cell[--len] = '\0';
-    }
-    size_t start = 0;
-    while (cell[start] && isspace((unsigned char)cell[start])) {
-        start++;
-    }
-    if (start > 0) {
-        memmove(cell, &cell[start], len - start + 1);
-    }
-}
 
 bool flex_table_parse_csv(const char* csv_data, size_t len, FlexTableGrid* out_grid) {
     if (!csv_data || !out_grid) return false;
@@ -39,7 +26,7 @@ bool flex_table_parse_csv(const char* csv_data, size_t len, FlexTableGrid* out_g
             if (c == '\r') continue;
             
             out_grid->cells[row][col][cell_pos] = '\0';
-            trim_cell(out_grid->cells[row][col]);
+            flex_str_trim(out_grid->cells[row][col]);
             
             size_t cell_len = strlen(out_grid->cells[row][col]);
             if (cell_len > out_grid->col_widths[col]) {

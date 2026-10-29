@@ -1,4 +1,5 @@
 #include "flex/storage.hpp"
+#include "string_util.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -31,23 +32,16 @@ QString utcNowIso()
 std::string normalizeString(const std::string& input)
 {
     std::string s = input;
-    // trim left
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
-        return !std::isspace(ch);
-    }));
-    // trim right
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
-        return !std::isspace(ch);
-    }).base(), s.end());
+    flex_str_trim(s.data());
+    s.resize(std::strlen(s.c_str()));
     return s;
 }
 
 std::string toLowerString(const std::string& input)
 {
-    std::string s = input;
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
+    std::string s(input.size() + 1, '\0');
+    size_t len = flex_str_tolower(input.c_str(), s.data(), s.size());
+    s.resize(len);
     return s;
 }
 

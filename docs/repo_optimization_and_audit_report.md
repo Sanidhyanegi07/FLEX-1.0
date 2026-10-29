@@ -12,11 +12,11 @@
 This document provides an exhaustive, line-by-line audit and ledger of all performance, algorithmic, memory, and architectural optimizations implemented across the entire FLEX 1.0 repository.
 
 ### Key Optimization Metrics Achieved:
-- **First-Party Production C SLOC**: **7,398 SLOC (50.59%)** (Surpassing the 50.0% goal).
-- **First-Party Production C++ SLOC**: **7,224 SLOC (49.41%)**.
-- **Total First-Party Executable SLOC**: **14,622 SLOC**.
-- **C Unit Tests Passing**: **954 / 954 (100% passing, 0 failures)** across 40 suites.
-- **CTest Native Suites Passing**: **7 / 7 (100% passing)** with test execution time reduced from 13.13s to **12.67s**.
+- **First-Party Production C SLOC**: **7,412 SLOC (50.66%)** (Surpassing the 50.0% goal).
+- **First-Party Production C++ SLOC**: **7,219 SLOC (49.34%)**.
+- **Total First-Party Executable SLOC**: **14,631 SLOC**.
+- **C Unit Tests Passing**: **987 / 987 (100% passing, 0 failures)** across 41 suites.
+- **CTest Native Suites Passing**: **7 / 7 (100% passing)** in **13.03s**.
 - **Automated Assertions Verified**: **66,776+ passing assertions**.
 - **Dead Code Elimination**: Enabled via `-ffunction-sections -fdata-sections -Wl,--gc-sections`.
 - **Branchless & Vectorized Execution**: Applied across audio DSP, hashing, Bloom filter bit-counting, and Base64 decoding.
@@ -101,8 +101,25 @@ This document provides an exhaustive, line-by-line audit and ledger of all perfo
 
 ### 3.9 Desktop Theme Engine (`core-c/src/theme_engine.c` & `src-cpp/src/ui/theme.cpp`)
 - **Consolidated CSS Generation**:
-  - Eliminated 450 lines of duplicate static CSS strings in C++ by generating the entire space-obsidian desktop stylesheet dynamically from C.
+  - Eliminated duplicate static CSS strings in C++ by generating the entire space-obsidian desktop stylesheet dynamically from C.
   - Computes palette colors and WCAG AA contrast ratios at initialization time.
+
+### 3.10 Canonical String Utility & Codebase Deduplication (`core-c/include/string_util.h` & `core-c/src/string_util.c`)
+- **DRY Architecture (Don't Repeat Yourself)**:
+  - Created a unified, high-performance, bounded C string utility module providing:
+    - `flex_str_trim()`: Fast in-place two-pointer whitespace trimming.
+    - `flex_str_tolower()`: Safe bounded lowercase ASCII conversion.
+    - `flex_str_casecmp()`: POSIX-compatible case-insensitive comparison.
+    - `flex_str_casestr()`: Fast case-insensitive substring search.
+    - `flex_str_starts_with()` & `flex_str_ends_with()`: Prefix/suffix checks.
+    - `flex_str_copy()`: Bounded, null-terminated string copying.
+  - **Eliminated Repetitive Implementations**:
+    - Deduplicated `contains_case_insensitive` in `request_validator.c`.
+    - Deduplicated manual substring search loops in `memory_index.c`.
+    - Deduplicated `trim_inplace` in `kv_store.c`.
+    - Deduplicated `trim_cell` in `csv_table_formatter.c`.
+    - Deduplicated manual `tolower` loops across `context_compressor.c`, `lexical_analyzer.c`, `workspace_analyzer.c`, and `text_tokenizer.c`.
+    - Deduplicated C++ local `trimString()` in `backend.cpp` and `normalizeString()` / `toLowerString()` in `storage.cpp` to delegate directly to canonical C routines.
 
 ---
 
@@ -128,32 +145,33 @@ Measured with `scripts/measure_loc.ps1` (excluding third-party libraries, blank 
   command_dispatcher.c                 Raw:   175 | SLOC:   150
   command_parser.c                     Raw:   165 | SLOC:   139
   config_validator.c                   Raw:   312 | SLOC:   271
-  context_compressor.c                 Raw:   146 | SLOC:   122
+  context_compressor.c                 Raw:   142 | SLOC:   118
   conversation_record.c                Raw:   205 | SLOC:   178
   crc32.c                              Raw:    77 | SLOC:    65
-  csv_table_formatter.c                Raw:   203 | SLOC:   165
+  csv_table_formatter.c                Raw:   190 | SLOC:   153
   diff_engine.c                        Raw:   163 | SLOC:   141
   error_classifier.c                   Raw:   317 | SLOC:   279
   hash_table.c                         Raw:   134 | SLOC:   111
   json_validator.c                     Raw:   472 | SLOC:   422
-  kv_store.c                           Raw:   189 | SLOC:   161
-  lexical_analyzer.c                   Raw:   198 | SLOC:   161
+  kv_store.c                           Raw:   176 | SLOC:   149
+  lexical_analyzer.c                   Raw:   191 | SLOC:   154
   markdown_parser.c                    Raw:   174 | SLOC:   144
   math_evaluator.c                     Raw:   298 | SLOC:   259
-  memory_index.c                       Raw:   144 | SLOC:   120
+  memory_index.c                       Raw:   130 | SLOC:   107
   operation_policy.c                   Raw:   159 | SLOC:   130
   orchestrator.c                       Raw:    76 | SLOC:    59
   prompt_template.c                    Raw:   111 | SLOC:    95
   regex_matcher.c                      Raw:   112 | SLOC:    92
-  request_validator.c                  Raw:   360 | SLOC:   306
+  request_validator.c                  Raw:   344 | SLOC:   292
   response_formatter.c                 Raw:   143 | SLOC:   125
   security_sandbox.c                   Raw:   141 | SLOC:   114
   session_state.c                      Raw:   201 | SLOC:   165
   sqlite_codec.c                       Raw:   137 | SLOC:   113
   state_manager.c                      Raw:   193 | SLOC:   160
+  string_util.c                        Raw:   110 | SLOC:    91
   sysinfo_collector.c                  Raw:   104 | SLOC:    88
   telemetry_collector.c                Raw:   120 | SLOC:    99
-  text_tokenizer.c                     Raw:   236 | SLOC:   195
+  text_tokenizer.c                     Raw:   225 | SLOC:   184
   theme_engine.c                       Raw:   521 | SLOC:   494
   tool_policy.c                        Raw:   240 | SLOC:   201
   tts_pipeline.c                       Raw:   170 | SLOC:   137
@@ -161,15 +179,15 @@ Measured with `scripts/measure_loc.ps1` (excluding third-party libraries, blank 
   url_parser.c                         Raw:   153 | SLOC:   125
   voice_fsm.c                          Raw:   203 | SLOC:   179
   whisper_pipeline.c                   Raw:   185 | SLOC:   152
-  workspace_analyzer.c                 Raw:   187 | SLOC:   150
-  TOTAL C PRODUCTION SOURCES           Raw:  8751 | SLOC:  7398 (50.59%)
+  workspace_analyzer.c                 Raw:   183 | SLOC:   146
+  TOTAL C PRODUCTION SOURCES           Raw:  8779 | SLOC:  7412 (50.66%)
 
 [C++ Production Modules]
-  src-cpp/src/backend.cpp              Raw:   764 | SLOC:   656
+  src-cpp/src/backend.cpp              Raw:   763 | SLOC:   655
   src-cpp/src/core_session.cpp         Raw:   217 | SLOC:   176
   src-cpp/src/main.cpp                 Raw:    25 | SLOC:    17
   src-cpp/src/ollama_client.cpp        Raw:   810 | SLOC:   678
-  src-cpp/src/storage.cpp              Raw:   858 | SLOC:   720
+  src-cpp/src/storage.cpp              Raw:   852 | SLOC:   716
   src-cpp/src/ui/ai_core_widget.cpp    Raw:   318 | SLOC:   265
   src-cpp/src/ui/chat_view.cpp         Raw:   853 | SLOC:   729
   src-cpp/src/ui/conversation_list.cpp Raw:   140 | SLOC:   111
@@ -189,14 +207,14 @@ Measured with `scripts/measure_loc.ps1` (excluding third-party libraries, blank 
   src-cpp/src/voice/text_to_speech.cpp Raw:   433 | SLOC:   358
   src-cpp/src/voice/voice_ctrl.cpp     Raw:   628 | SLOC:   526
   src-cpp/src/voice/whisper_model.cpp  Raw:    73 | SLOC:    58
-  TOTAL C++ PRODUCTION SOURCES         Raw:  8754 | SLOC:  7224 (49.41%)
+  TOTAL C++ PRODUCTION SOURCES         Raw:  8747 | SLOC:  7219 (49.34%)
 
 =================================================================
  FINAL PRODUCTION RATIO SUMMARY
 =================================================================
-  Total First-Party Executable SLOC: 14,622
-  C Production SLOC:                  7,398 (50.59%)
-  C++ Production SLOC:                7,224 (49.41%)
+  Total First-Party Executable SLOC: 14,631
+  C Production SLOC:                  7,412 (50.66%)
+  C++ Production SLOC:                7,219 (49.34%)
 =================================================================
 ```
 
@@ -205,29 +223,30 @@ Measured with `scripts/measure_loc.ps1` (excluding third-party libraries, blank 
 ## 5. Verification Results
 
 ### 5.1 C Core Test Suite (`build\flex_c_tests.exe`)
-- **Total Tests Run**: 954
-- **Passed**: 954 (100%)
+- **Total Tests Run**: 987
+- **Passed**: 987 (100%)
 - **Failed**: 0
-- **Suites**: 40 distinct subsystem suites.
+- **Suites**: 41 distinct subsystem suites.
 
 ### 5.2 Full Native Test Suite Runner (`scripts\test.ps1`)
 - **c_core_tests**: Passed (0.01s)
-- **cpp_wrapper_tests**: Passed (0.16s)
-- **cpp_storage_tests**: Passed (0.23s)
+- **cpp_wrapper_tests**: Passed (0.17s)
+- **cpp_storage_tests**: Passed (0.34s)
 - **cpp_ollama_tests**: Passed (1.23s)
 - **cpp_backend_tests**: Passed (1.08s)
-- **cpp_ui_tests**: Passed (6.93s)
-- **cpp_voice_tests**: Passed (3.00s)
-- **Overall Result**: **100% tests passed (7/7 suites)** in **12.67s**.
-- **Total Assertions**: Over **66,776 assertions**.
+- **cpp_ui_tests**: Passed (6.91s)
+- **cpp_voice_tests**: Passed (3.28s)
+- **Overall Result**: **100% tests passed (7/7 suites)** in **13.03s**.
+- **Total Assertions**: Over **66,800 assertions**.
 
 ---
 
 ## 6. Conclusion & Status
 
 The entire FLEX 1.0 repository is now fully optimized, verified, and audited:
-1. **Genuinely C-Focused**: 50.59% C SLOC authoritative systems core.
+1. **Genuinely C-Focused**: 50.66% C SLOC authoritative systems core across 47 C modules.
 2. **Algorithmically Hardened**: Lookup tables, vectorization accumulators, unrolled inner loops, $O(\log N)$ searches, and stack depth bounds.
 3. **Compiler & Linker Optimized**: Dead-code section stripping and release optimization flags in place.
-4. **All Golden Invariants Preserved**: Zero Python runtime dependencies, bounded 1024-byte C input limits, and user data fully preserved.
+4. **DRY & Deduplicated**: Canonical string utility eliminates code clones across 10 modules.
+5. **All Golden Invariants Preserved**: Zero Python runtime dependencies, bounded 1024-byte C input limits, and user data fully preserved.
 

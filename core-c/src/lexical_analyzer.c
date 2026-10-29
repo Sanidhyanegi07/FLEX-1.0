@@ -1,4 +1,5 @@
 #include "lexical_analyzer.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -31,11 +32,7 @@ FlexCodeLanguage flex_lex_detect_language(const char* tag) {
     if (!tag || tag[0] == '\0') return FLEX_LANG_UNKNOWN;
     
     char lower[32];
-    size_t i = 0;
-    for (; tag[i] && i + 1 < sizeof(lower); ++i) {
-        lower[i] = (char)tolower((unsigned char)tag[i]);
-    }
-    lower[i] = '\0';
+    flex_str_tolower(tag, lower, sizeof(lower));
     
     if (strcmp(lower, "c") == 0 || strcmp(lower, "cpp") == 0 || strcmp(lower, "c++") == 0 || strcmp(lower, "h") == 0) {
         return FLEX_LANG_C;
@@ -56,11 +53,7 @@ bool flex_lex_is_keyword(FlexCodeLanguage lang, const char* word) {
     if (!word || word[0] == '\0') return false;
     
     char lower[64];
-    size_t i = 0;
-    for (; word[i] && i + 1 < sizeof(lower); ++i) {
-        lower[i] = (char)tolower((unsigned char)word[i]);
-    }
-    lower[i] = '\0';
+    flex_str_tolower(word, lower, sizeof(lower));
     
     const char* const* table = NULL;
     switch (lang) {

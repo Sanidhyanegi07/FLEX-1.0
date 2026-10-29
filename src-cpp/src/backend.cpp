@@ -1,6 +1,7 @@
 #include "flex/backend.hpp"
 #include "request_validator.h"
 #include "error_classifier.h"
+#include "string_util.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -66,12 +67,10 @@ BackendErrorCategory mapOllamaError(OllamaErrorCode code) noexcept
 
 std::string trimString(std::string_view str)
 {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string_view::npos) {
-        return "";
-    }
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return std::string(str.substr(first, (last - first + 1)));
+    std::string s(str);
+    flex_str_trim(s.data());
+    s.resize(std::strlen(s.c_str()));
+    return s;
 }
 
 } // anonymous namespace

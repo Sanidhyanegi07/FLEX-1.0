@@ -1291,6 +1291,87 @@ static void test_kv_store_suite(int *total_run, int *total_passed, int *total_fa
     C_ASSERT(strstr(buf, "model=qwen2.5-coder:3b\n") != NULL, "Serialized contains model");
 }
 
+static void test_string_util_suite(int *total_run, int *total_passed, int *total_failed) {
+    printf("[Testing String Utilities]...\n");
+
+    /* 1. flex_str_trim */
+    char s1[] = "  hello world  \r\n\t";
+    flex_str_trim(s1);
+    C_ASSERT_STR_EQ("hello world", s1, "Trims whitespace from both ends");
+
+    char s2[] = "no_trim";
+    flex_str_trim(s2);
+    C_ASSERT_STR_EQ("no_trim", s2, "No-op when already trimmed");
+
+    char s3[] = "   \t\n  ";
+    flex_str_trim(s3);
+    C_ASSERT_STR_EQ("", s3, "All-whitespace string becomes empty");
+
+    char s4[] = "";
+    flex_str_trim(s4);
+    C_ASSERT_STR_EQ("", s4, "Empty string stays empty");
+
+    flex_str_trim(NULL);
+    C_ASSERT(true, "flex_str_trim handles NULL safely");
+
+    /* 2. flex_str_tolower */
+    char dst[32];
+    size_t len = flex_str_tolower("HeLLo WoRLD 123!", dst, sizeof(dst));
+    C_ASSERT_STR_EQ("hello world 123!", dst, "Converts to lowercase");
+    C_ASSERT(len == 16, "Returns length of converted string");
+
+    char small_dst[4];
+    len = flex_str_tolower("TESTING", small_dst, sizeof(small_dst));
+    C_ASSERT_STR_EQ("tes", small_dst, "Truncates bounded by dst_cap");
+    C_ASSERT(len == 3, "Truncated length matches");
+
+    len = flex_str_tolower(NULL, dst, sizeof(dst));
+    C_ASSERT(len == 0 && dst[0] == '\0', "NULL src gives empty string");
+
+    /* 3. flex_str_casecmp */
+    C_ASSERT(flex_str_casecmp("hello", "HELLO") == 0, "Case-insensitive equality");
+    C_ASSERT(flex_str_casecmp("apple", "BANANA") < 0, "apple < BANANA");
+    C_ASSERT(flex_str_casecmp("BANANA", "apple") > 0, "BANANA > apple");
+    C_ASSERT(flex_str_casecmp(NULL, "hello") < 0, "NULL < non-NULL");
+    C_ASSERT(flex_str_casecmp("hello", NULL) > 0, "non-NULL > NULL");
+    C_ASSERT(flex_str_casecmp(NULL, NULL) == 0, "NULL == NULL");
+
+    /* 4. flex_str_casestr */
+    const char* hay = "The Quick Brown Fox";
+    const char* sub = flex_str_casestr(hay, "quick");
+    C_ASSERT(sub != NULL, "Finds case-insensitive substring");
+    C_ASSERT(sub == hay + 4, "Substring offset matches");
+
+    sub = flex_str_casestr(hay, "lazy");
+    C_ASSERT(sub == NULL, "Returns NULL when not found");
+
+    sub = flex_str_casestr(hay, "");
+    C_ASSERT(sub == hay, "Empty needle returns haystack");
+
+    C_ASSERT(flex_str_casestr(NULL, "test") == NULL, "NULL haystack safe");
+    C_ASSERT(flex_str_casestr(hay, NULL) == NULL, "NULL needle safe");
+
+    /* 5. flex_str_starts_with & flex_str_ends_with */
+    C_ASSERT(flex_str_starts_with("prefix_test", "prefix"), "Starts with true");
+    C_ASSERT(!flex_str_starts_with("prefix_test", "post"), "Starts with false");
+    C_ASSERT(flex_str_starts_with("any", ""), "Empty prefix is true");
+
+    C_ASSERT(flex_str_ends_with("file.json", ".json"), "Ends with true");
+    C_ASSERT(!flex_str_ends_with("file.json", ".cpp"), "Ends with false");
+    C_ASSERT(flex_str_ends_with("any", ""), "Empty suffix is true");
+    C_ASSERT(!flex_str_ends_with("short", "longer_suffix"), "Long suffix is false");
+
+    /* 6. flex_str_copy */
+    char cbuf[16];
+    size_t clen = flex_str_copy(cbuf, sizeof(cbuf), "hello");
+    C_ASSERT_STR_EQ("hello", cbuf, "Copies string");
+    C_ASSERT(clen == 5, "Copy length matches");
+
+    clen = flex_str_copy(cbuf, 4, "abcdefgh");
+    C_ASSERT_STR_EQ("abc", cbuf, "Copies bounded by cap");
+    C_ASSERT(clen == 3, "Truncated length matches");
+}
+
 void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total_failed) {
     printf("\n=== Running Extended C11 Core Subsystem Tests ===\n");
     test_request_validator_suite(total_run, total_passed, total_failed);
@@ -1333,5 +1414,6 @@ void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total
     test_ansi_escape_suite(total_run, total_passed, total_failed);
     test_bloom_filter_suite(total_run, total_passed, total_failed);
     test_kv_store_suite(total_run, total_passed, total_failed);
+    test_string_util_suite(total_run, total_passed, total_failed);
     printf("Extended C11 Core Subsystem Tests completed.\n\n");
 }

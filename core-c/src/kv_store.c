@@ -1,4 +1,5 @@
 #include "kv_store.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -7,20 +8,6 @@
 void flex_kv_init(FlexKvStore* store) {
     if (!store) return;
     memset(store, 0, sizeof(FlexKvStore));
-}
-
-static void trim_inplace(char* str) {
-    size_t len = strlen(str);
-    while (len > 0 && isspace((unsigned char)str[len - 1])) {
-        str[--len] = '\0';
-    }
-    size_t start = 0;
-    while (str[start] && isspace((unsigned char)str[start])) {
-        start++;
-    }
-    if (start > 0) {
-        memmove(str, &str[start], len - start + 1);
-    }
 }
 
 bool flex_kv_set(FlexKvStore* store, const char* key, const char* value) {
@@ -108,7 +95,7 @@ bool flex_kv_parse(FlexKvStore* store, const char* text, size_t len) {
                 if (line_len >= sizeof(line)) line_len = sizeof(line) - 1;
                 memcpy(line, &text[line_start], line_len);
                 line[line_len] = '\0';
-                trim_inplace(line);
+                flex_str_trim(line);
                 
                 if (line[0] != '#' && line[0] != '\0') {
                     char* eq = strchr(line, '=');
@@ -116,8 +103,8 @@ bool flex_kv_parse(FlexKvStore* store, const char* text, size_t len) {
                         *eq = '\0';
                         char* k = line;
                         char* v = eq + 1;
-                        trim_inplace(k);
-                        trim_inplace(v);
+                        flex_str_trim(k);
+                        flex_str_trim(v);
                         flex_kv_set(store, k, v);
                     }
                 }

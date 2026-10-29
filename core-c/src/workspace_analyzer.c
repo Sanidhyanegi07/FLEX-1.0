@@ -1,4 +1,5 @@
 #include "workspace_analyzer.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -74,12 +75,7 @@ flex_file_category_t flex_classify_file_extension(const char* filename) {
     dot++; /* Skip dot */
 
     char ext[16];
-    size_t i = 0;
-    while (dot[i] && i + 1 < sizeof(ext)) {
-        ext[i] = (char)tolower((unsigned char)dot[i]);
-        i++;
-    }
-    ext[i] = '\0';
+    flex_str_tolower(dot, ext, sizeof(ext));
 
     if (strcmp(ext, "c") == 0) return FLEX_FILE_TYPE_C_SOURCE;
     if (strcmp(ext, "cpp") == 0 || strcmp(ext, "cc") == 0 || strcmp(ext, "cxx") == 0) return FLEX_FILE_TYPE_CPP_SOURCE;

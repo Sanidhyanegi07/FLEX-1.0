@@ -86,6 +86,7 @@ add_library(flex_core_c STATIC
     core-c/src/ansi_escape.c
     core-c/src/bloom_filter.c
     core-c/src/kv_store.c
+    core-c/src/string_util.c
 )
 
 target_include_directories(flex_core_c PUBLIC
@@ -116,9 +117,11 @@ add_library(flex_storage STATIC
 
 target_include_directories(flex_storage PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core-c/include
 )
 
 target_link_libraries(flex_storage PUBLIC
+    flex_core_c
     Qt6::Core
     Qt6::Sql
 )

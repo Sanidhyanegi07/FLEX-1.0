@@ -46,5 +46,6 @@
 #include "ansi_escape.h"
 #include "bloom_filter.h"
 #include "kv_store.h"
+#include "string_util.h"
 
 #endif /* FLEX_CORE_ALL_H */

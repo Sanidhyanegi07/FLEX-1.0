@@ -1,4 +1,5 @@
 #include "text_tokenizer.h"
+#include "string_util.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -135,11 +136,7 @@ bool flex_tokenizer_is_stopword(const char* word) {
     if (!word || word[0] == '\0') return false;
     
     char lower[FLEX_TOKENIZER_MAX_TOKEN_LEN];
-    size_t i = 0;
-    for (; word[i] && i + 1 < sizeof(lower); ++i) {
-        lower[i] = (char)tolower((unsigned char)word[i]);
-    }
-    lower[i] = '\0';
+    flex_str_tolower(word, lower, sizeof(lower));
     
     /* Binary search across alphabetically sorted stopword dictionary (O(log N)) */
     static const size_t s_stopword_count = (sizeof(S_STOPWORDS) / sizeof(S_STOPWORDS[0])) - 1;
@@ -170,11 +167,7 @@ bool flex_tokenizer_build_vocab(const FlexTokenSequence* seq, FlexVocabTable* ou
         if (tok->type != FLEX_TOKEN_WORD) continue;
         
         char lower[FLEX_TOKENIZER_MAX_TOKEN_LEN];
-        size_t k = 0;
-        for (; tok->text[k] && k + 1 < sizeof(lower); ++k) {
-            lower[k] = (char)tolower((unsigned char)tok->text[k]);
-        }
-        lower[k] = '\0';
+        flex_str_tolower(tok->text, lower, sizeof(lower));
         
         /* Search in existing table */
         bool found = false;
@@ -201,11 +194,7 @@ size_t flex_tokenizer_vocab_lookup(const FlexVocabTable* vocab, const char* term
     if (!vocab || !term) return 0;
     
     char lower[FLEX_TOKENIZER_MAX_TOKEN_LEN];
-    size_t i = 0;
-    for (; term[i] && i + 1 < sizeof(lower); ++i) {
-        lower[i] = (char)tolower((unsigned char)term[i]);
-    }
-    lower[i] = '\0';
+    flex_str_tolower(term, lower, sizeof(lower));
     
     for (size_t v = 0; v < vocab->count; ++v) {
         if (strcmp(vocab->entries[v].term, lower) == 0) {
