@@ -35,6 +35,10 @@ public:
     virtual bool speak(const std::string& text, bool purgePrevious) = 0;
     virtual void stop() = 0;
     [[nodiscard]] virtual bool isSpeaking() const = 0;
+    virtual void setRate(int rate) { (void)rate; }
+    virtual void setVolume(int volume) { (void)volume; }
+    [[nodiscard]] virtual int rate() const { return 0; }
+    [[nodiscard]] virtual int volume() const { return 100; }
 
     void setCallbacks(
         std::function<void()> onStarted,

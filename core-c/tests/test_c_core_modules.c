@@ -367,6 +367,27 @@ static void test_config_validator_suite(int *total_run, int *total_passed, int *
 
     C_ASSERT(flex_validate_audio_sample_rate(16000, &res) == FLEX_CFG_VALID, "16000 Hz sample rate valid");
     C_ASSERT(flex_validate_audio_sample_rate(12345, &res) == FLEX_CFG_ERR_UNSUPPORTED_SAMPLE_RATE, "Arbitrary rate rejected");
+
+    /* Additional Hardware & Inference Preference Validators */
+    C_ASSERT(flex_validate_endpoint_url("http://127.0.0.1:11434", &res) == FLEX_CFG_VALID, "Ollama default endpoint valid");
+    C_ASSERT(flex_validate_endpoint_url("https://remote.ollama.ai:443", &res) == FLEX_CFG_VALID, "HTTPS endpoint valid");
+    C_ASSERT(flex_validate_endpoint_url("ftp://127.0.0.1:11434", &res) == FLEX_CFG_ERR_INVALID_URL, "Non-http(s) endpoint rejected");
+    C_ASSERT(flex_validate_endpoint_url("http://127.0.0.1:99999", &res) == FLEX_CFG_ERR_INVALID_PORT, "Endpoint invalid port rejected");
+
+    C_ASSERT(flex_validate_temperature(0.7, &res) == FLEX_CFG_VALID, "Temperature 0.7 valid");
+    C_ASSERT(flex_validate_temperature(0.0, &res) == FLEX_CFG_VALID, "Temperature 0.0 valid");
+    C_ASSERT(flex_validate_temperature(2.0, &res) == FLEX_CFG_VALID, "Temperature 2.0 valid");
+    C_ASSERT(flex_validate_temperature(-0.1, &res) == FLEX_CFG_ERR_INVALID_TEMPERATURE, "Negative temperature rejected");
+    C_ASSERT(flex_validate_temperature(2.5, &res) == FLEX_CFG_ERR_INVALID_TEMPERATURE, "Temperature > 2.0 rejected");
+    C_ASSERT(flex_validate_temperature(NAN, &res) == FLEX_CFG_ERR_INVALID_TEMPERATURE, "NaN temperature rejected");
+
+    C_ASSERT(flex_validate_context_window(4096, &res) == FLEX_CFG_VALID, "Context window 4096 valid");
+    C_ASSERT(flex_validate_context_window(100, &res) == FLEX_CFG_ERR_INVALID_NUM_CTX, "Context window < 256 rejected");
+    C_ASSERT(flex_validate_context_window(200000, &res) == FLEX_CFG_ERR_INVALID_NUM_CTX, "Context window > 131072 rejected");
+
+    C_ASSERT(flex_validate_timeout(60, &res) == FLEX_CFG_VALID, "Timeout 60s valid");
+    C_ASSERT(flex_validate_timeout(0, &res) == FLEX_CFG_ERR_INVALID_TIMEOUT, "Timeout 0s rejected");
+    C_ASSERT(flex_validate_timeout(1000, &res) == FLEX_CFG_ERR_INVALID_TIMEOUT, "Timeout > 600s rejected");
 }
 
 static void test_voice_fsm_suite(int *total_run, int *total_passed, int *total_failed) {
@@ -1289,6 +1310,74 @@ static void test_kv_store_suite(int *total_run, int *total_passed, int *total_fa
     size_t slen = flex_kv_serialize(&store, buf, sizeof(buf));
     C_ASSERT(slen > 0, "Serialized config");
     C_ASSERT(strstr(buf, "model=qwen2.5-coder:3b\n") != NULL, "Serialized contains model");
+
+    /* Strict Typed Parsing & Error Classification */
+    long long parsed_int = 0;
+    FlexKvStatus st = flex_kv_parse_int(&store, "port", &parsed_int);
+    C_ASSERT(st == FLEX_KV_OK && parsed_int == 11434, "parse_int succeeds for valid port");
+
+    st = flex_kv_parse_int(&store, "missing_key", &parsed_int);
+    C_ASSERT(st == FLEX_KV_ERR_NOT_FOUND, "parse_int reports NOT_FOUND for missing key");
+
+    flex_kv_set(&store, "bad_int", "123invalid");
+    st = flex_kv_parse_int(&store, "bad_int", &parsed_int);
+    C_ASSERT(st == FLEX_KV_ERR_INVALID_SYNTAX, "parse_int rejects trailing garbage");
+
+    flex_kv_set(&store, "overflow_int", "99999999999999999999999999999999");
+    st = flex_kv_parse_int(&store, "overflow_int", &parsed_int);
+    C_ASSERT(st == FLEX_KV_ERR_OVERFLOW, "parse_int reports OVERFLOW");
+
+    double parsed_float = 0.0;
+    st = flex_kv_parse_float(&store, "temperature", &parsed_float);
+    C_ASSERT(st == FLEX_KV_OK && parsed_float > 0.69 && parsed_float < 0.71, "parse_float succeeds");
+
+    st = flex_kv_parse_float(&store, "missing_temp", &parsed_float);
+    C_ASSERT(st == FLEX_KV_ERR_NOT_FOUND, "parse_float reports NOT_FOUND");
+
+    flex_kv_set(&store, "nan_val", "NaN");
+    st = flex_kv_parse_float(&store, "nan_val", &parsed_float);
+    C_ASSERT(st == FLEX_KV_ERR_INVALID_SYNTAX, "parse_float rejects NaN");
+
+    flex_kv_set(&store, "inf_val", "infinity");
+    st = flex_kv_parse_float(&store, "inf_val", &parsed_float);
+    C_ASSERT(st == FLEX_KV_ERR_INVALID_SYNTAX, "parse_float rejects infinity");
+
+    flex_kv_set(&store, "comma_float", "0,7");
+    st = flex_kv_parse_float(&store, "comma_float", &parsed_float);
+    C_ASSERT(st == FLEX_KV_ERR_INVALID_SYNTAX, "parse_float rejects comma separator");
+
+    bool parsed_bool = false;
+    st = flex_kv_parse_bool(&store, "streaming", &parsed_bool);
+    C_ASSERT(st == FLEX_KV_OK && parsed_bool == true, "parse_bool parses true");
+
+    flex_kv_set(&store, "bad_bool", "not_a_bool");
+    st = flex_kv_parse_bool(&store, "bad_bool", &parsed_bool);
+    C_ASSERT(st == FLEX_KV_ERR_INVALID_SYNTAX, "parse_bool rejects invalid syntax");
+
+    /* Capacity and No-Silent-Truncation Verification */
+    char long_key[FLEX_KV_MAX_KEY + 10];
+    memset(long_key, 'k', sizeof(long_key) - 1);
+    long_key[sizeof(long_key) - 1] = '\0';
+    C_ASSERT(!flex_kv_set(&store, long_key, "val"), "Oversized key rejected without truncation");
+
+    char long_val[FLEX_KV_MAX_VAL + 10];
+    memset(long_val, 'v', sizeof(long_val) - 1);
+    long_val[sizeof(long_val) - 1] = '\0';
+    C_ASSERT(!flex_kv_set(&store, "normal_key", long_val), "Oversized value rejected without truncation");
+
+    C_ASSERT(!flex_kv_set(&store, "", "val"), "Empty key rejected");
+
+    /* Serialization Buffer Overflow Safety */
+    char tiny_buf[16];
+    size_t tiny_len = flex_kv_serialize(&store, tiny_buf, sizeof(tiny_buf));
+    C_ASSERT(tiny_len == 0 && tiny_buf[0] == '\0', "Insufficient serialization buffer safely aborted");
+
+    /* Malformed Config Parsing */
+    FlexKvStore malformed_store;
+    flex_kv_init(&malformed_store);
+    const char* malformed_text = "valid_key=10\nmalformed_line_without_equals\nanother_key=20\n";
+    bool parse_res = flex_kv_parse(&malformed_store, malformed_text, strlen(malformed_text));
+    C_ASSERT(!parse_res, "Parsing fails when non-comment line lacks '='");
 }
 
 static void test_string_util_suite(int *total_run, int *total_passed, int *total_failed) {

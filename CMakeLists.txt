@@ -113,6 +113,7 @@ target_link_libraries(flex_core_cpp PUBLIC
 # ------------------------------------------------------------------------------
 add_library(flex_storage STATIC
     src-cpp/src/storage.cpp
+    src-cpp/src/settings_persistence_service.cpp
 )
 
 target_include_directories(flex_storage PUBLIC

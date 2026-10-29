@@ -20,7 +20,11 @@ typedef enum {
     FLEX_CFG_ERR_RATE_OUT_OF_RANGE = 7,
     FLEX_CFG_ERR_VOLUME_OUT_OF_RANGE = 8,
     FLEX_CFG_ERR_UNSUPPORTED_SAMPLE_RATE = 9,
-    FLEX_CFG_ERR_INVALID_CHANNELS = 10
+    FLEX_CFG_ERR_INVALID_CHANNELS = 10,
+    FLEX_CFG_ERR_INVALID_URL = 11,
+    FLEX_CFG_ERR_INVALID_TEMPERATURE = 12,
+    FLEX_CFG_ERR_INVALID_NUM_CTX = 13,
+    FLEX_CFG_ERR_INVALID_TIMEOUT = 14
 } flex_cfg_status_t;
 
 typedef struct {
@@ -90,6 +94,38 @@ flex_cfg_status_t flex_validate_audio_sample_rate(
  */
 flex_cfg_status_t flex_validate_audio_channels(
     uint32_t channels,
+    flex_cfg_result_t* out_result
+);
+
+/**
+ * Validates endpoint URL (must be valid http:// or https:// with host and port).
+ */
+flex_cfg_status_t flex_validate_endpoint_url(
+    const char* url,
+    flex_cfg_result_t* out_result
+);
+
+/**
+ * Validates inference temperature (0.0 to 2.0).
+ */
+flex_cfg_status_t flex_validate_temperature(
+    double temperature,
+    flex_cfg_result_t* out_result
+);
+
+/**
+ * Validates context window token limit (256 to 131072).
+ */
+flex_cfg_status_t flex_validate_context_window(
+    int num_ctx,
+    flex_cfg_result_t* out_result
+);
+
+/**
+ * Validates inference timeout in seconds (1 to 600).
+ */
+flex_cfg_status_t flex_validate_timeout(
+    int timeout_seconds,
     flex_cfg_result_t* out_result
 );
 

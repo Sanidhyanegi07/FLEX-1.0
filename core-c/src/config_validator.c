@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 static bool is_valid_ipv4(const char* str) {
     int octets = 0;
@@ -294,6 +295,168 @@ flex_cfg_status_t flex_validate_audio_channels(
     return FLEX_CFG_VALID;
 }
 
+flex_cfg_status_t flex_validate_endpoint_url(
+    const char* url,
+    flex_cfg_result_t* out_result
+) {
+    if (out_result) {
+        memset(out_result, 0, sizeof(flex_cfg_result_t));
+        out_result->status = FLEX_CFG_VALID;
+    }
+
+    if (!url) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_NULL;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "URL string is NULL");
+        }
+        return FLEX_CFG_ERR_NULL;
+    }
+
+    size_t len = strlen(url);
+    if (len < 10 || len > 256) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_URL;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "URL length (%zu) invalid", len);
+        }
+        return FLEX_CFG_ERR_INVALID_URL;
+    }
+
+    const char* p = url;
+    int default_port = 80;
+    if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+        default_port = 80;
+    } else if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+        default_port = 443;
+    } else {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_URL;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "URL scheme must be http:// or https://");
+        }
+        return FLEX_CFG_ERR_INVALID_URL;
+    }
+
+    char host_buf[256];
+    const char* colon = strchr(p, ':');
+    const char* slash = strchr(p, '/');
+    int port = default_port;
+
+    if (colon && (!slash || colon < slash)) {
+        size_t hlen = (size_t)(colon - p);
+        if (hlen == 0 || hlen >= sizeof(host_buf)) {
+            if (out_result) {
+                out_result->status = FLEX_CFG_ERR_INVALID_HOST;
+                snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Host in URL is empty or too long");
+            }
+            return FLEX_CFG_ERR_INVALID_HOST;
+        }
+        memcpy(host_buf, p, hlen);
+        host_buf[hlen] = '\0';
+
+        const char* port_str = colon + 1;
+        char* endptr = NULL;
+        long parsed_port = strtol(port_str, &endptr, 10);
+        if (endptr == port_str || (slash && endptr != slash) || (!slash && *endptr != '\0')) {
+            if (out_result) {
+                out_result->status = FLEX_CFG_ERR_INVALID_PORT;
+                snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Malformed port in URL");
+            }
+            return FLEX_CFG_ERR_INVALID_PORT;
+        }
+        port = (int)parsed_port;
+    } else if (slash) {
+        size_t hlen = (size_t)(slash - p);
+        if (hlen == 0 || hlen >= sizeof(host_buf)) {
+            if (out_result) {
+                out_result->status = FLEX_CFG_ERR_INVALID_HOST;
+                snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Host in URL is empty or too long");
+            }
+            return FLEX_CFG_ERR_INVALID_HOST;
+        }
+        memcpy(host_buf, p, hlen);
+        host_buf[hlen] = '\0';
+    } else {
+        size_t hlen = strlen(p);
+        if (hlen == 0 || hlen >= sizeof(host_buf)) {
+            if (out_result) {
+                out_result->status = FLEX_CFG_ERR_INVALID_HOST;
+                snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Host in URL is empty or too long");
+            }
+            return FLEX_CFG_ERR_INVALID_HOST;
+        }
+        memcpy(host_buf, p, hlen);
+        host_buf[hlen] = '\0';
+    }
+
+    flex_cfg_status_t hst = flex_validate_host(host_buf, out_result);
+    if (hst != FLEX_CFG_VALID) {
+        return hst;
+    }
+
+    return flex_validate_port(port, true, out_result);
+}
+
+flex_cfg_status_t flex_validate_temperature(
+    double temperature,
+    flex_cfg_result_t* out_result
+) {
+    if (out_result) {
+        memset(out_result, 0, sizeof(flex_cfg_result_t));
+        out_result->status = FLEX_CFG_VALID;
+    }
+
+    if (isnan(temperature) || isinf(temperature) || temperature < 0.0 || temperature > 2.0) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_TEMPERATURE;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Temperature must be between 0.0 and 2.0");
+        }
+        return FLEX_CFG_ERR_INVALID_TEMPERATURE;
+    }
+
+    return FLEX_CFG_VALID;
+}
+
+flex_cfg_status_t flex_validate_context_window(
+    int num_ctx,
+    flex_cfg_result_t* out_result
+) {
+    if (out_result) {
+        memset(out_result, 0, sizeof(flex_cfg_result_t));
+        out_result->status = FLEX_CFG_VALID;
+    }
+
+    if (num_ctx < 256 || num_ctx > 131072) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_NUM_CTX;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Context window tokens %d must be in range 256 to 131072", num_ctx);
+        }
+        return FLEX_CFG_ERR_INVALID_NUM_CTX;
+    }
+
+    return FLEX_CFG_VALID;
+}
+
+flex_cfg_status_t flex_validate_timeout(
+    int timeout_seconds,
+    flex_cfg_result_t* out_result
+) {
+    if (out_result) {
+        memset(out_result, 0, sizeof(flex_cfg_result_t));
+        out_result->status = FLEX_CFG_VALID;
+    }
+
+    if (timeout_seconds < 1 || timeout_seconds > 600) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_TIMEOUT;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Timeout %d must be in range 1 to 600 seconds", timeout_seconds);
+        }
+        return FLEX_CFG_ERR_INVALID_TIMEOUT;
+    }
+
+    return FLEX_CFG_VALID;
+}
+
 const char* flex_cfg_status_to_string(flex_cfg_status_t status) {
     switch (status) {
         case FLEX_CFG_VALID: return "VALID";
@@ -307,6 +470,10 @@ const char* flex_cfg_status_to_string(flex_cfg_status_t status) {
         case FLEX_CFG_ERR_VOLUME_OUT_OF_RANGE: return "ERR_VOLUME_OUT_OF_RANGE";
         case FLEX_CFG_ERR_UNSUPPORTED_SAMPLE_RATE: return "ERR_UNSUPPORTED_SAMPLE_RATE";
         case FLEX_CFG_ERR_INVALID_CHANNELS: return "ERR_INVALID_CHANNELS";
+        case FLEX_CFG_ERR_INVALID_URL: return "ERR_INVALID_URL";
+        case FLEX_CFG_ERR_INVALID_TEMPERATURE: return "ERR_INVALID_TEMPERATURE";
+        case FLEX_CFG_ERR_INVALID_NUM_CTX: return "ERR_INVALID_NUM_CTX";
+        case FLEX_CFG_ERR_INVALID_TIMEOUT: return "ERR_INVALID_TIMEOUT";
         default: return "UNKNOWN";
     }
 }

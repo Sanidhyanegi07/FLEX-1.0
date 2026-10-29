@@ -84,6 +84,7 @@ public:
     virtual void setPreferredDeviceId(const std::string& id) { (void)id; }
     [[nodiscard]] virtual std::string preferredDeviceId() const { return {}; }
     [[nodiscard]] virtual std::string activeDeviceName() const { return defaultDevice().name; }
+    [[nodiscard]] virtual bool isFallbackActive() const { return false; }
 
     virtual void setErrorCallback(std::function<void(AudioCaptureError, const QString&)> callback)
     {
@@ -125,6 +126,7 @@ public:
     void setPreferredDeviceId(const std::string& id);
     [[nodiscard]] std::string preferredDeviceId() const;
     [[nodiscard]] std::string activeDeviceName() const;
+    [[nodiscard]] bool isFallbackActive() const;
 
     // Capture Operations
     bool startCapture();

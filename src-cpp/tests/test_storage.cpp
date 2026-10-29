@@ -1,4 +1,5 @@
 #include "flex/storage.hpp"
+#include "flex/settings_persistence_service.hpp"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -512,6 +513,99 @@ void test_search_and_counts()
     EXPECT_EQ(2, storage.getTotalMessageCount());
 }
 
+void test_settings_persistence()
+{
+    std::cout << "[Test: Settings Persistence (Track A)]...\n";
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+
+    std::string configPath = tempDir.filePath("config.ini").toStdString();
+
+    // 1. Missing file: returns defaults gracefully
+    auto loadRes = flex::SettingsPersistenceService::loadSettings(configPath);
+    EXPECT_TRUE(loadRes.success);
+    EXPECT_FALSE(loadRes.fileExisted);
+    EXPECT_STR_EQ("http://127.0.0.1:11434", loadRes.settings.ollamaEndpoint);
+    EXPECT_STR_EQ("qwen2.5-coder:3b", loadRes.settings.ollamaModel);
+    EXPECT_EQ(4096, loadRes.settings.ollamaNumCtx);
+    EXPECT_EQ(30, loadRes.settings.ollamaTimeout);
+    EXPECT_EQ(0, loadRes.settings.ttsRate);
+    EXPECT_EQ(100, loadRes.settings.ttsVolume);
+
+    // 2. Save valid custom configuration
+    flex::AppSettings custom;
+    custom.ollamaEndpoint = "http://127.0.0.1:11434";
+    custom.ollamaModel = "mistral:7b";
+    custom.ollamaTemperature = 0.45;
+    custom.ollamaNumCtx = 8192;
+    custom.ollamaTimeout = 45;
+    custom.audioInputDevice = "Test Mic Array";
+    custom.ttsRate = 3;
+    custom.ttsVolume = 85;
+
+    auto saveRes = flex::SettingsPersistenceService::saveSettings(custom, configPath);
+    EXPECT_TRUE(saveRes.success);
+
+    // 3. Reload and verify exact preservation
+    auto reloadRes = flex::SettingsPersistenceService::loadSettings(configPath);
+    EXPECT_TRUE(reloadRes.success);
+    EXPECT_TRUE(reloadRes.fileExisted);
+    EXPECT_STR_EQ(custom.ollamaEndpoint, reloadRes.settings.ollamaEndpoint);
+    EXPECT_STR_EQ(custom.ollamaModel, reloadRes.settings.ollamaModel);
+    EXPECT_TRUE(std::abs(reloadRes.settings.ollamaTemperature - 0.45) < 0.001);
+    EXPECT_EQ(8192, reloadRes.settings.ollamaNumCtx);
+    EXPECT_EQ(45, reloadRes.settings.ollamaTimeout);
+    EXPECT_STR_EQ("Test Mic Array", reloadRes.settings.audioInputDevice);
+    EXPECT_EQ(3, reloadRes.settings.ttsRate);
+    EXPECT_EQ(85, reloadRes.settings.ttsVolume);
+
+    // 4. Pre-validation strictly rejects invalid values
+    flex::AppSettings invalidCfg = custom;
+    invalidCfg.ollamaEndpoint = "ftp://invalid-server";
+    EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
+
+    invalidCfg = custom;
+    invalidCfg.ollamaTemperature = 5.0; // Exceeds 2.0
+    EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
+
+    invalidCfg = custom;
+    invalidCfg.ollamaNumCtx = 50; // Less than 256
+    EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
+
+    invalidCfg = custom;
+    invalidCfg.ttsRate = -20; // Out of range -10..+10
+    EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
+
+    invalidCfg = custom;
+    invalidCfg.ttsVolume = 150; // Out of range 0..100
+    EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
+
+    // 5. Existing valid configuration preserved after rejected save
+    auto checkPreserved = flex::SettingsPersistenceService::loadSettings(configPath);
+    EXPECT_TRUE(checkPreserved.success);
+    EXPECT_STR_EQ("mistral:7b", checkPreserved.settings.ollamaModel);
+    EXPECT_EQ(8192, checkPreserved.settings.ollamaNumCtx);
+
+    // 6. Malformed file error detection without crashing
+    std::string corruptPath = tempDir.filePath("corrupt.ini").toStdString();
+    {
+        QFile corruptFile(QString::fromStdString(corruptPath));
+        EXPECT_TRUE(corruptFile.open(QIODevice::WriteOnly | QIODevice::Text));
+        corruptFile.write("this line is completely broken without any delimiter\n");
+        corruptFile.close();
+    }
+    auto corruptRes = flex::SettingsPersistenceService::loadSettings(corruptPath);
+    EXPECT_FALSE(corruptRes.success);
+    EXPECT_FALSE(corruptRes.errorMessage.empty());
+
+    // 7. Environment variable override
+    std::string envTarget = tempDir.filePath("env_target.ini").toStdString();
+    qputenv("FLEX_CONFIG_PATH", QByteArray::fromStdString(envTarget));
+    EXPECT_STR_EQ(QDir::cleanPath(QString::fromStdString(envTarget)).toStdString(),
+                  flex::SettingsPersistenceService::defaultConfigurationPath());
+    qunsetenv("FLEX_CONFIG_PATH");
+}
+
 } // anonymous namespace
 
 int main(int argc, char *argv[])
@@ -533,6 +627,7 @@ int main(int argc, char *argv[])
     test_persistence_across_restart();
     test_auto_titling();
     test_search_and_counts();
+    test_settings_persistence();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

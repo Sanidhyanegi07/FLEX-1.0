@@ -329,6 +329,15 @@ public:
         return "Mock Studio Microphone";
     }
 
+    [[nodiscard]] bool isFallbackActive() const override
+    {
+        if (m_preferredId.empty() || m_preferredId == "Default") return false;
+        for (const auto& dev : availableDevices()) {
+            if (dev.id == m_preferredId || dev.name == m_preferredId) return false;
+        }
+        return true;
+    }
+
 private:
     bool m_isRecording{false};
     bool m_failStart{false};
@@ -552,6 +561,20 @@ void test_audio_capture_device_discovery()
     service.setPreferredDeviceId("mock-mic-2");
     EXPECT_STR_EQ("mock-mic-2", service.preferredDeviceId());
     EXPECT_STR_EQ("Mock Studio Microphone", service.activeDeviceName());
+    EXPECT_FALSE(service.isFallbackActive());
+
+    // Preferred device by name
+    service.setPreferredDeviceId("Mock Headset Microphone");
+    EXPECT_FALSE(service.isFallbackActive());
+
+    // Unavailable device triggers fallback state without overwriting saved preference
+    service.setPreferredDeviceId("Unplugged USB Microphone");
+    EXPECT_TRUE(service.isFallbackActive());
+    EXPECT_STR_EQ("Unplugged USB Microphone", service.preferredDeviceId());
+
+    // Reset to default
+    service.setPreferredDeviceId("");
+    EXPECT_FALSE(service.isFallbackActive());
 }
 
 void test_audio_capture_start_stop_lifecycle()

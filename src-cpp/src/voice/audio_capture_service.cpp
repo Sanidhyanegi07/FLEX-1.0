@@ -197,8 +197,12 @@ public:
         stopInternal();
     }
 
-    static QAudioDevice selectBestInputDevice(const std::string& preferredId = {})
+    static QAudioDevice selectBestInputDevice(const std::string& preferredId = {}, bool* outFallback = nullptr)
     {
+        if (outFallback) {
+            *outFallback = false;
+        }
+
         const auto devices = QMediaDevices::audioInputs();
         if (devices.empty()) {
             return QAudioDevice{};
@@ -217,13 +221,19 @@ public:
             }
         }
 
-        // 2. Check explicit preferred ID
-        if (!preferredId.empty()) {
+        // 2. Check explicit preferred ID or name
+        if (!preferredId.empty() && preferredId != "Default") {
             for (const auto& d : devices) {
-                if (d.id().toStdString() == preferredId) {
+                if (d.id().toStdString() == preferredId ||
+                    d.description().toStdString() == preferredId) {
                     return d;
                 }
             }
+            if (outFallback) {
+                *outFallback = true;
+            }
+            std::cout << "[AudioCapture] Preferred input device \"" << preferredId
+                      << "\" not found or unavailable. Falling back to default audio input.\n";
         }
 
         // 3. Inspect default device
@@ -309,11 +319,16 @@ public:
         return m_activeDeviceName;
     }
 
+    [[nodiscard]] bool isFallbackActive() const override
+    {
+        return m_fallbackActive;
+    }
+
     bool start() override
     {
         stopInternal();
 
-        const auto dev = selectBestInputDevice(m_preferredDeviceId);
+        const auto dev = selectBestInputDevice(m_preferredDeviceId, &m_fallbackActive);
         if (dev.isNull()) {
             std::cout << "[AudioCapture] Error: No valid audio input device available.\n";
             return false;
@@ -445,6 +460,7 @@ private:
     QBuffer m_ioBuffer;
     std::string m_preferredDeviceId;
     std::string m_activeDeviceName;
+    bool m_fallbackActive{false};
 };
 
 } // anonymous namespace
@@ -544,6 +560,14 @@ std::string AudioCaptureService::activeDeviceName() const
         return m_impl->m_source->activeDeviceName();
     }
     return {};
+}
+
+bool AudioCaptureService::isFallbackActive() const
+{
+    if (m_impl->m_source) {
+        return m_impl->m_source->isFallbackActive();
+    }
+    return false;
 }
 
 bool AudioCaptureService::startCapture()
