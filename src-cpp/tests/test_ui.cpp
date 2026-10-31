@@ -2,6 +2,7 @@
 #include "flex/backend.hpp"
 #include "flex/settings_persistence_service.hpp"
 #include <QTemporaryDir>
+#include <QStandardItemModel>
 
 #include <QApplication>
 #include <QDateTime>
@@ -731,6 +732,163 @@ void test_settings_view_ui_persistence()
     qunsetenv("FLEX_CONFIG_PATH");
 }
 
+void test_settings_view_whisper_model_discovery()
+{
+    std::cout << "[Test 15] SettingsView Whisper model discovery, selection, and safety...\n";
+
+    QTemporaryDir tempConfigDir;
+    EXPECT_TRUE(tempConfigDir.isValid());
+    QString testConfigPath = tempConfigDir.filePath("whisper_test_config.ini");
+    qputenv("FLEX_CONFIG_PATH", testConfigPath.toUtf8());
+
+    QTemporaryDir tempModelsDir;
+    EXPECT_TRUE(tempModelsDir.isValid());
+
+    // 1. Setup synthetic model directory with:
+    // Model A: Multilingual base model (n_vocab = 51865)
+    QString multiPath = tempModelsDir.filePath("ggml-base.bin");
+    QFile multiFile(multiPath);
+    EXPECT_TRUE(multiFile.open(QIODevice::WriteOnly));
+    uint32_t multiHdr[4] = { 0x67676d6c, 51865, 1500, 512 };
+    multiFile.write(reinterpret_cast<const char*>(multiHdr), sizeof(multiHdr));
+    multiFile.resize(1024 * 1024 + 100);
+    multiFile.close();
+
+    // Model B: English-only tiny model (n_vocab = 51864)
+    QString enPath = tempModelsDir.filePath("ggml-tiny.en.bin");
+    QFile enFile(enPath);
+    EXPECT_TRUE(enFile.open(QIODevice::WriteOnly));
+    uint32_t enHdr[4] = { 0x67676d6c, 51864, 1500, 384 };
+    enFile.write(reinterpret_cast<const char*>(enHdr), sizeof(enHdr));
+    enFile.resize(1024 * 1024 + 100);
+    enFile.close();
+
+    // Model C: Corrupted/invalid model (bad magic)
+    QString badPath = tempModelsDir.filePath("ggml-corrupt.bin");
+    QFile badFile(badPath);
+    EXPECT_TRUE(badFile.open(QIODevice::WriteOnly));
+    uint32_t badHdr[4] = { 0x11223344, 51864, 1500, 384 };
+    badFile.write(reinterpret_cast<const char*>(badHdr), sizeof(badHdr));
+    badFile.resize(1024 * 1024 + 100);
+    badFile.close();
+
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, nullptr);
+
+    flex::ui::SettingsView settingsView(coordinator);
+    QCoreApplication::processEvents();
+
+    // Point SettingsView discovery at our synthetic directory
+    settingsView.refreshModelList(tempModelsDir.path());
+    QCoreApplication::processEvents();
+
+    auto* combo = settingsView.whisperModelCombo();
+    EXPECT_TRUE(combo != nullptr);
+    auto* detailsLbl = settingsView.whisperDetailsLabel();
+    EXPECT_TRUE(detailsLbl != nullptr);
+    auto* pathEdit = settingsView.whisperPathEdit();
+    EXPECT_TRUE(pathEdit != nullptr);
+
+    // Expect items:
+    // [0] Auto-detect Default
+    // [1] ggml-base.bin (Multilingual)
+    // [2] ggml-corrupt.bin (InvalidFormat)
+    // [3] ggml-tiny.en.bin (English-only, Default)
+    EXPECT_EQ(4, combo->count());
+
+    // Verify capability labels
+    EXPECT_TRUE(combo->itemText(1).contains("Multilingual"));
+    EXPECT_TRUE(combo->itemText(3).contains("English-only"));
+    EXPECT_TRUE(combo->itemText(3).contains("[Default]"));
+
+    // Verify invalid model item is disabled (not selectable)
+    auto* stdModel = qobject_cast<QStandardItemModel*>(combo->model());
+    EXPECT_TRUE(stdModel != nullptr);
+    if (stdModel) {
+        auto* badItem = stdModel->item(2);
+        EXPECT_TRUE(badItem != nullptr);
+        if (badItem) {
+            EXPECT_FALSE(badItem->isEnabled());
+        }
+    }
+
+    // Select the multilingual model
+    combo->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    EXPECT_STR_EQ(multiPath.toStdString(), pathEdit->text().toStdString());
+    EXPECT_TRUE(detailsLbl->text().contains("Multilingual"));
+    EXPECT_TRUE(detailsLbl->text().contains("Valid GGML Binary Header"));
+    EXPECT_TRUE(detailsLbl->text().contains("Header classification; not proof of inference"));
+
+    // Save settings and verify persistence
+    auto* saveBtn = settingsView.findChild<QPushButton*>("PrimaryButton");
+    EXPECT_TRUE(saveBtn != nullptr);
+    if (saveBtn) {
+        saveBtn->click();
+        QCoreApplication::processEvents();
+    }
+
+    auto savedConfig = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(savedConfig.success);
+    EXPECT_STR_EQ(multiPath.toStdString(), savedConfig.settings.whisperModelPath);
+
+    // Verify language setting was NOT mutated by selecting a model
+    EXPECT_STR_EQ("en", savedConfig.settings.whisperLanguage);
+
+    // 2. Test empty model directory handling
+    QTemporaryDir emptyModelsDir;
+    EXPECT_TRUE(emptyModelsDir.isValid());
+    settingsView.refreshModelList(emptyModelsDir.path());
+    QCoreApplication::processEvents();
+
+    // Verify combo has Auto-detect Default + previously configured custom path
+    EXPECT_TRUE(combo->count() >= 1);
+    // Configured model was preserved in the saved settings
+    auto preservedConfig = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_STR_EQ(multiPath.toStdString(), preservedConfig.settings.whisperModelPath);
+
+    // 3. Test missing configured model warning
+    pathEdit->setText("C:/nonexistent_folder_xyz/missing_model.bin");
+    settingsView.updateModelDetailsDisplay();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(detailsLbl->text().contains("not found on disk"));
+    EXPECT_TRUE(detailsLbl->text().contains("Saved preference is preserved"));
+
+    // 4. Test invalid model cannot be saved
+    pathEdit->setText(badPath);
+    settingsView.updateModelDetailsDisplay();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(detailsLbl->text().contains("invalid GGML format"));
+
+    if (saveBtn) {
+        saveBtn->click();
+        QCoreApplication::processEvents();
+    }
+    // Verify save was blocked: config still has multiPath!
+    auto blockedConfig = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_STR_EQ(multiPath.toStdString(), blockedConfig.settings.whisperModelPath);
+
+    // 5. Test refresh button rediscovery
+    auto* refreshBtn = settingsView.whisperRefreshButton();
+    EXPECT_TRUE(refreshBtn != nullptr);
+    if (refreshBtn) {
+        // Point back to synthetic models
+        settingsView.refreshModelList(tempModelsDir.path());
+        refreshBtn->click();
+        QCoreApplication::processEvents();
+        EXPECT_EQ(4, combo->count());
+    }
+
+    // 6. Test reset to defaults restores auto-detect default
+    settingsView.onResetClicked();
+    QCoreApplication::processEvents();
+    auto resetConfig = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(resetConfig.settings.whisperModelPath.empty()); // Empty string is default auto-resolve
+
+    qunsetenv("FLEX_CONFIG_PATH");
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -760,6 +918,7 @@ int main(int argc, char* argv[])
     test_shell_restoration_and_view_switching();
     test_projects_and_memory_views();
     test_settings_view_ui_persistence();
+    test_settings_view_whisper_model_discovery();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

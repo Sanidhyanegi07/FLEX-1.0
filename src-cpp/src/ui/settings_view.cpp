@@ -2,12 +2,15 @@
 #include "flex/settings_persistence_service.hpp"
 #include "flex/voice/whisper_model_resolver.hpp"
 #include "flex/ui/theme.hpp"
+#include "whisper_pipeline.h"
 
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QProcessEnvironment>
 #include <QScrollArea>
+#include <QStandardItemModel>
 #include <QThread>
 #include <QVBoxLayout>
 
@@ -54,6 +57,26 @@ void SettingsView::setTextToSpeechService(std::shared_ptr<voice::TextToSpeechSer
 void SettingsView::setSpeechToTextService(std::shared_ptr<voice::SpeechToTextService> service)
 {
     m_stt = std::move(service);
+    if (m_stt) {
+        connect(m_stt.get(), &voice::SpeechToTextService::modelLoadStarted, this, [this](const QString& path) {
+            if (m_whisperStatusLabel) {
+                m_whisperStatusLabel->setText(QString("⏳ Loading model into memory: %1...").arg(QFileInfo(path).fileName()));
+                m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusWarning));
+            }
+        });
+        connect(m_stt.get(), &voice::SpeechToTextService::modelLoadFinished, this, [this](bool success, const QString& msg) {
+            if (m_whisperStatusLabel) {
+                if (success && m_stt) {
+                    m_whisperStatusLabel->setText(QString("✓ Active in memory: %1")
+                                                      .arg(QFileInfo(m_stt->loadedModelPath()).fileName()));
+                    m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
+                } else {
+                    m_whisperStatusLabel->setText(QString("✕ Model load failed: %1").arg(msg));
+                    m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusError));
+                }
+            }
+        });
+    }
     loadCurrentConfig();
 }
 
@@ -158,13 +181,37 @@ void SettingsView::setupUi()
     m_ttsVolumeSpin->setValue(100);
     hwLayout->addRow("TTS Speech Volume (0..100%):", m_ttsVolumeSpin);
 
+    auto* modelRow = new QHBoxLayout();
+    m_whisperModelCombo = new QComboBox(hwCard);
+    m_whisperModelCombo->setCursor(Qt::PointingHandCursor);
+    m_whisperModelCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    connect(m_whisperModelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsView::onModelComboChanged);
+
+    m_whisperRefreshBtn = new QPushButton("Refresh Models", hwCard);
+    m_whisperRefreshBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_whisperRefreshBtn, &QPushButton::clicked, this, [this]() {
+        refreshModelList(m_activeModelsDir);
+    });
+
+    modelRow->addWidget(m_whisperModelCombo, 1);
+    modelRow->addWidget(m_whisperRefreshBtn);
+    hwLayout->addRow("Speech-to-Text Model:", modelRow);
+
     m_whisperPathEdit = new QLineEdit(hwCard);
     m_whisperPathEdit->setPlaceholderText("Auto-resolved: %USERPROFILE%\\.flex\\models\\whisper\\ggml-tiny.en.bin");
-    hwLayout->addRow("Whisper Speech Model Path:", m_whisperPathEdit);
+    connect(m_whisperPathEdit, &QLineEdit::textEdited, this, &SettingsView::updateModelDetailsDisplay);
+    hwLayout->addRow("Selected Model Path:", m_whisperPathEdit);
 
-    m_whisperStatusLabel = new QLabel("○ Model status unverified", hwCard);
+    m_whisperDetailsLabel = new QLabel("○ Model details not loaded", hwCard);
+    m_whisperDetailsLabel->setWordWrap(true);
+    m_whisperDetailsLabel->setStyleSheet("font-size: 11px; color: #CBD5E1; background: #0F172A; padding: 8px 12px; border-radius: 6px; border: 1px solid #334155;");
+    hwLayout->addRow("Model Details:", m_whisperDetailsLabel);
+
+    m_whisperStatusLabel = new QLabel("○ Engine status unverified", hwCard);
+    m_whisperStatusLabel->setWordWrap(true);
     m_whisperStatusLabel->setStyleSheet("font-size: 11px; color: #94A3B8;");
-    hwLayout->addRow("", m_whisperStatusLabel);
+    hwLayout->addRow("Engine Status:", m_whisperStatusLabel);
 
     layout->addWidget(hwCard);
 
@@ -257,26 +304,205 @@ void SettingsView::loadCurrentConfig()
 
     if (m_ttsRateSpin) m_ttsRateSpin->setValue(s.ttsRate);
     if (m_ttsVolumeSpin) m_ttsVolumeSpin->setValue(s.ttsVolume);
-    if (m_whisperPathEdit) m_whisperPathEdit->setText(QString::fromStdString(s.whisperModelPath));
+
+    if (m_whisperPathEdit) {
+        m_whisperPathEdit->setText(QString::fromStdString(s.whisperModelPath));
+    }
+    refreshModelList();
 
     // Update Whisper status label truthfully
     if (m_whisperStatusLabel) {
         if (m_stt && m_stt->isModelLoaded()) {
-            m_whisperStatusLabel->setText(QString("✓ Model loaded in memory: %1")
+            m_whisperStatusLabel->setText(QString("✓ Active in memory: %1")
                                               .arg(QFileInfo(m_stt->loadedModelPath()).fileName()));
             m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
+        } else if (m_stt && m_stt->isModelLoading()) {
+            m_whisperStatusLabel->setText("⏳ Loading model into memory...");
+            m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusWarning));
         } else {
             auto whisperRes = voice::WhisperModelResolver::resolveModelPath(QString::fromStdString(s.whisperModelPath));
             if (whisperRes.isFound()) {
-                m_whisperStatusLabel->setText(QString("✓ Model ready on disk: %1")
+                m_whisperStatusLabel->setText(QString("○ Ready on disk (not loaded): %1")
                                                   .arg(QFileInfo(whisperRes.resolvedPath).fileName()));
-                m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
+                m_whisperStatusLabel->setStyleSheet("font-size: 11px; color: #94A3B8;");
             } else {
                 m_whisperStatusLabel->setText("✕ Model not found. Run scripts/download_whisper_model.ps1");
                 m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusError));
             }
         }
     }
+}
+
+void SettingsView::refreshModelList(const QString& customDir)
+{
+    if (!m_whisperModelCombo) return;
+
+    if (!customDir.isEmpty()) {
+        m_activeModelsDir = customDir;
+    }
+
+    QString envDir = QString::fromUtf8(qgetenv("FLEX_WHISPER_MODELS_DIR")).trimmed();
+    QString targetDir = !m_activeModelsDir.isEmpty()
+                            ? m_activeModelsDir
+                            : (!envDir.isEmpty()
+                                   ? envDir
+                                   : voice::WhisperModelResolver::defaultModelsDirectory());
+
+    QString previouslySelectedPath = m_whisperPathEdit ? m_whisperPathEdit->text().trimmed() : QString();
+
+    m_whisperModelCombo->blockSignals(true);
+    m_whisperModelCombo->clear();
+
+    // Option 0: Auto-resolved Default Model
+    m_whisperModelCombo->addItem(
+        QString("Auto-detect Default Model (%1)").arg(voice::WhisperModelResolver::defaultModelFileName()),
+        QString("")
+    );
+
+    auto discovered = voice::WhisperModelResolver::discoverInstalledModels(targetDir, previouslySelectedPath);
+    auto* standardModel = qobject_cast<QStandardItemModel*>(m_whisperModelCombo->model());
+
+    int selectedIdx = 0;
+    int validCount = 0;
+
+    for (const auto& info : discovered) {
+        double sizeMb = static_cast<double>(info.fileSizeBytes) / (1024.0 * 1024.0);
+        QString capStr = voice::WhisperModelResolver::whisperModelCapabilityToString(info.capability);
+        QString statusStr = voice::WhisperModelResolver::modelValidityStatusToString(info.validity);
+
+        QString itemText;
+        if (info.isValid()) {
+            validCount++;
+            itemText = QString("%1 (%2 MB) [%3] - %4")
+                           .arg(info.displayName)
+                           .arg(QString::number(sizeMb, 'f', 1))
+                           .arg(capStr)
+                           .arg(statusStr);
+            if (info.isDefaultModel) {
+                itemText += " [Default]";
+            }
+        } else {
+            itemText = QString("⚠ %1 (%2 MB) - %3")
+                           .arg(info.fileName)
+                           .arg(QString::number(sizeMb, 'f', 1))
+                           .arg(statusStr);
+        }
+
+        m_whisperModelCombo->addItem(itemText, info.absolutePath);
+        int itemRow = m_whisperModelCombo->count() - 1;
+
+        if (!info.isValid() && standardModel) {
+            auto* item = standardModel->item(itemRow);
+            if (item) {
+                item->setEnabled(false);
+            }
+        }
+
+        if (!previouslySelectedPath.isEmpty()) {
+            if (info.absolutePath.compare(previouslySelectedPath, Qt::CaseInsensitive) == 0 ||
+                info.fileName.compare(previouslySelectedPath, Qt::CaseInsensitive) == 0) {
+                selectedIdx = itemRow;
+            }
+        }
+    }
+
+    // If a custom path was configured but wasn't in targetDir
+    if (!previouslySelectedPath.isEmpty() && selectedIdx == 0) {
+        auto customInfo = voice::WhisperModelResolver::inspectModelFile(previouslySelectedPath);
+        QString capStr = voice::WhisperModelResolver::whisperModelCapabilityToString(customInfo.capability);
+        QString statusStr = voice::WhisperModelResolver::modelValidityStatusToString(customInfo.validity);
+        QString customItemText;
+        if (customInfo.isValid()) {
+            customItemText = QString("[Custom] %1 [%2] - %3")
+                                 .arg(customInfo.displayName)
+                                 .arg(capStr)
+                                 .arg(statusStr);
+        } else {
+            customItemText = QString("⚠ [Custom Missing/Invalid] %1 - %2")
+                                 .arg(QFileInfo(previouslySelectedPath).fileName())
+                                 .arg(statusStr);
+        }
+        m_whisperModelCombo->addItem(customItemText, customInfo.absolutePath.isEmpty() ? previouslySelectedPath : customInfo.absolutePath);
+        selectedIdx = m_whisperModelCombo->count() - 1;
+
+        if (!customInfo.isValid() && standardModel) {
+            auto* item = standardModel->item(selectedIdx);
+            if (item) {
+                item->setEnabled(false);
+            }
+        }
+    }
+
+    m_whisperModelCombo->setCurrentIndex(selectedIdx);
+    m_whisperModelCombo->blockSignals(false);
+
+    updateModelDetailsDisplay();
+}
+
+void SettingsView::onModelComboChanged(int index)
+{
+    if (index < 0 || !m_whisperModelCombo) return;
+
+    QString selectedPath = m_whisperModelCombo->currentData().toString();
+    if (m_whisperPathEdit) {
+        m_whisperPathEdit->setText(selectedPath);
+    }
+    updateModelDetailsDisplay();
+}
+
+void SettingsView::updateModelDetailsDisplay()
+{
+    if (!m_whisperDetailsLabel) return;
+
+    QString currentPath = m_whisperPathEdit ? m_whisperPathEdit->text().trimmed() : QString();
+    bool isAutoDefault = currentPath.isEmpty();
+    QString inspectTarget = isAutoDefault ? voice::WhisperModelResolver::defaultModelPath() : currentPath;
+
+    auto info = voice::WhisperModelResolver::inspectModelFile(inspectTarget);
+
+    if (!info.isValid()) {
+        QString warnMsg;
+        if (info.validity == voice::ModelValidityStatus::Missing) {
+            warnMsg = QString("⚠ Model file not found on disk:\n%1\nSaved preference is preserved. Run scripts/download_whisper_model.ps1 to download.")
+                          .arg(inspectTarget);
+        } else if (info.validity == voice::ModelValidityStatus::TooSmall) {
+            warnMsg = QString("⚠ Model file is too small or incomplete (%1 bytes):\n%2\nMinimum 1MB required. Saved preference is preserved.")
+                          .arg(info.fileSizeBytes)
+                          .arg(inspectTarget);
+        } else if (info.validity == voice::ModelValidityStatus::Unreadable) {
+            warnMsg = QString("⚠ Model file is unreadable (permission denied):\n%1\nSaved preference is preserved.")
+                          .arg(inspectTarget);
+        } else {
+            warnMsg = QString("⚠ Model file has invalid GGML format:\n%1\n%2")
+                          .arg(inspectTarget)
+                          .arg(info.diagnosticMessage);
+        }
+        m_whisperDetailsLabel->setText(warnMsg);
+        m_whisperDetailsLabel->setStyleSheet(QString("font-size: 11px; color: %1; background: #0F172A; padding: 8px 12px; border-radius: 6px; border: 1px solid #7F1D1D;").arg(Theme::StatusWarning));
+        return;
+    }
+
+    double sizeMb = static_cast<double>(info.fileSizeBytes) / (1024.0 * 1024.0);
+    QString capStr = voice::WhisperModelResolver::whisperModelCapabilityToString(info.capability);
+    QString defaultStr = info.isDefaultModel ? " [Default Model]" : "";
+    QString selectedStr = isAutoDefault ? " [Auto-resolved Default]" : " [Explicitly Selected]";
+
+    QString details = QString(
+        "• Model: %1%2%3\n"
+        "• Path: %4\n"
+        "• Size: %5 MB (%6 bytes)\n"
+        "• Capability Hint: %7 (Header classification; not proof of inference)\n"
+        "• Status: Valid GGML Binary Header"
+    ).arg(info.displayName)
+     .arg(defaultStr)
+     .arg(selectedStr)
+     .arg(info.absolutePath)
+     .arg(QString::number(sizeMb, 'f', 1))
+     .arg(info.fileSizeBytes)
+     .arg(capStr);
+
+    m_whisperDetailsLabel->setText(details);
+    m_whisperDetailsLabel->setStyleSheet("font-size: 11px; color: #CBD5E1; background: #0F172A; padding: 8px 12px; border-radius: 6px; border: 1px solid #334155;");
 }
 
 void SettingsView::onTestConnectionClicked()
@@ -331,7 +557,23 @@ void SettingsView::onSaveClicked()
 
     if (m_ttsRateSpin) newSettings.ttsRate = m_ttsRateSpin->value();
     if (m_ttsVolumeSpin) newSettings.ttsVolume = m_ttsVolumeSpin->value();
-    if (m_whisperPathEdit) newSettings.whisperModelPath = m_whisperPathEdit->text().trimmed().toStdString();
+
+    QString chosenWhisperPath;
+    if (m_whisperPathEdit) {
+        chosenWhisperPath = m_whisperPathEdit->text().trimmed();
+    }
+
+    // Validate model selection before saving via C core policy
+    char diagBuf[256] = {0};
+    QByteArray pathBytes = chosenWhisperPath.toLocal8Bit();
+    if (!flex_whisper_validate_model_selection(pathBytes.constData(), diagBuf, sizeof(diagBuf))) {
+        m_saveStatusLabel->setText(QString("✕ Save Blocked: Selected model file is invalid (%1).")
+                                       .arg(QString::fromUtf8(diagBuf)));
+        m_saveStatusLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(Theme::StatusError));
+        return;
+    }
+
+    newSettings.whisperModelPath = chosenWhisperPath.toStdString();
 
     auto saveRes = SettingsPersistenceService::saveSettings(newSettings);
     if (!saveRes.success) {
@@ -360,10 +602,14 @@ void SettingsView::onSaveClicked()
         m_tts->setVolume(newSettings.ttsVolume);
     }
 
+    bool sttBusy = false;
     if (m_stt) {
-        if (!newSettings.whisperModelPath.empty()) {
+        if (m_stt->isBusy()) {
+            sttBusy = true;
+        } else {
             m_stt->loadModel(QString::fromStdString(newSettings.whisperModelPath));
         }
+
         if (!newSettings.whisperLanguage.empty()) {
             m_stt->setLanguage(QString::fromStdString(newSettings.whisperLanguage));
         }
@@ -372,8 +618,13 @@ void SettingsView::onSaveClicked()
         }
     }
 
-    m_saveStatusLabel->setText("✓ Settings saved successfully to configuration file.");
-    m_saveStatusLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(Theme::StatusSuccess));
+    if (sttBusy) {
+        m_saveStatusLabel->setText("✓ Settings saved to disk. Speech-to-text service is currently transcribing; new model will take effect next session.");
+        m_saveStatusLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(Theme::StatusWarning));
+    } else {
+        m_saveStatusLabel->setText("✓ Settings saved successfully to configuration file.");
+        m_saveStatusLabel->setStyleSheet(QString("font-size: 12px; color: %1;").arg(Theme::StatusSuccess));
+    }
 
     refreshDeviceList();
     emit settingsUpdated();
@@ -390,7 +641,9 @@ void SettingsView::onResetClicked()
     if (m_micCombo) m_micCombo->setCurrentIndex(0);
     if (m_ttsRateSpin) m_ttsRateSpin->setValue(defaults.ttsRate);
     if (m_ttsVolumeSpin) m_ttsVolumeSpin->setValue(defaults.ttsVolume);
+    if (m_whisperModelCombo) m_whisperModelCombo->setCurrentIndex(0);
     if (m_whisperPathEdit) m_whisperPathEdit->clear();
+    updateModelDetailsDisplay();
 
     onSaveClicked();
 }

@@ -1098,6 +1098,13 @@ static void test_whisper_pipeline_suite(int *total_run, int *total_passed, int *
     C_ASSERT_STR_EQ("English-only", flex_whisper_capability_to_string(FLEX_WHISPER_CAP_ENGLISH_ONLY), "Capability string English-only");
     C_ASSERT_STR_EQ("Multilingual", flex_whisper_capability_to_string(FLEX_WHISPER_CAP_MULTILINGUAL), "Capability string Multilingual");
     C_ASSERT_STR_EQ("Unknown", flex_whisper_capability_to_string(FLEX_WHISPER_CAP_UNKNOWN), "Capability string Unknown");
+
+    /* Model selection validation policy */
+    char diag_buf[128];
+    C_ASSERT(flex_whisper_validate_model_selection(NULL, diag_buf, sizeof(diag_buf)), "NULL model selection is valid (default)");
+    C_ASSERT(flex_whisper_validate_model_selection("", diag_buf, sizeof(diag_buf)), "Empty model selection is valid (default)");
+    C_ASSERT(!flex_whisper_validate_model_selection("nonexistent_model_12345.bin", diag_buf, sizeof(diag_buf)), "Nonexistent model selection rejected");
+    C_ASSERT(diag_buf[0] != '\0', "Diagnostic message populated on failure");
 }
 
 static void test_tts_pipeline_suite(int *total_run, int *total_passed, int *total_failed) {

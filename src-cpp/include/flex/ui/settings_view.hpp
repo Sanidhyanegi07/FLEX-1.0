@@ -55,15 +55,26 @@ public:
     void setSpeechToTextService(std::shared_ptr<voice::SpeechToTextService> service);
 
     void loadCurrentConfig();
+    void refreshModelList(const QString& customDir = QString());
+    void updateModelDetailsDisplay();
+
+    [[nodiscard]] QComboBox* whisperModelCombo() const noexcept { return m_whisperModelCombo; }
+    [[nodiscard]] QLabel* whisperDetailsLabel() const noexcept { return m_whisperDetailsLabel; }
+    [[nodiscard]] QLabel* whisperStatusLabel() const noexcept { return m_whisperStatusLabel; }
+    [[nodiscard]] QLineEdit* whisperPathEdit() const noexcept { return m_whisperPathEdit; }
+    [[nodiscard]] QPushButton* whisperRefreshButton() const noexcept { return m_whisperRefreshBtn; }
+
+public slots:
+    void onSaveClicked();
+    void onResetClicked();
 
 signals:
     void settingsUpdated();
 
 private slots:
     void onTestConnectionClicked();
-    void onSaveClicked();
-    void onResetClicked();
     void refreshDeviceList();
+    void onModelComboChanged(int index);
 
 private:
     void setupUi();
@@ -89,8 +100,12 @@ private:
     QSpinBox* m_ttsVolumeSpin{nullptr};
 
     // 3. Whisper Speech-to-Text controls
+    QComboBox* m_whisperModelCombo{nullptr};
+    QPushButton* m_whisperRefreshBtn{nullptr};
     QLineEdit* m_whisperPathEdit{nullptr};
+    QLabel* m_whisperDetailsLabel{nullptr};
     QLabel* m_whisperStatusLabel{nullptr};
+    QString m_activeModelsDir;
 
     // 4. Persistence controls & feedback
     QPushButton* m_saveBtn{nullptr};

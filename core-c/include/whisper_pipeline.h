@@ -163,6 +163,17 @@ size_t flex_whisper_format_display_name(
  */
 const char* flex_whisper_capability_to_string(flex_whisper_capability_t cap);
 
+/**
+ * Validates a candidate model path for user selection.
+ * Empty or NULL paths are valid (designating auto-resolved default model).
+ * Non-empty paths must exist, be readable, >= 1MB, and possess a valid GGML header.
+ */
+bool flex_whisper_validate_model_selection(
+    const char* model_path,
+    char* out_diagnostic,
+    size_t diag_cap
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -442,3 +442,30 @@ const char* flex_whisper_capability_to_string(flex_whisper_capability_t cap) {
         default:                            return "Unknown";
     }
 }
+
+bool flex_whisper_validate_model_selection(
+    const char* model_path,
+    char* out_diagnostic,
+    size_t diag_cap
+) {
+    if (out_diagnostic && diag_cap > 0) {
+        out_diagnostic[0] = '\0';
+    }
+
+    if (!model_path || model_path[0] == '\0') {
+        /* Empty path represents auto-resolved default model preference */
+        return true;
+    }
+
+    flex_whisper_model_header_t hdr;
+    bool ok = flex_whisper_inspect_header(model_path, &hdr);
+    if (!ok || !hdr.is_valid_format) {
+        if (out_diagnostic && diag_cap > 0) {
+            snprintf(out_diagnostic, diag_cap, "%s",
+                     hdr.error_detail[0] ? hdr.error_detail : "Invalid or missing model file");
+        }
+        return false;
+    }
+
+    return true;
+}
