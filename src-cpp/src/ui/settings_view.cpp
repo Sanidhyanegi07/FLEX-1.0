@@ -33,10 +33,13 @@ SettingsView::SettingsView(
     , m_coordinator(std::move(coordinator))
     , m_audioCapture(std::move(audioCapture))
     , m_tts(std::move(tts))
-    , m_stt(std::move(stt))
 {
     setupUi();
-    loadCurrentConfig();
+    if (stt) {
+        setSpeechToTextService(std::move(stt));
+    } else {
+        loadCurrentConfig();
+    }
 }
 
 void SettingsView::setAudioCaptureService(std::shared_ptr<voice::AudioCaptureService> service)
@@ -70,6 +73,10 @@ void SettingsView::setSpeechToTextService(std::shared_ptr<voice::SpeechToTextSer
                     m_whisperStatusLabel->setText(QString("✓ Active in memory: %1")
                                                       .arg(QFileInfo(m_stt->loadedModelPath()).fileName()));
                     m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
+                } else if (!success && m_stt && m_stt->isModelLoaded()) {
+                    m_whisperStatusLabel->setText(QString("⚠ Replacement failed (%1). Preserved active in memory: %2")
+                                                      .arg(msg, QFileInfo(m_stt->loadedModelPath()).fileName()));
+                    m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusWarning));
                 } else {
                     m_whisperStatusLabel->setText(QString("✕ Model load failed: %1").arg(msg));
                     m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusError));
@@ -334,8 +341,16 @@ void SettingsView::loadCurrentConfig()
     // Update Whisper status label truthfully
     if (m_whisperStatusLabel) {
         if (m_stt && m_stt->isModelLoaded()) {
-            m_whisperStatusLabel->setText(QString("✓ Active in memory: %1")
-                                              .arg(QFileInfo(m_stt->loadedModelPath()).fileName()));
+            QString activeFileName = QFileInfo(m_stt->loadedModelPath()).fileName();
+            auto whisperRes = voice::WhisperModelResolver::resolveModelPath(QString::fromStdString(s.whisperModelPath));
+            QString configuredFileName = whisperRes.isFound() ? QFileInfo(whisperRes.resolvedPath).fileName() : QString::fromStdString(s.whisperModelPath);
+            if (!configuredFileName.isEmpty() && activeFileName.compare(configuredFileName, Qt::CaseInsensitive) != 0) {
+                m_whisperStatusLabel->setText(QString("✓ Active in memory: %1 (Configured: %2)")
+                                                  .arg(activeFileName, configuredFileName));
+            } else {
+                m_whisperStatusLabel->setText(QString("✓ Active in memory: %1")
+                                                  .arg(activeFileName));
+            }
             m_whisperStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
         } else if (m_stt && m_stt->isModelLoading()) {
             m_whisperStatusLabel->setText("⏳ Loading model into memory...");

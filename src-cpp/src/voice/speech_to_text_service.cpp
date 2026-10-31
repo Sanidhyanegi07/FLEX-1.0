@@ -2,6 +2,8 @@
 #include "flex/voice/whisper_model_resolver.hpp"
 #include "whisper_pipeline.h"
 #include <mutex>
+#include <atomic>
+#include <cstring>
 
 #include <whisper.h>
 
@@ -63,16 +65,23 @@ public:
         }
 
         // Two-phase commit: free old context only after new context successfully loads
-        cleanup();
-        m_ctx = newCtx;
-        m_modelPath = modelPath;
-        m_abortFlag.store(false);
+        {
+            std::lock_guard<std::mutex> lock(m_engineMutex);
+            if (m_ctx) {
+                whisper_free(m_ctx);
+                m_ctx = nullptr;
+            }
+            m_ctx = newCtx;
+            m_modelPath = modelPath;
+            m_abortFlag.store(false);
+        }
         std::cout << "[SpeechToText] Model initialization: SUCCESS\n";
         return true;
     }
 
     [[nodiscard]] bool isModelLoaded() const override
     {
+        std::lock_guard<std::mutex> lock(m_engineMutex);
         return (m_ctx != nullptr);
     }
 
@@ -102,11 +111,13 @@ public:
 
     [[nodiscard]] bool isMultilingual() const override
     {
+        std::lock_guard<std::mutex> lock(m_engineMutex);
         return (m_ctx != nullptr && whisper_is_multilingual(m_ctx) != 0);
     }
 
     TranscriptionResult transcribe(const std::vector<float>& samples, int nThreads) override
     {
+        std::lock_guard<std::mutex> lock(m_engineMutex);
         TranscriptionResult result;
         if (!m_ctx) {
             result.error = SpeechToTextError::ModelNotFound;
@@ -138,7 +149,7 @@ public:
         std::string currentLang;
         std::string currentPrompt;
         {
-            std::lock_guard<std::mutex> lock(m_configMutex);
+            std::lock_guard<std::mutex> configLock(m_configMutex);
             currentLang = m_language;
             currentPrompt = m_initialPrompt;
         }
@@ -165,8 +176,16 @@ public:
         params.print_realtime = false;
         params.print_timestamps = false;
         params.translate = false;
-        params.language = langCfg.effective_language;
-        params.detect_language = false;
+
+        // Configure language and automatic detection correctly
+        bool isAuto = (std::strcmp(langCfg.effective_language, "auto") == 0);
+        if (isAuto) {
+            params.language = "auto";
+            params.detect_language = true;
+        } else {
+            params.language = langCfg.effective_language;
+            params.detect_language = false;
+        }
         params.n_threads = threads;
 
         char promptBuf[512];
@@ -242,6 +261,7 @@ private:
     void cleanup()
     {
         m_abortFlag.store(true);
+        std::lock_guard<std::mutex> lock(m_engineMutex);
         if (m_ctx) {
             whisper_free(m_ctx);
             m_ctx = nullptr;
@@ -252,6 +272,7 @@ private:
     whisper_context* m_ctx{nullptr};
     std::string m_modelPath;
     std::atomic<bool> m_abortFlag{false};
+    mutable std::mutex m_engineMutex;
     mutable std::mutex m_configMutex;
     std::string m_language{"en"};
     std::string m_initialPrompt{""};
@@ -272,6 +293,11 @@ public:
 
     ~SpeechToTextWorker() override = default;
 
+    void setLatestRequestId(quint64 reqId)
+    {
+        m_latestQueuedRequestId.store(reqId);
+    }
+
 public slots:
     void doLoadModel(const QString& modelPath, quint64 requestId)
     {
@@ -280,7 +306,24 @@ public slots:
             return;
         }
 
+        // Check if request is already obsolete before starting expensive load
+        if (requestId != m_latestQueuedRequestId.load()) {
+            std::cout << "[SpeechToText] Skipping obsolete model load request #" << requestId
+                      << " (current active request: #" << m_latestQueuedRequestId.load() << ")\n";
+            emit modelLoadResult(false, "Model load request was superseded by a newer request.", requestId, modelPath);
+            return;
+        }
+
         bool ok = m_engine->loadModel(modelPath.toStdString());
+
+        // Check if request was superseded while loading
+        if (requestId != m_latestQueuedRequestId.load()) {
+            std::cout << "[SpeechToText] Discarding obsolete model load result for request #" << requestId
+                      << " (current active request: #" << m_latestQueuedRequestId.load() << ")\n";
+            emit modelLoadResult(false, "Model load request was superseded by a newer request.", requestId, modelPath);
+            return;
+        }
+
         if (ok) {
             emit modelLoadResult(true, "Model loaded successfully.", requestId, modelPath);
         } else {
@@ -338,6 +381,7 @@ signals:
 
 private:
     std::shared_ptr<ISpeechToTextEngine> m_engine;
+    std::atomic<quint64> m_latestQueuedRequestId{0};
 };
 
 } // anonymous namespace
@@ -362,6 +406,7 @@ public:
     QString m_lastErrorMessage;
     QString m_loadedModelPath;
     quint64 m_currentLoadRequestId{0};
+    mutable std::mutex m_stateMutex;
 
     QThread* m_workerThread{nullptr};
     SpeechToTextWorker* m_worker{nullptr};
@@ -388,6 +433,7 @@ SpeechToTextService::SpeechToTextService(
 
     connect(m_impl->m_worker, &SpeechToTextWorker::modelLoadResult,
             this, [this](bool ok, const QString& msg, quint64 requestId, const QString& attemptedPath) {
+        std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
         if (requestId != m_impl->m_currentLoadRequestId) {
             // Discard stale completion signal from superseded request
             return;
@@ -429,6 +475,7 @@ SpeechToTextService::~SpeechToTextService()
 
 bool SpeechToTextService::loadModel(const QString& modelPath)
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_state == SpeechToTextState::Transcribing ||
         m_impl->m_state == SpeechToTextState::LoadingModel) {
         m_impl->m_lastError = SpeechToTextError::Busy;
@@ -455,6 +502,11 @@ bool SpeechToTextService::loadModel(const QString& modelPath)
 
     QString targetPath = resolution.resolvedPath;
     quint64 reqId = ++m_impl->m_currentLoadRequestId;
+    if (reqId == 0) reqId = ++m_impl->m_currentLoadRequestId; // Prevent 0 on wraparound
+    if (m_impl->m_worker) {
+        m_impl->m_worker->setLatestRequestId(reqId);
+    }
+
     m_impl->m_state = SpeechToTextState::LoadingModel;
     m_impl->m_lastError = SpeechToTextError::None;
     m_impl->m_lastErrorMessage.clear();
@@ -510,16 +562,19 @@ bool SpeechToTextService::isModelLoaded() const
 
 bool SpeechToTextService::isModelLoading() const
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_state == SpeechToTextState::LoadingModel;
 }
 
 QString SpeechToTextService::loadedModelPath() const
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_loadedModelPath;
 }
 
 bool SpeechToTextService::transcribeAsync(const AudioBuffer& audioBuffer)
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_state == SpeechToTextState::Transcribing ||
         m_impl->m_state == SpeechToTextState::LoadingModel) {
         m_impl->m_lastError = SpeechToTextError::Busy;
@@ -592,6 +647,7 @@ bool SpeechToTextService::transcribeAsync(const AudioBuffer& audioBuffer)
 
 void SpeechToTextService::cancel()
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_worker) {
         m_impl->m_worker->cancel();
     }
@@ -605,6 +661,7 @@ void SpeechToTextService::cancel()
 
 void SpeechToTextService::onWorkerFinished(const TranscriptionResult& result)
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_state != SpeechToTextState::Transcribing) {
         return; // Stale or already cancelled
     }
@@ -632,6 +689,7 @@ void SpeechToTextService::onWorkerFinished(const TranscriptionResult& result)
 
 void SpeechToTextService::onWorkerError(SpeechToTextError error, const QString& message)
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     m_impl->m_state = SpeechToTextState::Error;
     m_impl->m_lastError = error;
     m_impl->m_lastErrorMessage = message;
@@ -641,22 +699,26 @@ void SpeechToTextService::onWorkerError(SpeechToTextError error, const QString& 
 
 bool SpeechToTextService::isBusy() const
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_state == SpeechToTextState::Transcribing ||
            m_impl->m_state == SpeechToTextState::LoadingModel;
 }
 
 SpeechToTextState SpeechToTextService::state() const
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_state;
 }
 
 SpeechToTextError SpeechToTextService::lastError() const
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_lastError;
 }
 
 QString SpeechToTextService::lastErrorMessage() const
 {
+    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_lastErrorMessage;
 }
 
@@ -667,7 +729,7 @@ void SpeechToTextService::setLanguage(const QString& language)
     }
     if (m_impl->m_worker) {
         QMetaObject::invokeMethod(m_impl->m_worker, "setLanguage", Qt::QueuedConnection,
-                                  Q_ARG(QString, language));
+                                   Q_ARG(QString, language));
     }
 }
 
@@ -686,7 +748,7 @@ void SpeechToTextService::setInitialPrompt(const QString& prompt)
     }
     if (m_impl->m_worker) {
         QMetaObject::invokeMethod(m_impl->m_worker, "setInitialPrompt", Qt::QueuedConnection,
-                                  Q_ARG(QString, prompt));
+                                   Q_ARG(QString, prompt));
     }
 }
 
@@ -726,12 +788,14 @@ void SpeechToTextService::setEngine(std::shared_ptr<ISpeechToTextEngine> engine)
 
     m_impl->m_workerThread = new QThread(this);
     m_impl->m_worker = new SpeechToTextWorker(m_impl->m_engine);
+    m_impl->m_worker->setLatestRequestId(m_impl->m_currentLoadRequestId);
     m_impl->m_worker->moveToThread(m_impl->m_workerThread);
 
     connect(m_impl->m_workerThread, &QThread::finished, m_impl->m_worker, &QObject::deleteLater);
 
     connect(m_impl->m_worker, &SpeechToTextWorker::modelLoadResult,
             this, [this](bool ok, const QString& msg, quint64 requestId, const QString& attemptedPath) {
+        std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
         if (requestId != m_impl->m_currentLoadRequestId) {
             // Discard stale completion signal from superseded request
             return;
@@ -788,4 +852,3 @@ const char* speechToTextErrorToString(SpeechToTextError error) noexcept
 } // namespace flex::voice
 
 #include "speech_to_text_service.moc"
-
