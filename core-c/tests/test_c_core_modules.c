@@ -369,36 +369,119 @@ static void test_audio_dsp_suite(int *total_run, int *total_passed, int *total_f
     C_ASSERT(fabsf(peak_44k - 0.60f) < 0.06f, "44.1k -> 16k passband peak preserved");
 
     /* 7. Stereo Analysis & Safe Downmixing (Anti-Phase Cancellation Protection) */
-    float anti_phase[200];
+    /* 7a. Anti-phase equal-amplitude tie-breaker (prefers ch0) */
+    float anti_phase_equal[200];
     for (int i = 0; i < 100; ++i) {
         float val = 0.5f * sinf((float)i);
-        anti_phase[i * 2] = val;       /* Channel 0: Left */
-        anti_phase[i * 2 + 1] = -val;  /* Channel 1: Right (180 deg out-of-phase) */
+        anti_phase_equal[i * 2] = val;       /* Channel 0: Left */
+        anti_phase_equal[i * 2 + 1] = -val;  /* Channel 1: Right (180 deg out-of-phase) */
     }
-    flex_stereo_analysis_t analysis_ap;
-    flex_audio_analyze_stereo(anti_phase, 100, &analysis_ap);
-    C_ASSERT(analysis_ap.correlation < -0.95f, "Anti-phase correlation detected as negative (~ -1.0)");
-    C_ASSERT(analysis_ap.downmix_mode == 1, "Downmix mode selected channel 0 (primary) to avoid 0-cancellation");
-    float mono_ap[100];
-    flex_audio_downmix_to_mono_safe(anti_phase, mono_ap, 100, 2, &analysis_ap);
-    float ap_rms = 0.0f, ap_peak = 0.0f;
-    flex_audio_calculate_rms(mono_ap, 100, &ap_rms, &ap_peak);
-    C_ASSERT(ap_peak > 0.40f, "Anti-phase downmix preserved signal amplitude without cancellation");
+    flex_stereo_analysis_t analysis_ap_eq;
+    flex_audio_analyze_stereo(anti_phase_equal, 100, &analysis_ap_eq);
+    C_ASSERT(analysis_ap_eq.correlation < -0.95f, "Anti-phase correlation detected as negative (~ -1.0)");
+    C_ASSERT(analysis_ap_eq.downmix_mode == 1, "Equal-level anti-phase tie-break selects channel 0");
+    float mono_ap_eq[100];
+    flex_audio_downmix_to_mono_safe(anti_phase_equal, mono_ap_eq, 100, 2, &analysis_ap_eq);
+    float ap_eq_rms = 0.0f, ap_eq_peak = 0.0f;
+    flex_audio_calculate_rms(mono_ap_eq, 100, &ap_eq_rms, &ap_eq_peak);
+    C_ASSERT(ap_eq_peak > 0.40f, "Anti-phase equal downmix preserved channel 0 amplitude");
 
-    /* 8. Stereo Channel Imbalance (One Channel Dead) */
-    float single_ended[200];
+    /* 7b. Anti-phase unequal amplitudes: Channel 1 stronger (should select Channel 1) */
+    float anti_phase_ch1_stronger[200];
     for (int i = 0; i < 100; ++i) {
-        single_ended[i * 2] = 0.5f * sinf((float)i);
-        single_ended[i * 2 + 1] = 0.0f; /* dead right channel */
+        float val = sinf((float)i);
+        anti_phase_ch1_stronger[i * 2] = 0.15f * val;       /* Channel 0: quiet */
+        anti_phase_ch1_stronger[i * 2 + 1] = -0.45f * val;  /* Channel 1: loud inverted */
+    }
+    flex_stereo_analysis_t analysis_ap_ch1;
+    flex_audio_analyze_stereo(anti_phase_ch1_stronger, 100, &analysis_ap_ch1);
+    C_ASSERT(analysis_ap_ch1.correlation < -0.95f, "Anti-phase ch1 stronger has negative correlation");
+    C_ASSERT(analysis_ap_ch1.downmix_mode == 2, "Anti-phase selects stronger channel 1 (Mode 2)");
+    float mono_ap_ch1[100];
+    flex_audio_downmix_to_mono_safe(anti_phase_ch1_stronger, mono_ap_ch1, 100, 2, &analysis_ap_ch1);
+    float ap_ch1_rms = 0.0f, ap_ch1_peak = 0.0f;
+    flex_audio_calculate_rms(mono_ap_ch1, 100, &ap_ch1_rms, &ap_ch1_peak);
+    C_ASSERT(fabsf(ap_ch1_peak - 0.45f) < 0.05f, "Anti-phase downmix preserved stronger Channel 1 amplitude");
+
+    /* 7c. Anti-phase unequal amplitudes: Channel 0 stronger (should select Channel 0) */
+    float anti_phase_ch0_stronger[200];
+    for (int i = 0; i < 100; ++i) {
+        float val = sinf((float)i);
+        anti_phase_ch0_stronger[i * 2] = 0.45f * val;       /* Channel 0: loud */
+        anti_phase_ch0_stronger[i * 2 + 1] = -0.15f * val;  /* Channel 1: quiet inverted */
+    }
+    flex_stereo_analysis_t analysis_ap_ch0;
+    flex_audio_analyze_stereo(anti_phase_ch0_stronger, 100, &analysis_ap_ch0);
+    C_ASSERT(analysis_ap_ch0.downmix_mode == 1, "Anti-phase selects stronger channel 0 (Mode 1)");
+
+    /* 8. Dead Channel Detection at Multiple Amplitudes & Acoustic Stereo Balance */
+    /* 8a. Loud speech on Ch0 with dead Ch1 */
+    float single_ended_loud[200];
+    for (int i = 0; i < 100; ++i) {
+        single_ended_loud[i * 2] = 0.5f * sinf((float)i);
+        single_ended_loud[i * 2 + 1] = 0.0f; /* dead right channel */
     }
     flex_stereo_analysis_t analysis_se;
-    flex_audio_analyze_stereo(single_ended, 100, &analysis_se);
-    C_ASSERT(analysis_se.downmix_mode == 1, "Dead right channel detected, downmix mode 1 (ch0 only)");
+    flex_audio_analyze_stereo(single_ended_loud, 100, &analysis_se);
+    C_ASSERT(analysis_se.downmix_mode == 1, "Dead right channel detected for loud speech, mode 1");
     float mono_se[100];
-    flex_audio_downmix_to_mono_safe(single_ended, mono_se, 100, 2, &analysis_se);
+    flex_audio_downmix_to_mono_safe(single_ended_loud, mono_se, 100, 2, &analysis_se);
     float se_rms = 0.0f, se_peak = 0.0f;
     flex_audio_calculate_rms(mono_se, 100, &se_rms, &se_peak);
-    C_ASSERT(fabsf(se_peak - 0.5f) < 0.05f, "Single-ended mic preserved full dynamic range");
+    C_ASSERT(fabsf(se_peak - 0.5f) < 0.05f, "Single-ended loud mic preserved full dynamic range");
+
+    /* 8b. Quiet speech on Ch0 (RMS ~0.003) with dead Ch1 (<0.0001) */
+    float quiet_ch0_dead_ch1[200];
+    for (int i = 0; i < 100; ++i) {
+        quiet_ch0_dead_ch1[i * 2] = 0.004f * sinf((float)i); /* quiet speech */
+        quiet_ch0_dead_ch1[i * 2 + 1] = 0.00005f * ((i % 2) ? 1.0f : -1.0f); /* DAC noise */
+    }
+    flex_stereo_analysis_t analysis_q_ch0;
+    flex_audio_analyze_stereo(quiet_ch0_dead_ch1, 100, &analysis_q_ch0);
+    C_ASSERT(analysis_q_ch0.downmix_mode == 1, "Quiet speech on ch0 with dead ch1 triggers mode 1");
+
+    /* 8c. Quiet speech on Ch1 (RMS ~0.003) with dead Ch0 (<0.0001) */
+    float quiet_ch1_dead_ch0[200];
+    for (int i = 0; i < 100; ++i) {
+        quiet_ch1_dead_ch0[i * 2] = 0.00005f * ((i % 2) ? 1.0f : -1.0f);
+        quiet_ch1_dead_ch0[i * 2 + 1] = 0.004f * sinf((float)i);
+    }
+    flex_stereo_analysis_t analysis_q_ch1;
+    flex_audio_analyze_stereo(quiet_ch1_dead_ch0, 100, &analysis_q_ch1);
+    C_ASSERT(analysis_q_ch1.downmix_mode == 2, "Quiet speech on ch1 with dead ch0 triggers mode 2");
+
+    /* 8d. Unequal natural stereo speech (both active: 2:1 ratio) must NOT drop a channel */
+    float natural_stereo[200];
+    for (int i = 0; i < 100; ++i) {
+        float val = 0.20f * sinf((float)i);
+        natural_stereo[i * 2] = val;
+        natural_stereo[i * 2 + 1] = val * 0.50f; /* 6 dB panned speech */
+    }
+    flex_stereo_analysis_t analysis_nat;
+    flex_audio_analyze_stereo(natural_stereo, 100, &analysis_nat);
+    C_ASSERT(analysis_nat.downmix_mode == 0, "Natural stereo imbalance retains balanced average (mode 0)");
+
+    /* 8e. Both channels silent */
+    float both_silent[200];
+    memset(both_silent, 0, sizeof(both_silent));
+    flex_stereo_analysis_t analysis_sil;
+    flex_audio_analyze_stereo(both_silent, 100, &analysis_sil);
+    C_ASSERT(analysis_sil.downmix_mode == 0, "Both channels silent defaults to mode 0");
+
+    /* 8f. Robustness: NaN and Infinity in stereo channel */
+    float nan_stereo[200];
+    for (int i = 0; i < 100; ++i) {
+        nan_stereo[i * 2] = 0.0f / 0.0f; /* NaN */
+        nan_stereo[i * 2 + 1] = 0.30f * sinf((float)i);
+    }
+    flex_stereo_analysis_t analysis_nan;
+    flex_audio_analyze_stereo(nan_stereo, 100, &analysis_nan);
+    C_ASSERT(analysis_nan.downmix_mode == 2, "NaN channel marked dead, valid channel 1 preserved");
+    float mono_nan[100];
+    flex_audio_downmix_to_mono_safe(nan_stereo, mono_nan, 100, 2, &analysis_nan);
+    for (int i = 0; i < 100; ++i) {
+        C_ASSERT(!isnan(mono_nan[i]) && !isinf(mono_nan[i]), "Downmixed samples contain zero NaNs/Infs");
+    }
 
     /* 9. Speech Level Normalization & Noise Gate */
     float quiet_speech[100];
@@ -425,6 +508,17 @@ static void test_audio_dsp_suite(int *total_run, int *total_passed, int *total_f
     C_ASSERT(noise_res.is_silence, "Room noise classified as silence");
     C_ASSERT(noise_res.gain_applied == 1.0f, "Room noise kept at unity gain 1.0 (no amplification)");
 
+    /* 10b. Normalization NaN/Inf Sanitization & Bounded Output */
+    float dirty_samples[10] = { 0.1f, 0.0f/0.0f, 1.0f/0.0f, -1.0f/0.0f, 0.2f, -0.2f, 0.3f, -0.3f, 0.1f, 0.0f };
+    flex_audio_norm_result_t dirty_res = flex_audio_normalize_speech(
+        dirty_samples, 10, 0.75f, 5.0f, 0.003f
+    );
+    C_ASSERT(dirty_res.gain_applied >= 1.0f, "Dirty sample normalization returns valid gain >= 1.0");
+    for (int i = 0; i < 10; ++i) {
+        C_ASSERT(!isnan(dirty_samples[i]) && !isinf(dirty_samples[i]), "Normalized samples contain no NaN or Inf");
+        C_ASSERT(dirty_samples[i] >= -1.0f && dirty_samples[i] <= 1.0f, "Normalized samples bounded [-1.0, 1.0]");
+    }
+
     /* 11. Clipping Prevention & Finite Range */
     float hot_audio[10] = { 0.95f, 1.20f, -1.30f, 0.50f, -0.99f, 0.80f, -0.80f, 0.10f, -0.10f, 0.0f };
     flex_audio_norm_result_t hot_res = flex_audio_normalize_speech(
@@ -435,11 +529,23 @@ static void test_audio_dsp_suite(int *total_run, int *total_passed, int *total_f
         C_ASSERT(hot_audio[i] >= -1.0f && hot_audio[i] <= 1.0f, "Hot audio clamped safely inside [-1.0, 1.0]");
     }
 
-    /* 12. Boundary and Invalid Argument Handling */
+    /* 12. Boundary, Small Buffers & ptrdiff_t Safety */
     C_ASSERT(flex_audio_resample_bandlimited(NULL, 100, 48000, sinc_out_16k, 100, 16000) == 0, "NULL input rejected");
     C_ASSERT(flex_audio_resample_bandlimited(sine_1k_48k, 0, 48000, sinc_out_16k, 100, 16000) == 0, "0 count rejected");
     C_ASSERT(flex_audio_resample_bandlimited(sine_1k_48k, 100, 0, sinc_out_16k, 100, 16000) == 0, "0 in_rate rejected");
     C_ASSERT(flex_audio_resample_bandlimited(sine_1k_48k, 100, 48000, sinc_out_16k, 100, 0) == 0, "0 out_rate rejected");
+
+    /* 12b. Short clip resampling (1, 2, 5 samples) */
+    float tiny_in[5] = { 0.2f, -0.3f, 0.4f, -0.5f, 0.1f };
+    float tiny_out[10];
+    size_t tiny_n1 = flex_audio_resample_bandlimited(tiny_in, 1, 48000, tiny_out, 10, 16000);
+    C_ASSERT(tiny_n1 == 1, "1-sample input resampled cleanly");
+    C_ASSERT(fabsf(tiny_out[0] - tiny_in[0]) < 0.001f, "1-sample input matches direct value");
+    size_t tiny_n5 = flex_audio_resample_bandlimited(tiny_in, 5, 48000, tiny_out, 10, 16000);
+    C_ASSERT(tiny_n5 == 2, "5-sample input resampled to 2 samples at 3:1");
+    for (size_t i = 0; i < tiny_n5; ++i) {
+        C_ASSERT(!isnan(tiny_out[i]) && tiny_out[i] >= -1.0f && tiny_out[i] <= 1.0f, "Tiny resample is finite and clamped");
+    }
 
     /* 13. RMS and dB */
     float tone[4] = { 0.5f, -0.5f, 0.5f, -0.5f };

@@ -995,6 +995,51 @@ void test_audio_conversion_stereo_antiphase_and_normalization()
     // Naive (L+R)/2 would result in apPeak == 0.0; safe policy preserves channel 0 (> 0.40)
     EXPECT_TRUE(apPeak > 0.40f);
 
+    // 1b. Anti-phase stereo where Channel 1 is stronger (L = +0.10, R = -0.50)
+    std::vector<float> antiPhaseCh1Strong(numFrames * 2);
+    for (int i = 0; i < numFrames; ++i) {
+        float val = std::sin(2.0f * 3.14159265f * 440.0f * (static_cast<float>(i) / 16000.0f));
+        antiPhaseCh1Strong[i * 2] = 0.10f * val;       // Ch0 weak
+        antiPhaseCh1Strong[i * 2 + 1] = -0.50f * val;  // Ch1 strong inverted
+    }
+    auto resAntiPhaseCh1 = flex::voice::convertAndResampleTo16kMono(
+        antiPhaseCh1Strong.data(),
+        antiPhaseCh1Strong.size() * sizeof(float),
+        16000,
+        2,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+    EXPECT_TRUE(resAntiPhaseCh1.success);
+    float apCh1Peak = 0.0f;
+    for (float s : resAntiPhaseCh1.buffer.samples) {
+        float a = std::abs(s);
+        if (a > apCh1Peak) apCh1Peak = a;
+    }
+    // Safe policy must select stronger Channel 1 (>0.40) rather than weak Ch0 (~0.10)
+    EXPECT_TRUE(apCh1Peak > 0.40f);
+
+    // 1c. Quiet speech on Channel 0 (peak 0.004, RMS ~0.0028) with dead Channel 1 (< 0.0001)
+    std::vector<float> quietCh0DeadCh1(numFrames * 2);
+    for (int i = 0; i < numFrames; ++i) {
+        quietCh0DeadCh1[i * 2] = 0.004f * std::sin(2.0f * 3.14159265f * 440.0f * (static_cast<float>(i) / 16000.0f));
+        quietCh0DeadCh1[i * 2 + 1] = 0.00002f * ((i % 2) ? 1.0f : -1.0f);
+    }
+    auto resQuietDead = flex::voice::convertAndResampleTo16kMono(
+        quietCh0DeadCh1.data(),
+        quietCh0DeadCh1.size() * sizeof(float),
+        16000,
+        2,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+    EXPECT_TRUE(resQuietDead.success);
+    float qdPeak = 0.0f;
+    for (float s : resQuietDead.buffer.samples) {
+        float a = std::abs(s);
+        if (a > qdPeak) qdPeak = a;
+    }
+    // Must recognize Ch1 dead and preserve Ch0 without 50% attenuation (peak >= 0.003f)
+    EXPECT_TRUE(qdPeak >= 0.003f);
+
     // 2. Quiet speech normalization (peak 0.05, RMS ~0.035, above noise gate 0.003)
     std::vector<float> quietSpeech(1600);
     for (int i = 0; i < 1600; ++i) {
@@ -1040,6 +1085,50 @@ void test_audio_conversion_stereo_antiphase_and_normalization()
     }
     // Room noise must NOT be amplified by normalization (must remain < 0.003)
     EXPECT_TRUE(nPeak < 0.003f);
+
+    // 4. Steady background noise above noise gate (peak 0.02, RMS ~0.014 > 0.003 gate)
+    // Documents normalizer behavior: steady noise above gate without speech receives amplification
+    std::vector<float> steadyNoise(1600);
+    for (int i = 0; i < 1600; ++i) {
+        steadyNoise[i] = 0.02f * std::sin(2.0f * 3.14159265f * 120.0f * (static_cast<float>(i) / 16000.0f));
+    }
+    auto resSteady = flex::voice::convertAndResampleTo16kMono(
+        steadyNoise.data(),
+        steadyNoise.size() * sizeof(float),
+        16000,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+    EXPECT_TRUE(resSteady.success);
+    float snPeak = 0.0f;
+    for (float s : resSteady.buffer.samples) {
+        float a = std::abs(s);
+        if (a > snPeak) snPeak = a;
+    }
+    // Steady noise gets amplified by normalizer up to max gain or 0.75 target
+    EXPECT_TRUE(snPeak >= 0.25f && snPeak <= 0.80f);
+
+    // 5. Dirty input containing NaN and infinity must be sanitized to valid finite floats
+    std::vector<float> dirtyAudio = {
+        0.50f, -0.50f,
+        std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        0.25f, -0.25f, 0.10f
+    };
+    auto resDirty = flex::voice::convertAndResampleTo16kMono(
+        dirtyAudio.data(),
+        dirtyAudio.size() * sizeof(float),
+        16000,
+        1,
+        flex::voice::AudioSampleFormat::Float32,
+        16000);
+    EXPECT_TRUE(resDirty.success);
+    for (float s : resDirty.buffer.samples) {
+        EXPECT_FALSE(std::isnan(s));
+        EXPECT_FALSE(std::isinf(s));
+        EXPECT_TRUE(s >= -1.0f && s <= 1.0f);
+    }
 }
 
 // -----------------------------------------------------------------------------

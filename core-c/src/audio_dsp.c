@@ -194,6 +194,11 @@ void flex_audio_calculate_rms(
         float v2 = samples[i + 2];
         float v3 = samples[i + 3];
 
+        if (isnan(v0) || isinf(v0)) v0 = 0.0f;
+        if (isnan(v1) || isinf(v1)) v1 = 0.0f;
+        if (isnan(v2) || isinf(v2)) v2 = 0.0f;
+        if (isnan(v3) || isinf(v3)) v3 = 0.0f;
+
         sum0 += (double)v0 * (double)v0;
         sum1 += (double)v1 * (double)v1;
         sum2 += (double)v2 * (double)v2;
@@ -214,6 +219,7 @@ void flex_audio_calculate_rms(
     double sum_sq = sum0 + sum1 + sum2 + sum3;
     while (i < count) {
         float val = samples[i];
+        if (isnan(val) || isinf(val)) val = 0.0f;
         float a = fabsf(val);
         if (a > peak) peak = a;
         sum_sq += (double)val * (double)val;
@@ -301,6 +307,9 @@ void flex_audio_analyze_stereo(
         float l = in_interleaved[i * 2];
         float r = in_interleaved[i * 2 + 1];
 
+        if (isnan(l) || isinf(l)) l = 0.0f;
+        if (isnan(r) || isinf(r)) r = 0.0f;
+
         float abs_l = fabsf(l);
         float abs_r = fabsf(r);
         if (abs_l > peak0) peak0 = abs_l;
@@ -327,20 +336,58 @@ void flex_audio_analyze_stereo(
     out_analysis->correlation = corr;
 
     /* Decision logic:
-     * 1. Channel 0 dead (< 0.0005) while Channel 1 active (> 0.005) -> use ch1
-     * 2. Channel 1 dead (< 0.0005) while Channel 0 active (> 0.005) -> use ch0
-     * 3. Anti-phase (correlation < -0.5f) -> use ch0 to prevent phase cancellation
-     * 4. Otherwise standard balanced average
+     * Mode 0 = balanced sum: (ch0 + ch1) * 0.5f
+     * Mode 1 = ch0 only (ch1 dead, or anti-phase where ch0 >= ch1 or tie)
+     * Mode 2 = ch1 only (ch0 dead, or anti-phase where ch1 > ch0)
      */
-    if (rms1 > 0.005f && rms0 < 0.0005f) {
-        out_analysis->downmix_mode = 2; /* ch1 only */
-    } else if (rms0 > 0.005f && rms1 < 0.0005f) {
-        out_analysis->downmix_mode = 1; /* ch0 only */
-    } else if (corr < -0.5f) {
-        out_analysis->downmix_mode = 1; /* anti-phase, prefer ch0 */
-    } else {
-        out_analysis->downmix_mode = 0; /* balanced average */
+
+    /* Case 1: Both channels silent / near-zero (< -80 dBFS) */
+    if (rms0 < 0.0001f && rms1 < 0.0001f) {
+        out_analysis->downmix_mode = 0; /* balanced average of silence */
+        return;
     }
+
+    /* Case 2: Dead-channel detection with relative energy criteria:
+     * Active channel must have meaningful energy (>= 0.001f, -60 dBFS).
+     * Dead channel is either below electronic noise floor (< 0.0002f, -74 dBFS)
+     * OR has >= 20 dB lower energy (ratio >= 10.0f) while below ambient room noise (< 0.002f).
+     */
+    bool ch1_dead = (rms0 >= 0.001f) &&
+                    ((rms1 < 0.0002f && rms0 >= (5.0f * rms1)) ||
+                     (rms1 < 0.002f && rms0 >= (10.0f * rms1)));
+
+    bool ch0_dead = (rms1 >= 0.001f) &&
+                    ((rms0 < 0.0002f && rms1 >= (5.0f * rms0)) ||
+                     (rms0 < 0.002f && rms1 >= (10.0f * rms0)));
+
+    if (ch0_dead && !ch1_dead) {
+        out_analysis->downmix_mode = 2; /* ch1 only */
+        return;
+    }
+    if (ch1_dead && !ch0_dead) {
+        out_analysis->downmix_mode = 1; /* ch0 only */
+        return;
+    }
+
+    /* Case 3: Anti-phase stereo cancellation avoidance (correlation < -0.5f).
+     * To prevent destructive phase cancellation, select the stronger channel.
+     * If one channel has > 5% higher RMS energy, select that channel.
+     * If channel levels are approximately equal (tie within 5%), deterministically
+     * select Channel 0 (primary / Left channel).
+     * Note: Comparing RMS selects the channel with higher received amplitude;
+     * true acoustic SNR cannot be determined without a calibrated noise model.
+     */
+    if (corr < -0.5f) {
+        if (rms1 > rms0 * 1.05f) {
+            out_analysis->downmix_mode = 2; /* ch1 stronger */
+        } else {
+            out_analysis->downmix_mode = 1; /* ch0 stronger or deterministic tie */
+        }
+        return;
+    }
+
+    /* Case 4: Normal stereo with both channels active and reasonable phase alignment */
+    out_analysis->downmix_mode = 0; /* balanced average */
 }
 
 void flex_audio_downmix_to_mono_safe(
@@ -353,7 +400,11 @@ void flex_audio_downmix_to_mono_safe(
     if (!in_interleaved || !out_mono || frame_count == 0 || channel_count == 0) return;
 
     if (channel_count == 1) {
-        memcpy(out_mono, in_interleaved, frame_count * sizeof(float));
+        for (size_t i = 0; i < frame_count; ++i) {
+            float val = in_interleaved[i];
+            if (isnan(val) || isinf(val)) val = 0.0f;
+            out_mono[i] = val;
+        }
         return;
     }
 
@@ -362,19 +413,27 @@ void flex_audio_downmix_to_mono_safe(
         if (mode == 1) {
             /* Left channel only */
             for (size_t i = 0; i < frame_count; ++i) {
-                out_mono[i] = in_interleaved[i * 2];
+                float val = in_interleaved[i * 2];
+                if (isnan(val) || isinf(val)) val = 0.0f;
+                out_mono[i] = val;
             }
             return;
         } else if (mode == 2) {
             /* Right channel only */
             for (size_t i = 0; i < frame_count; ++i) {
-                out_mono[i] = in_interleaved[i * 2 + 1];
+                float val = in_interleaved[i * 2 + 1];
+                if (isnan(val) || isinf(val)) val = 0.0f;
+                out_mono[i] = val;
             }
             return;
         } else {
             /* Balanced sum */
             for (size_t i = 0; i < frame_count; ++i) {
-                out_mono[i] = (in_interleaved[i * 2] + in_interleaved[i * 2 + 1]) * 0.5f;
+                float l = in_interleaved[i * 2];
+                float r = in_interleaved[i * 2 + 1];
+                if (isnan(l) || isinf(l)) l = 0.0f;
+                if (isnan(r) || isinf(r)) r = 0.0f;
+                out_mono[i] = (l + r) * 0.5f;
             }
             return;
         }
@@ -385,7 +444,9 @@ void flex_audio_downmix_to_mono_safe(
     for (size_t i = 0; i < frame_count; ++i) {
         float sum = 0.0f;
         for (uint32_t c = 0; c < channel_count; ++c) {
-            sum += in_interleaved[i * channel_count + c];
+            float val = in_interleaved[i * channel_count + c];
+            if (isnan(val) || isinf(val)) val = 0.0f;
+            sum += val;
         }
         out_mono[i] = sum * inv_ch;
     }
@@ -448,16 +509,16 @@ size_t flex_audio_resample_bandlimited(
 
     for (size_t i = 0; i < out_count; ++i) {
         double center_t = (double)i * step;
-        long n_start = (long)ceil(center_t - filter_radius);
-        long n_end = (long)floor(center_t + filter_radius);
+        ptrdiff_t n_start = (ptrdiff_t)ceil(center_t - filter_radius);
+        ptrdiff_t n_end = (ptrdiff_t)floor(center_t + filter_radius);
 
         if (n_start < 0) n_start = 0;
-        if ((size_t)n_end >= in_count) n_end = (long)(in_count - 1);
+        if ((size_t)n_end >= in_count) n_end = (ptrdiff_t)(in_count - 1);
 
         double acc = 0.0;
         double weight_sum = 0.0;
 
-        for (long n = n_start; n <= n_end; ++n) {
+        for (ptrdiff_t n = n_start; n <= n_end; ++n) {
             double diff = (double)n - center_t;
             double sinc_val = flex_sinc_pi(2.0 * cutoff * diff);
             double win_val = flex_blackman_win(diff, filter_radius);
@@ -471,8 +532,13 @@ size_t flex_audio_resample_bandlimited(
             acc /= weight_sum;
         }
 
-        if (acc > 1.0) acc = 1.0;
-        if (acc < -1.0) acc = -1.0;
+        if (isnan(acc) || isinf(acc)) {
+            acc = 0.0;
+        } else if (acc > 1.0) {
+            acc = 1.0;
+        } else if (acc < -1.0) {
+            acc = -1.0;
+        }
         out_samples[i] = (float)acc;
     }
 
@@ -507,8 +573,15 @@ flex_audio_norm_result_t flex_audio_normalize_speech(
         res.was_normalized = false;
         res.gain_applied = 1.0f;
         for (size_t i = 0; i < count; ++i) {
-            if (samples[i] > 1.0f) samples[i] = 1.0f;
-            if (samples[i] < -1.0f) samples[i] = -1.0f;
+            float val = samples[i];
+            if (isnan(val) || isinf(val)) {
+                val = 0.0f;
+            } else if (val > 1.0f) {
+                val = 1.0f;
+            } else if (val < -1.0f) {
+                val = -1.0f;
+            }
+            samples[i] = val;
         }
         return res;
     }
@@ -528,9 +601,14 @@ flex_audio_norm_result_t flex_audio_normalize_speech(
     }
 
     for (size_t i = 0; i < count; ++i) {
-        float val = samples[i] * desired_gain;
-        if (val > 1.0f) val = 1.0f;
-        if (val < -1.0f) val = -1.0f;
+        float val = samples[i];
+        if (isnan(val) || isinf(val)) {
+            val = 0.0f;
+        } else {
+            val *= desired_gain;
+            if (val > 1.0f) val = 1.0f;
+            if (val < -1.0f) val = -1.0f;
+        }
         samples[i] = val;
     }
 

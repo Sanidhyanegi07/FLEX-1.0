@@ -89,7 +89,9 @@ typedef struct {
     float ch1_rms;
     float ch0_peak;
     float ch1_peak;
-    int downmix_mode;        /* 0 = balanced average, 1 = ch0 only (ch1 dead or anti-phase), 2 = ch1 only (ch0 dead) */
+    int downmix_mode;        /* 0 = balanced average (ch0+ch1)*0.5f,
+                              * 1 = ch0 only (ch1 dead, or anti-phase where ch0 >= ch1 or tie),
+                              * 2 = ch1 only (ch0 dead, or anti-phase where ch1 > ch0) */
 } flex_stereo_analysis_t;
 
 typedef struct {
@@ -105,6 +107,18 @@ typedef struct {
 /**
  * Analyzes stereo channel energies, peaks, and cross-correlation to detect
  * phase inversion or dead channels.
+ *
+ * Downmix mode decision:
+ * - Mode 0 (Balanced sum): Both channels active and in reasonable phase (corr >= -0.5f),
+ *   or both channels silent (< 0.0001f RMS).
+ * - Mode 1 (Ch0 only): Ch1 dead (rms0 >= 0.001f while ch1 is silent or >=20 dB quieter
+ *   under noise floor), OR anti-phase (corr < -0.5f) where Ch0 is stronger or tied.
+ * - Mode 2 (Ch1 only): Ch0 dead (rms1 >= 0.001f while ch0 is silent or >=20 dB quieter
+ *   under noise floor), OR anti-phase (corr < -0.5f) where Ch1 is measurably stronger (>5%).
+ *
+ * Note: When anti-phase occurs, comparing RMS levels selects the channel with higher received
+ * amplitude, which is an effective heuristic for asymmetrical mic positioning. True acoustic
+ * signal-to-noise ratio cannot be proven without an explicit calibrated noise reference.
  */
 void flex_audio_analyze_stereo(
     const float* in_interleaved,
