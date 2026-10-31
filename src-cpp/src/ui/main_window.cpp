@@ -99,6 +99,8 @@ MainWindow::~MainWindow()
 {
     m_healthCheckTimer.stop();
     if (m_healthCheckThread && m_healthCheckThread->isRunning()) {
+        m_healthCheckThread->requestInterruption();
+        m_healthCheckThread->quit();
         m_healthCheckThread->wait(1000);
     }
     if (m_voiceController) {
@@ -449,6 +451,9 @@ void MainWindow::checkAiConnectivity()
     auto coord = m_coordinator;
     QPointer<MainWindow> safeThis = this;
     auto* thread = QThread::create([safeThis, coord]() {
+        if (QThread::currentThread()->isInterruptionRequested()) {
+            return;
+        }
         bool ok = false;
         std::string model = "unknown";
         try {
@@ -458,6 +463,10 @@ void MainWindow::checkAiConnectivity()
             }
         } catch (...) {
             ok = false;
+        }
+
+        if (QThread::currentThread()->isInterruptionRequested()) {
+            return;
         }
 
         if (safeThis) {
@@ -584,6 +593,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
 {
     m_healthCheckTimer.stop();
     if (m_healthCheckThread && m_healthCheckThread->isRunning()) {
+        m_healthCheckThread->requestInterruption();
+        m_healthCheckThread->quit();
         m_healthCheckThread->wait(1000);
     }
     if (m_voiceController) {

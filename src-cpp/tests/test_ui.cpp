@@ -180,6 +180,26 @@ private slots:
                 QByteArray bodyBytes = m_rawBuffer.mid(headerEnd + 4, contentLength);
                 m_lastRequestBody = bodyBytes.toStdString();
                 m_rawBuffer.clear();
+
+                // If health check endpoint, respond immediately without consuming chat response
+                if (m_lastRequestPath == "/api/version") {
+                    QPointer<QTcpSocket> guardedSocket(socket);
+                    auto sendVersion = [guardedSocket]() {
+                        if (!guardedSocket || guardedSocket->state() != QAbstractSocket::ConnectedState) return;
+                        QByteArray body = R"({"version": "0.1.0"})";
+                        QByteArray response;
+                        response.append("HTTP/1.1 200 OK\r\n");
+                        response.append("Content-Type: application/json\r\n");
+                        response.append(QString("Content-Length: %1\r\n").arg(body.size()).toUtf8());
+                        response.append("Connection: close\r\n\r\n");
+                        response.append(body);
+                        guardedSocket->write(response);
+                        guardedSocket->disconnectFromHost();
+                    };
+                    sendVersion();
+                    return;
+                }
+
                 m_requestCount++;
 
                 int delay = m_delayMs;

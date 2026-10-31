@@ -715,12 +715,18 @@ bool OllamaClient::checkHealthSync(double timeoutSeconds)
 
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timer, &QTimer::timeout, reply, &QNetworkReply::abort);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+        if (reply && !reply->isFinished()) {
+            reply->abort();
+        }
+        loop.quit();
+    });
     timer.start();
 
     if (!reply->isFinished()) {
         loop.exec();
     }
+    timer.stop();
 
     bool healthy = false;
     if (reply->error() == QNetworkReply::NoError) {
@@ -752,12 +758,18 @@ std::vector<std::string> OllamaClient::listModelsSync(double timeoutSeconds)
 
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timer, &QTimer::timeout, reply, &QNetworkReply::abort);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+        if (reply && !reply->isFinished()) {
+            reply->abort();
+        }
+        loop.quit();
+    });
     timer.start();
 
     if (!reply->isFinished()) {
         loop.exec();
     }
+    timer.stop();
 
     std::vector<std::string> models;
     if (reply->error() == QNetworkReply::NoError) {

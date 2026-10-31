@@ -441,7 +441,7 @@ public:
     QString m_lastErrorMessage;
     QString m_loadedModelPath;
     quint64 m_currentLoadRequestId{0};
-    mutable std::mutex m_stateMutex;
+    mutable std::recursive_mutex m_stateMutex;
 
     QThread* m_workerThread{nullptr};
     SpeechToTextWorker* m_worker{nullptr};
@@ -468,26 +468,30 @@ SpeechToTextService::SpeechToTextService(
 
     connect(m_impl->m_worker, &SpeechToTextWorker::modelLoadResult,
             this, [this](bool ok, const QString& msg, quint64 requestId, const QString& attemptedPath) {
-        std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
-        if (requestId != m_impl->m_currentLoadRequestId) {
-            // Discard stale completion signal from superseded request
-            return;
-        }
+        SpeechToTextState currentState;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
+            if (requestId != m_impl->m_currentLoadRequestId) {
+                // Discard stale completion signal from superseded request
+                return;
+            }
 
-        if (ok) {
-            m_impl->m_loadedModelPath = attemptedPath;
-            m_impl->m_state = SpeechToTextState::Idle;
-            m_impl->m_lastError = SpeechToTextError::None;
-            m_impl->m_lastErrorMessage.clear();
-        } else {
-            // If the engine already had a model loaded, it survived the failed replacement
-            m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
-                                  ? SpeechToTextState::Idle
-                                  : SpeechToTextState::Error;
-            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
-            m_impl->m_lastErrorMessage = msg;
+            if (ok) {
+                m_impl->m_loadedModelPath = attemptedPath;
+                m_impl->m_state = SpeechToTextState::Idle;
+                m_impl->m_lastError = SpeechToTextError::None;
+                m_impl->m_lastErrorMessage.clear();
+            } else {
+                // If the engine already had a model loaded, it survived the failed replacement
+                m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
+                                      ? SpeechToTextState::Idle
+                                      : SpeechToTextState::Error;
+                m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
+                m_impl->m_lastErrorMessage = msg;
+            }
+            currentState = m_impl->m_state;
         }
-        emit stateChanged(m_impl->m_state);
+        emit stateChanged(currentState);
         emit modelLoadFinished(ok, msg);
     });
 
@@ -502,7 +506,7 @@ SpeechToTextService::~SpeechToTextService()
     cancel();
 
     if (m_impl) {
-        std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+        std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
         m_impl->m_currentLoadRequestId = 0;
         if (m_impl->m_worker) {
             m_impl->m_worker->setShuttingDown(true);
@@ -521,7 +525,7 @@ SpeechToTextService::~SpeechToTextService()
 
 bool SpeechToTextService::loadModel(const QString& modelPath)
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_state == SpeechToTextState::Transcribing ||
         m_impl->m_state == SpeechToTextState::LoadingModel) {
         m_impl->m_lastError = SpeechToTextError::Busy;
@@ -608,19 +612,19 @@ bool SpeechToTextService::isModelLoaded() const
 
 bool SpeechToTextService::isModelLoading() const
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_state == SpeechToTextState::LoadingModel;
 }
 
 QString SpeechToTextService::loadedModelPath() const
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_loadedModelPath;
 }
 
 bool SpeechToTextService::transcribeAsync(const AudioBuffer& audioBuffer)
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_state == SpeechToTextState::Transcribing ||
         m_impl->m_state == SpeechToTextState::LoadingModel) {
         m_impl->m_lastError = SpeechToTextError::Busy;
@@ -693,7 +697,7 @@ bool SpeechToTextService::transcribeAsync(const AudioBuffer& audioBuffer)
 
 void SpeechToTextService::cancel()
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_worker) {
         m_impl->m_worker->cancel();
     }
@@ -707,7 +711,7 @@ void SpeechToTextService::cancel()
 
 void SpeechToTextService::onWorkerFinished(const TranscriptionResult& result)
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     if (m_impl->m_state != SpeechToTextState::Transcribing) {
         return; // Stale or already cancelled
     }
@@ -735,7 +739,7 @@ void SpeechToTextService::onWorkerFinished(const TranscriptionResult& result)
 
 void SpeechToTextService::onWorkerError(SpeechToTextError error, const QString& message)
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     m_impl->m_state = SpeechToTextState::Error;
     m_impl->m_lastError = error;
     m_impl->m_lastErrorMessage = message;
@@ -745,26 +749,26 @@ void SpeechToTextService::onWorkerError(SpeechToTextError error, const QString& 
 
 bool SpeechToTextService::isBusy() const
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_state == SpeechToTextState::Transcribing ||
            m_impl->m_state == SpeechToTextState::LoadingModel;
 }
 
 SpeechToTextState SpeechToTextService::state() const
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_state;
 }
 
 SpeechToTextError SpeechToTextService::lastError() const
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_lastError;
 }
 
 QString SpeechToTextService::lastErrorMessage() const
 {
-    std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
     return m_impl->m_lastErrorMessage;
 }
 
@@ -858,26 +862,30 @@ void SpeechToTextService::setEngine(std::shared_ptr<ISpeechToTextEngine> engine)
 
     connect(m_impl->m_worker, &SpeechToTextWorker::modelLoadResult,
             this, [this](bool ok, const QString& msg, quint64 requestId, const QString& attemptedPath) {
-        std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
-        if (requestId != m_impl->m_currentLoadRequestId) {
-            // Discard stale completion signal from superseded request
-            return;
-        }
+        SpeechToTextState currentState;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_impl->m_stateMutex);
+            if (requestId != m_impl->m_currentLoadRequestId) {
+                // Discard stale completion signal from superseded request
+                return;
+            }
 
-        if (ok) {
-            m_impl->m_loadedModelPath = attemptedPath;
-            m_impl->m_state = SpeechToTextState::Idle;
-            m_impl->m_lastError = SpeechToTextError::None;
-            m_impl->m_lastErrorMessage.clear();
-        } else {
-            // If the engine already had a model loaded, it survived the failed replacement
-            m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
-                                  ? SpeechToTextState::Idle
-                                  : SpeechToTextState::Error;
-            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
-            m_impl->m_lastErrorMessage = msg;
+            if (ok) {
+                m_impl->m_loadedModelPath = attemptedPath;
+                m_impl->m_state = SpeechToTextState::Idle;
+                m_impl->m_lastError = SpeechToTextError::None;
+                m_impl->m_lastErrorMessage.clear();
+            } else {
+                // If the engine already had a model loaded, it survived the failed replacement
+                m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
+                                      ? SpeechToTextState::Idle
+                                      : SpeechToTextState::Error;
+                m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
+                m_impl->m_lastErrorMessage = msg;
+            }
+            currentState = m_impl->m_state;
         }
-        emit stateChanged(m_impl->m_state);
+        emit stateChanged(currentState);
         emit modelLoadFinished(ok, msg);
     });
 
