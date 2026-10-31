@@ -889,6 +889,122 @@ void test_settings_view_whisper_model_discovery()
     qunsetenv("FLEX_CONFIG_PATH");
 }
 
+void test_settings_view_transcription_language()
+{
+    std::cout << "[Test 16] SettingsView Whisper language selection and compatibility warnings...\n";
+
+    QTemporaryDir tempConfigDir;
+    EXPECT_TRUE(tempConfigDir.isValid());
+    QString testConfigPath = tempConfigDir.filePath("lang_test_config.ini");
+    qputenv("FLEX_CONFIG_PATH", testConfigPath.toUtf8());
+
+    // Create synthetic models: English-only and Multilingual
+    QTemporaryDir tempModelsDir;
+    EXPECT_TRUE(tempModelsDir.isValid());
+
+    QString enPath = tempModelsDir.filePath("ggml-tiny.en.bin");
+    QFile fEn(enPath);
+    EXPECT_TRUE(fEn.open(QIODevice::WriteOnly));
+    uint32_t enHdr[4] = { 0x67676d6c, 51864, 1500, 384 };
+    fEn.write(reinterpret_cast<const char*>(enHdr), sizeof(enHdr));
+    fEn.write(QByteArray(1024 * 1024 + 10, 'A'));
+    fEn.close();
+
+    QString multiPath = tempModelsDir.filePath("ggml-base.bin");
+    QFile fMulti(multiPath);
+    EXPECT_TRUE(fMulti.open(QIODevice::WriteOnly));
+    uint32_t multiHdr[4] = { 0x67676d6c, 51865, 1500, 512 };
+    fMulti.write(reinterpret_cast<const char*>(multiHdr), sizeof(multiHdr));
+    fMulti.write(QByteArray(1024 * 1024 + 10, 'B'));
+    fMulti.close();
+
+    auto mockStorage = std::make_shared<flex::ConversationStorage>(":memory:");
+    auto mockOllama = std::make_shared<flex::OllamaClient>();
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(mockStorage, mockOllama);
+
+    flex::ui::SettingsView settingsView(coordinator);
+    settingsView.loadCurrentConfig();
+    QCoreApplication::processEvents();
+
+    auto* langCombo = settingsView.whisperLanguageCombo();
+    auto* warningLabel = settingsView.whisperLanguageWarningLabel();
+    auto* pathEdit = settingsView.whisperPathEdit();
+    auto* saveBtn = settingsView.findChild<QPushButton*>("PrimaryButton");
+
+    EXPECT_TRUE(langCombo != nullptr);
+    EXPECT_TRUE(warningLabel != nullptr);
+    EXPECT_TRUE(pathEdit != nullptr);
+
+    // 1. Verify combo has 3 language options
+    EXPECT_EQ(3, langCombo->count());
+    EXPECT_STR_EQ("en", langCombo->itemData(0).toString().toStdString());
+    EXPECT_STR_EQ("hi", langCombo->itemData(1).toString().toStdString());
+    EXPECT_STR_EQ("auto", langCombo->itemData(2).toString().toStdString());
+
+    // 2. Default selection is English
+    EXPECT_EQ(0, langCombo->currentIndex());
+    EXPECT_STR_EQ("en", langCombo->currentData().toString().toStdString());
+
+    // 3. Set model to English-only
+    pathEdit->setText(enPath);
+    settingsView.updateModelDetailsDisplay();
+    QCoreApplication::processEvents();
+
+    // English on English-only is compatible
+    EXPECT_TRUE(warningLabel->text().contains("fully supported"));
+
+    // 4. Switch to Hindi: English-only model should show warning notice
+    langCombo->setCurrentIndex(1); // "hi"
+    QCoreApplication::processEvents();
+    EXPECT_STR_EQ("hi", langCombo->currentData().toString().toStdString());
+    EXPECT_TRUE(warningLabel->text().contains("fall back to English"));
+
+    // Save settings with Hindi: preference is preserved on disk without silent mutation
+    if (saveBtn) {
+        saveBtn->click();
+        QCoreApplication::processEvents();
+    }
+    auto savedHi = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(savedHi.success);
+    EXPECT_STR_EQ("hi", savedHi.settings.whisperLanguage);
+
+    // 5. Switch to Auto-detect: English-only model should show warning notice
+    langCombo->setCurrentIndex(2); // "auto"
+    QCoreApplication::processEvents();
+    EXPECT_STR_EQ("auto", langCombo->currentData().toString().toStdString());
+    EXPECT_TRUE(warningLabel->text().contains("fall back to English"));
+
+    // Save settings with Auto: preference is preserved
+    if (saveBtn) {
+        saveBtn->click();
+        QCoreApplication::processEvents();
+    }
+    auto savedAuto = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(savedAuto.success);
+    EXPECT_STR_EQ("auto", savedAuto.settings.whisperLanguage);
+
+    // 6. Switch model to Multilingual while Auto is selected: warning disappears, supported notice appears
+    pathEdit->setText(multiPath);
+    settingsView.updateModelDetailsDisplay();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(warningLabel->text().contains("multilingual support for 'auto'"));
+
+    // Switch to Hindi on Multilingual: supported notice appears
+    langCombo->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(warningLabel->text().contains("multilingual support for 'hi'"));
+
+    // 7. Reset to defaults: restores English
+    settingsView.onResetClicked();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(0, langCombo->currentIndex());
+    EXPECT_STR_EQ("en", langCombo->currentData().toString().toStdString());
+    auto resetConfig = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_STR_EQ("en", resetConfig.settings.whisperLanguage);
+
+    qunsetenv("FLEX_CONFIG_PATH");
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -919,6 +1035,7 @@ int main(int argc, char* argv[])
     test_projects_and_memory_views();
     test_settings_view_ui_persistence();
     test_settings_view_whisper_model_discovery();
+    test_settings_view_transcription_language();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

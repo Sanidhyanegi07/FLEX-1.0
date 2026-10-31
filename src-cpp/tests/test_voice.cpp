@@ -448,7 +448,9 @@ public:
             QThread::msleep(m_delayMs);
         }
         if (m_failLoad) {
-            m_loaded = false;
+            if (!m_preserveLoadedOnFail) {
+                m_loaded = false;
+            }
             return false;
         }
         m_loaded = true;
@@ -463,6 +465,11 @@ public:
     void setModelLoaded(bool loaded)
     {
         m_loaded = loaded;
+    }
+
+    void setPreserveLoadedOnFail(bool preserve)
+    {
+        m_preserveLoadedOnFail = preserve;
     }
 
     void setFailLoad(bool fail)
@@ -567,6 +574,7 @@ public:
     std::atomic<bool> m_cancelled{false};
     bool m_loaded{false};
     bool m_failLoad{false};
+    bool m_preserveLoadedOnFail{false};
     bool m_failTranscribe{false};
     std::string m_transcribeErrorMessage;
     std::string m_mockText{"Testing FLEX voice recognition."};
@@ -2904,6 +2912,109 @@ void test_whisper_model_discovery()
     }
 }
 
+void test_stt_model_replacement_failure_and_stale_completion_rejection()
+{
+    std::cout << "[Test 53] SpeechToTextService: model replacement failure preservation & busy guards...\n";
+
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+
+    QString modelAPath = tempDir.filePath("model_a.bin");
+    QFile fileA(modelAPath);
+    EXPECT_TRUE(fileA.open(QIODevice::WriteOnly));
+    uint32_t hdrA[4] = { 0x67676d6c, 51864, 1500, 384 };
+    fileA.write(reinterpret_cast<const char*>(hdrA), sizeof(hdrA));
+    fileA.write(QByteArray(1024 * 1024 + 100, 'A'));
+    fileA.close();
+
+    QString modelBPath = tempDir.filePath("model_b.bin");
+    QFile fileB(modelBPath);
+    EXPECT_TRUE(fileB.open(QIODevice::WriteOnly));
+    uint32_t hdrB[4] = { 0x67676d6c, 51865, 1500, 512 };
+    fileB.write(reinterpret_cast<const char*>(hdrB), sizeof(hdrB));
+    fileB.write(QByteArray(1024 * 1024 + 100, 'B'));
+    fileB.close();
+
+    auto mockEngine = std::make_shared<MockSpeechToTextEngine>();
+    mockEngine->setPreserveLoadedOnFail(true);
+
+    flex::voice::SpeechToTextService service(mockEngine);
+
+    // 1. Load initial model A successfully
+    EXPECT_TRUE(service.loadModelSync(modelAPath));
+    EXPECT_TRUE(service.isModelLoaded());
+    EXPECT_STR_EQ(modelAPath.toStdString(), service.loadedModelPath().toStdString());
+    EXPECT_TRUE(service.state() == flex::voice::SpeechToTextState::Idle);
+
+    // 2. Attempt replacement with Model B, but engine fails load
+    mockEngine->setFailLoad(true);
+
+    bool loadFinishedCalled = false;
+    bool loadFinishedSuccess = true;
+    QObject::connect(&service, &flex::voice::SpeechToTextService::modelLoadFinished,
+                     [&](bool ok, const QString&) {
+        loadFinishedCalled = true;
+        loadFinishedSuccess = ok;
+    });
+
+    EXPECT_TRUE(service.loadModel(modelBPath));
+    EXPECT_TRUE(service.isModelLoading());
+
+    // Process events until load completes
+    for (int i = 0; i < 50 && !loadFinishedCalled; ++i) {
+        QThread::msleep(20);
+        QCoreApplication::processEvents();
+    }
+
+    EXPECT_TRUE(loadFinishedCalled);
+    EXPECT_FALSE(loadFinishedSuccess);
+
+    // 3. Verify Model A is preserved in memory and path is NOT overwritten
+    EXPECT_TRUE(service.isModelLoaded());
+    EXPECT_STR_EQ(modelAPath.toStdString(), service.loadedModelPath().toStdString());
+    // Engine remains Idle because previous model is intact and operational
+    EXPECT_TRUE(service.state() == flex::voice::SpeechToTextState::Idle);
+    EXPECT_TRUE(service.lastError() == flex::voice::SpeechToTextError::ModelLoadFailed);
+
+    // 4. Verify transcription continues to work with preserved model
+    flex::voice::AudioBuffer buffer;
+    buffer.sampleRate = 16000;
+    buffer.channelCount = 1;
+    buffer.durationMs = 500;
+    buffer.samples.assign(8000, 0.1f);
+
+    bool transFinished = false;
+    QString transResultText;
+    QObject::connect(&service, &flex::voice::SpeechToTextService::transcriptionFinished,
+                     [&](const QString& text, int64_t) {
+        transFinished = true;
+        transResultText = text;
+    });
+
+    EXPECT_TRUE(service.transcribeAsync(buffer));
+    for (int i = 0; i < 50 && !transFinished; ++i) {
+        QThread::msleep(20);
+        QCoreApplication::processEvents();
+    }
+    EXPECT_TRUE(transFinished);
+    EXPECT_FALSE(transResultText.isEmpty());
+    EXPECT_TRUE(service.state() == flex::voice::SpeechToTextState::Idle);
+
+    // 5. Test busy guard prevents model loading during transcription
+    mockEngine->m_delayMs = 200; // artificial delay for transcription
+    EXPECT_TRUE(service.transcribeAsync(buffer));
+    EXPECT_TRUE(service.isBusy());
+    EXPECT_FALSE(service.loadModel(modelAPath));
+    EXPECT_TRUE(service.lastError() == flex::voice::SpeechToTextError::Busy);
+
+    // Wait for transcription to complete
+    for (int i = 0; i < 50 && service.isBusy(); ++i) {
+        QThread::msleep(20);
+        QCoreApplication::processEvents();
+    }
+    mockEngine->m_delayMs = 0;
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -2977,6 +3088,7 @@ int main(int argc, char* argv[])
     test_voice_controller_pending_audio_queue_during_model_load();
     test_voice_controller_pending_audio_queue_cleans_up_on_load_failure();
     test_whisper_model_discovery();
+    test_stt_model_replacement_failure_and_stale_completion_rejection();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

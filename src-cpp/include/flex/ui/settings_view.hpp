@@ -57,12 +57,15 @@ public:
     void loadCurrentConfig();
     void refreshModelList(const QString& customDir = QString());
     void updateModelDetailsDisplay();
+    void updateLanguageCompatibilityDisplay();
 
     [[nodiscard]] QComboBox* whisperModelCombo() const noexcept { return m_whisperModelCombo; }
     [[nodiscard]] QLabel* whisperDetailsLabel() const noexcept { return m_whisperDetailsLabel; }
     [[nodiscard]] QLabel* whisperStatusLabel() const noexcept { return m_whisperStatusLabel; }
     [[nodiscard]] QLineEdit* whisperPathEdit() const noexcept { return m_whisperPathEdit; }
     [[nodiscard]] QPushButton* whisperRefreshButton() const noexcept { return m_whisperRefreshBtn; }
+    [[nodiscard]] QComboBox* whisperLanguageCombo() const noexcept { return m_whisperLangCombo; }
+    [[nodiscard]] QLabel* whisperLanguageWarningLabel() const noexcept { return m_whisperLangWarningLabel; }
 
 public slots:
     void onSaveClicked();
@@ -105,6 +108,8 @@ private:
     QLineEdit* m_whisperPathEdit{nullptr};
     QLabel* m_whisperDetailsLabel{nullptr};
     QLabel* m_whisperStatusLabel{nullptr};
+    QComboBox* m_whisperLangCombo{nullptr};
+    QLabel* m_whisperLangWarningLabel{nullptr};
     QString m_activeModelsDir;
 
     // 4. Persistence controls & feedback

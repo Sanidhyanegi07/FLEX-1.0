@@ -46,8 +46,6 @@ public:
 
     bool loadModel(const std::string& modelPath) override
     {
-        cleanup();
-
         std::cout << "[SpeechToText] Attempting to load Whisper model from: " << modelPath << "\n";
         QFileInfo info(QString::fromStdString(modelPath));
         if (!info.exists() || info.size() < 1024 * 1024) { // Must exist and be > 1 MB
@@ -58,11 +56,19 @@ public:
         struct whisper_context_params cparams = whisper_context_default_params();
         cparams.use_gpu = false; // Pure local CPU inference for universal compatibility
 
-        m_ctx = whisper_init_from_file_with_params(modelPath.c_str(), cparams);
+        whisper_context* newCtx = whisper_init_from_file_with_params(modelPath.c_str(), cparams);
+        if (!newCtx) {
+            std::cout << "[SpeechToText] Model initialization: FAILED (existing model preserved)\n";
+            return false;
+        }
+
+        // Two-phase commit: free old context only after new context successfully loads
+        cleanup();
+        m_ctx = newCtx;
         m_modelPath = modelPath;
-        bool success = (m_ctx != nullptr);
-        std::cout << "[SpeechToText] Model initialization: " << (success ? "SUCCESS" : "FAILED") << "\n";
-        return success;
+        m_abortFlag.store(false);
+        std::cout << "[SpeechToText] Model initialization: SUCCESS\n";
+        return true;
     }
 
     [[nodiscard]] bool isModelLoaded() const override
@@ -267,18 +273,18 @@ public:
     ~SpeechToTextWorker() override = default;
 
 public slots:
-    void doLoadModel(const QString& modelPath)
+    void doLoadModel(const QString& modelPath, quint64 requestId)
     {
         if (!m_engine) {
-            emit modelLoadResult(false, "Speech-to-text engine is not initialized.");
+            emit modelLoadResult(false, "Speech-to-text engine is not initialized.", requestId, modelPath);
             return;
         }
 
         bool ok = m_engine->loadModel(modelPath.toStdString());
         if (ok) {
-            emit modelLoadResult(true, "Model loaded successfully.");
+            emit modelLoadResult(true, "Model loaded successfully.", requestId, modelPath);
         } else {
-            emit modelLoadResult(false, QString("Failed to load Whisper model from path: %1").arg(modelPath));
+            emit modelLoadResult(false, QString("Failed to load Whisper model from path: %1").arg(modelPath), requestId, modelPath);
         }
     }
 
@@ -327,7 +333,7 @@ public slots:
     }
 
 signals:
-    void modelLoadResult(bool success, const QString& message);
+    void modelLoadResult(bool success, const QString& message, quint64 requestId, const QString& attemptedPath);
     void transcriptionResult(const flex::voice::TranscriptionResult& result);
 
 private:
@@ -355,6 +361,7 @@ public:
     SpeechToTextError m_lastError{SpeechToTextError::None};
     QString m_lastErrorMessage;
     QString m_loadedModelPath;
+    quint64 m_currentLoadRequestId{0};
 
     QThread* m_workerThread{nullptr};
     SpeechToTextWorker* m_worker{nullptr};
@@ -380,14 +387,24 @@ SpeechToTextService::SpeechToTextService(
     connect(m_impl->m_workerThread, &QThread::finished, m_impl->m_worker, &QObject::deleteLater);
 
     connect(m_impl->m_worker, &SpeechToTextWorker::modelLoadResult,
-            this, [this](bool ok, const QString& msg) {
-        m_impl->m_state = ok ? SpeechToTextState::Idle : SpeechToTextState::Error;
-        if (!ok) {
-            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
-            m_impl->m_lastErrorMessage = msg;
-        } else {
+            this, [this](bool ok, const QString& msg, quint64 requestId, const QString& attemptedPath) {
+        if (requestId != m_impl->m_currentLoadRequestId) {
+            // Discard stale completion signal from superseded request
+            return;
+        }
+
+        if (ok) {
+            m_impl->m_loadedModelPath = attemptedPath;
+            m_impl->m_state = SpeechToTextState::Idle;
             m_impl->m_lastError = SpeechToTextError::None;
             m_impl->m_lastErrorMessage.clear();
+        } else {
+            // If the engine already had a model loaded, it survived the failed replacement
+            m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
+                                  ? SpeechToTextState::Idle
+                                  : SpeechToTextState::Error;
+            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
+            m_impl->m_lastErrorMessage = msg;
         }
         emit stateChanged(m_impl->m_state);
         emit modelLoadFinished(ok, msg);
@@ -422,7 +439,9 @@ bool SpeechToTextService::loadModel(const QString& modelPath)
 
     auto resolution = WhisperModelResolver::resolveModelPath(modelPath);
     if (!resolution.isFound()) {
-        m_impl->m_state = SpeechToTextState::Error;
+        m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
+                              ? SpeechToTextState::Idle
+                              : SpeechToTextState::Error;
         if (resolution.status == ModelResolutionStatus::Missing) {
             m_impl->m_lastError = SpeechToTextError::ModelNotFound;
         } else {
@@ -435,8 +454,8 @@ bool SpeechToTextService::loadModel(const QString& modelPath)
     }
 
     QString targetPath = resolution.resolvedPath;
+    quint64 reqId = ++m_impl->m_currentLoadRequestId;
     m_impl->m_state = SpeechToTextState::LoadingModel;
-    m_impl->m_loadedModelPath = targetPath;
     m_impl->m_lastError = SpeechToTextError::None;
     m_impl->m_lastErrorMessage.clear();
 
@@ -444,7 +463,8 @@ bool SpeechToTextService::loadModel(const QString& modelPath)
     emit modelLoadStarted(targetPath);
 
     QMetaObject::invokeMethod(m_impl->m_worker, "doLoadModel", Qt::QueuedConnection,
-                              Q_ARG(QString, targetPath));
+                              Q_ARG(QString, targetPath),
+                              Q_ARG(quint64, reqId));
     return true;
 }
 
@@ -711,14 +731,24 @@ void SpeechToTextService::setEngine(std::shared_ptr<ISpeechToTextEngine> engine)
     connect(m_impl->m_workerThread, &QThread::finished, m_impl->m_worker, &QObject::deleteLater);
 
     connect(m_impl->m_worker, &SpeechToTextWorker::modelLoadResult,
-            this, [this](bool ok, const QString& msg) {
-        m_impl->m_state = ok ? SpeechToTextState::Idle : SpeechToTextState::Error;
-        if (!ok) {
-            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
-            m_impl->m_lastErrorMessage = msg;
-        } else {
+            this, [this](bool ok, const QString& msg, quint64 requestId, const QString& attemptedPath) {
+        if (requestId != m_impl->m_currentLoadRequestId) {
+            // Discard stale completion signal from superseded request
+            return;
+        }
+
+        if (ok) {
+            m_impl->m_loadedModelPath = attemptedPath;
+            m_impl->m_state = SpeechToTextState::Idle;
             m_impl->m_lastError = SpeechToTextError::None;
             m_impl->m_lastErrorMessage.clear();
+        } else {
+            // If the engine already had a model loaded, it survived the failed replacement
+            m_impl->m_state = (m_impl->m_engine && m_impl->m_engine->isModelLoaded())
+                                  ? SpeechToTextState::Idle
+                                  : SpeechToTextState::Error;
+            m_impl->m_lastError = SpeechToTextError::ModelLoadFailed;
+            m_impl->m_lastErrorMessage = msg;
         }
         emit stateChanged(m_impl->m_state);
         emit modelLoadFinished(ok, msg);

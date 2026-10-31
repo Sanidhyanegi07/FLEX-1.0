@@ -1105,6 +1105,43 @@ static void test_whisper_pipeline_suite(int *total_run, int *total_passed, int *
     C_ASSERT(flex_whisper_validate_model_selection("", diag_buf, sizeof(diag_buf)), "Empty model selection is valid (default)");
     C_ASSERT(!flex_whisper_validate_model_selection("nonexistent_model_12345.bin", diag_buf, sizeof(diag_buf)), "Nonexistent model selection rejected");
     C_ASSERT(diag_buf[0] != '\0', "Diagnostic message populated on failure");
+
+    /* Language compatibility checks */
+    char comp_msg[256];
+    /* 1. English is universal */
+    C_ASSERT(flex_whisper_check_language_compatibility("en", FLEX_WHISPER_CAP_ENGLISH_ONLY, false, comp_msg, sizeof(comp_msg)), "English on English-only is compatible");
+    C_ASSERT(strstr(comp_msg, "fully supported") != NULL, "English support message");
+    C_ASSERT(flex_whisper_check_language_compatibility(NULL, FLEX_WHISPER_CAP_ENGLISH_ONLY, true, comp_msg, sizeof(comp_msg)), "NULL lang defaults to English");
+    C_ASSERT(flex_whisper_check_language_compatibility("", FLEX_WHISPER_CAP_MULTILINGUAL, true, comp_msg, sizeof(comp_msg)), "Empty lang defaults to English");
+
+    /* 2. Hindi & Auto on English-only: warning/fallback */
+    C_ASSERT(!flex_whisper_check_language_compatibility("hi", FLEX_WHISPER_CAP_ENGLISH_ONLY, false, comp_msg, sizeof(comp_msg)), "Hindi on English-only header hint returns warning");
+    C_ASSERT(strstr(comp_msg, "Compatibility Notice") != NULL, "Header hint warning notice");
+    C_ASSERT(strstr(comp_msg, "fall back to English") != NULL, "Mentions fallback to English");
+
+    C_ASSERT(!flex_whisper_check_language_compatibility("hi", FLEX_WHISPER_CAP_ENGLISH_ONLY, true, comp_msg, sizeof(comp_msg)), "Hindi on English-only runtime returns warning");
+    C_ASSERT(strstr(comp_msg, "Runtime Notice") != NULL, "Runtime warning notice");
+    C_ASSERT(strstr(comp_msg, "fall back to English") != NULL, "Mentions runtime fallback");
+
+    C_ASSERT(!flex_whisper_check_language_compatibility("auto", FLEX_WHISPER_CAP_ENGLISH_ONLY, false, comp_msg, sizeof(comp_msg)), "Auto on English-only returns warning");
+
+    /* 3. Hindi & Auto on Multilingual: supported */
+    C_ASSERT(flex_whisper_check_language_compatibility("hi", FLEX_WHISPER_CAP_MULTILINGUAL, false, comp_msg, sizeof(comp_msg)), "Hindi on Multilingual header hint supported");
+    C_ASSERT(strstr(comp_msg, "Model header indicates multilingual") != NULL, "Multilingual header indication");
+
+    C_ASSERT(flex_whisper_check_language_compatibility("hi", FLEX_WHISPER_CAP_MULTILINGUAL, true, comp_msg, sizeof(comp_msg)), "Hindi on Multilingual runtime supported");
+    C_ASSERT(strstr(comp_msg, "Active model confirmed multilingual") != NULL, "Multilingual runtime confirmed indication");
+
+    C_ASSERT(flex_whisper_check_language_compatibility("auto", FLEX_WHISPER_CAP_MULTILINGUAL, true, comp_msg, sizeof(comp_msg)), "Auto on Multilingual runtime supported");
+    C_ASSERT(flex_whisper_check_language_compatibility("HI", FLEX_WHISPER_CAP_MULTILINGUAL, true, comp_msg, sizeof(comp_msg)), "Case-insensitive HI supported");
+
+    /* 4. Unknown model capability */
+    C_ASSERT(flex_whisper_check_language_compatibility("hi", FLEX_WHISPER_CAP_UNKNOWN, false, comp_msg, sizeof(comp_msg)), "Unknown capability passes with info");
+    C_ASSERT(strstr(comp_msg, "Model capability unverified") != NULL, "Unknown capability note");
+
+    /* 5. Unsupported language code */
+    C_ASSERT(!flex_whisper_check_language_compatibility("fr", FLEX_WHISPER_CAP_MULTILINGUAL, true, comp_msg, sizeof(comp_msg)), "Unsupported language code rejected");
+    C_ASSERT(strstr(comp_msg, "Unsupported or unrecognized") != NULL, "Unsupported language message");
 }
 
 static void test_tts_pipeline_suite(int *total_run, int *total_passed, int *total_failed) {

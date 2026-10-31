@@ -213,6 +213,20 @@ void SettingsView::setupUi()
     m_whisperStatusLabel->setStyleSheet("font-size: 11px; color: #94A3B8;");
     hwLayout->addRow("Engine Status:", m_whisperStatusLabel);
 
+    m_whisperLangCombo = new QComboBox(hwCard);
+    m_whisperLangCombo->setCursor(Qt::PointingHandCursor);
+    m_whisperLangCombo->addItem("English (en)", QString("en"));
+    m_whisperLangCombo->addItem("Hindi (hi)", QString("hi"));
+    m_whisperLangCombo->addItem("Auto-detect (auto)", QString("auto"));
+    connect(m_whisperLangCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateLanguageCompatibilityDisplay(); });
+    hwLayout->addRow("Transcription Language:", m_whisperLangCombo);
+
+    m_whisperLangWarningLabel = new QLabel("", hwCard);
+    m_whisperLangWarningLabel->setWordWrap(true);
+    m_whisperLangWarningLabel->setStyleSheet("font-size: 11px; color: #94A3B8;");
+    hwLayout->addRow("Language Status:", m_whisperLangWarningLabel);
+
     layout->addWidget(hwCard);
 
     // Action Row & Non-blocking Status Banner
@@ -307,6 +321,13 @@ void SettingsView::loadCurrentConfig()
 
     if (m_whisperPathEdit) {
         m_whisperPathEdit->setText(QString::fromStdString(s.whisperModelPath));
+    }
+    if (m_whisperLangCombo) {
+        int idx = m_whisperLangCombo->findData(QString::fromStdString(s.whisperLanguage));
+        if (idx < 0) {
+            idx = m_whisperLangCombo->findText(QString::fromStdString(s.whisperLanguage), Qt::MatchContains);
+        }
+        m_whisperLangCombo->setCurrentIndex(idx >= 0 ? idx : 0);
     }
     refreshModelList();
 
@@ -479,6 +500,7 @@ void SettingsView::updateModelDetailsDisplay()
         }
         m_whisperDetailsLabel->setText(warnMsg);
         m_whisperDetailsLabel->setStyleSheet(QString("font-size: 11px; color: %1; background: #0F172A; padding: 8px 12px; border-radius: 6px; border: 1px solid #7F1D1D;").arg(Theme::StatusWarning));
+        updateLanguageCompatibilityDisplay();
         return;
     }
 
@@ -503,6 +525,57 @@ void SettingsView::updateModelDetailsDisplay()
 
     m_whisperDetailsLabel->setText(details);
     m_whisperDetailsLabel->setStyleSheet("font-size: 11px; color: #CBD5E1; background: #0F172A; padding: 8px 12px; border-radius: 6px; border: 1px solid #334155;");
+
+    updateLanguageCompatibilityDisplay();
+}
+
+void SettingsView::updateLanguageCompatibilityDisplay()
+{
+    if (!m_whisperLangWarningLabel || !m_whisperLangCombo) return;
+
+    QString selectedLang = m_whisperLangCombo->currentData().toString();
+    if (selectedLang.isEmpty()) {
+        selectedLang = "en";
+    }
+
+    bool isRuntimeConfirmed = false;
+    flex_whisper_capability_t cap = FLEX_WHISPER_CAP_UNKNOWN;
+
+    QString currentModelPath = m_whisperPathEdit ? m_whisperPathEdit->text().trimmed() : QString();
+    if (m_stt && m_stt->isModelLoaded() &&
+        (currentModelPath.isEmpty() || currentModelPath == m_stt->loadedModelPath())) {
+        isRuntimeConfirmed = true;
+        cap = m_stt->isMultilingual() ? FLEX_WHISPER_CAP_MULTILINGUAL : FLEX_WHISPER_CAP_ENGLISH_ONLY;
+    } else {
+        QString inspectTarget = currentModelPath.isEmpty() ? voice::WhisperModelResolver::defaultModelPath() : currentModelPath;
+        auto info = voice::WhisperModelResolver::inspectModelFile(inspectTarget);
+        if (info.isValid()) {
+            cap = static_cast<flex_whisper_capability_t>(info.capability);
+        } else {
+            cap = FLEX_WHISPER_CAP_UNKNOWN;
+        }
+    }
+
+    char msgBuf[256] = {0};
+    QByteArray langBytes = selectedLang.toUtf8();
+    bool isCompatible = flex_whisper_check_language_compatibility(
+        langBytes.constData(),
+        cap,
+        isRuntimeConfirmed,
+        msgBuf,
+        sizeof(msgBuf)
+    );
+
+    m_whisperLangWarningLabel->setText(QString::fromUtf8(msgBuf));
+    if (isCompatible) {
+        if (selectedLang == "en") {
+            m_whisperLangWarningLabel->setStyleSheet("font-size: 11px; color: #94A3B8;");
+        } else {
+            m_whisperLangWarningLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
+        }
+    } else {
+        m_whisperLangWarningLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusWarning));
+    }
 }
 
 void SettingsView::onTestConnectionClicked()
@@ -574,6 +647,9 @@ void SettingsView::onSaveClicked()
     }
 
     newSettings.whisperModelPath = chosenWhisperPath.toStdString();
+    if (m_whisperLangCombo) {
+        newSettings.whisperLanguage = m_whisperLangCombo->currentData().toString().toStdString();
+    }
 
     auto saveRes = SettingsPersistenceService::saveSettings(newSettings);
     if (!saveRes.success) {
@@ -643,6 +719,7 @@ void SettingsView::onResetClicked()
     if (m_ttsVolumeSpin) m_ttsVolumeSpin->setValue(defaults.ttsVolume);
     if (m_whisperModelCombo) m_whisperModelCombo->setCurrentIndex(0);
     if (m_whisperPathEdit) m_whisperPathEdit->clear();
+    if (m_whisperLangCombo) m_whisperLangCombo->setCurrentIndex(0);
     updateModelDetailsDisplay();
 
     onSaveClicked();

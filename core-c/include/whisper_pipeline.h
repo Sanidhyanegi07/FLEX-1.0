@@ -174,6 +174,24 @@ bool flex_whisper_validate_model_selection(
     size_t diag_cap
 );
 
+/**
+ * Evaluates language configuration against model capability and runtime state.
+ * Returns true if the language is fully supported by the model capability.
+ * Returns false if a compatibility warning or fallback applies.
+ *
+ * Populates out_message with an informative, human-readable status or warning:
+ * - Distinguishes between header-hint classification vs runtime-confirmed capability.
+ * - Explains English fallback for "hi" or "auto" on English-only models.
+ * - Validates standard language codes ("en", "hi", "auto").
+ */
+bool flex_whisper_check_language_compatibility(
+    const char* language,
+    flex_whisper_capability_t capability,
+    bool is_runtime_confirmed,
+    char* out_message,
+    size_t msg_cap
+);
+
 #ifdef __cplusplus
 }
 #endif

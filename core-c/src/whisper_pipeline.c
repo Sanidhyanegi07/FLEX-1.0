@@ -469,3 +469,76 @@ bool flex_whisper_validate_model_selection(
 
     return true;
 }
+
+bool flex_whisper_check_language_compatibility(
+    const char* language,
+    flex_whisper_capability_t capability,
+    bool is_runtime_confirmed,
+    char* out_message,
+    size_t msg_cap
+) {
+    if (out_message && msg_cap > 0) {
+        out_message[0] = '\0';
+    }
+
+    char lower[32] = "en";
+    if (language && language[0] != '\0') {
+        size_t len = strlen(language);
+        if (len >= sizeof(lower)) len = sizeof(lower) - 1;
+        for (size_t i = 0; i < len; ++i) {
+            lower[i] = (char)tolower((unsigned char)language[i]);
+        }
+        lower[len] = '\0';
+    }
+
+    /* English is universally supported across all models */
+    if (strcmp(lower, "en") == 0) {
+        if (out_message && msg_cap > 0) {
+            snprintf(out_message, msg_cap, "English transcription is fully supported by all Whisper models.");
+        }
+        return true;
+    }
+
+    /* Multilingual requirements: Hindi and Auto-detection */
+    if (strcmp(lower, "hi") == 0 || strcmp(lower, "auto") == 0) {
+        if (capability == FLEX_WHISPER_CAP_MULTILINGUAL) {
+            if (out_message && msg_cap > 0) {
+                if (is_runtime_confirmed) {
+                    snprintf(out_message, msg_cap,
+                             "✓ Active model confirmed multilingual: '%s' transcription is supported.", lower);
+                } else {
+                    snprintf(out_message, msg_cap,
+                             "✓ Model header indicates multilingual support for '%s'.", lower);
+                }
+            }
+            return true;
+        }
+
+        if (capability == FLEX_WHISPER_CAP_ENGLISH_ONLY) {
+            if (out_message && msg_cap > 0) {
+                if (is_runtime_confirmed) {
+                    snprintf(out_message, msg_cap,
+                             "⚠ Runtime Notice: Active model is confirmed English-only. Language '%s' will fall back to English during transcription.", lower);
+                } else {
+                    snprintf(out_message, msg_cap,
+                             "⚠ Compatibility Notice: Selected model is classified as English-only (header hint). Language '%s' will fall back to English during transcription.", lower);
+                }
+            }
+            return false;
+        }
+
+        /* FLEX_WHISPER_CAP_UNKNOWN */
+        if (out_message && msg_cap > 0) {
+            snprintf(out_message, msg_cap,
+                     "○ Model capability unverified. Language '%s' will be validated at runtime upon model initialization.", lower);
+        }
+        return true;
+    }
+
+    /* Unrecognized / unsupported language code */
+    if (out_message && msg_cap > 0) {
+        snprintf(out_message, msg_cap,
+                 "⚠ Unsupported or unrecognized language code '%s'. Supported options: 'en', 'hi', 'auto'.", lower);
+    }
+    return false;
+}
