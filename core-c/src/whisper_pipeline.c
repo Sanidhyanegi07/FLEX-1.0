@@ -272,3 +272,173 @@ size_t flex_whisper_build_default_prompt(
     return (size_t)written;
 }
 
+
+#define FLEX_GGML_FILE_MAGIC 0x67676d6c /* "ggml" in little-endian ASCII */
+
+bool flex_whisper_inspect_header(
+    const char* file_path,
+    flex_whisper_model_header_t* out_header
+) {
+    if (out_header) {
+        memset(out_header, 0, sizeof(flex_whisper_model_header_t));
+        out_header->capability = FLEX_WHISPER_CAP_UNKNOWN;
+    }
+
+    if (!file_path || file_path[0] == '\0') {
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Model file path is empty or NULL");
+        }
+        return false;
+    }
+
+    FILE* f = fopen(file_path, "rb");
+    if (!f) {
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Cannot open model file for reading (missing or inaccessible)");
+        }
+        return false;
+    }
+
+    /* Measure file size safely */
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Failed to determine file size");
+        }
+        return false;
+    }
+
+    long long size = (long long)ftell(f);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Failed to rewind model file");
+        }
+        return false;
+    }
+
+    if (out_header) {
+        out_header->file_size_bytes = size;
+    }
+
+    /* Valid Whisper models are >= 1 MB */
+    if (size < 1024 * 1024) {
+        fclose(f);
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "File size (%lld bytes) is below minimum 1MB threshold", size);
+        }
+        return false;
+    }
+
+    /* Read first 16 bytes: magic (4), n_vocab (4), n_audio_ctx (4), n_audio_state (4) */
+    uint32_t header_buf[4];
+    size_t read_bytes = fread(header_buf, sizeof(uint32_t), 4, f);
+    fclose(f);
+
+    if (read_bytes < 4) {
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Truncated header (could not read 16 bytes)");
+        }
+        return false;
+    }
+
+    uint32_t magic = header_buf[0];
+    int32_t n_vocab = (int32_t)header_buf[1];
+    int32_t n_audio_ctx = (int32_t)header_buf[2];
+    int32_t n_audio_state = (int32_t)header_buf[3];
+
+    if (out_header) {
+        out_header->magic = magic;
+        out_header->n_vocab = n_vocab;
+        out_header->n_audio_ctx = n_audio_ctx;
+        out_header->n_audio_state = n_audio_state;
+    }
+
+    if (magic != FLEX_GGML_FILE_MAGIC) {
+        if (out_header) {
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Invalid GGML magic (0x%08X, expected 0x67676D6C 'ggml')", (unsigned int)magic);
+        }
+        return false;
+    }
+
+    /* Classify capability from vocabulary */
+    if (n_vocab >= 51865) {
+        if (out_header) {
+            out_header->capability = FLEX_WHISPER_CAP_MULTILINGUAL;
+            out_header->is_valid_format = true;
+            out_header->error_detail[0] = '\0';
+        }
+        return true;
+    } else if (n_vocab >= 50000) {
+        if (out_header) {
+            out_header->capability = FLEX_WHISPER_CAP_ENGLISH_ONLY;
+            out_header->is_valid_format = true;
+            out_header->error_detail[0] = '\0';
+        }
+        return true;
+    } else {
+        if (out_header) {
+            out_header->capability = FLEX_WHISPER_CAP_UNKNOWN;
+            out_header->is_valid_format = false;
+            snprintf(out_header->error_detail, sizeof(out_header->error_detail),
+                     "Unrecognized vocabulary size (%d)", n_vocab);
+        }
+        return false;
+    }
+}
+
+size_t flex_whisper_format_display_name(
+    const char* filename,
+    flex_whisper_model_type_t model_type,
+    flex_whisper_capability_t capability,
+    char* out_name,
+    size_t cap
+) {
+    if (!out_name || cap < 4) return 0;
+
+    const char* type_str = "Whisper";
+    switch (model_type) {
+        case FLEX_WHISPER_MODEL_TINY:   type_str = "Tiny"; break;
+        case FLEX_WHISPER_MODEL_BASE:   type_str = "Base"; break;
+        case FLEX_WHISPER_MODEL_SMALL:  type_str = "Small"; break;
+        case FLEX_WHISPER_MODEL_MEDIUM: type_str = "Medium"; break;
+        case FLEX_WHISPER_MODEL_LARGE:  type_str = "Large"; break;
+        default:                        type_str = "Model"; break;
+    }
+
+    const char* cap_str = "";
+    switch (capability) {
+        case FLEX_WHISPER_CAP_ENGLISH_ONLY: cap_str = " (English)"; break;
+        case FLEX_WHISPER_CAP_MULTILINGUAL: cap_str = " (Multilingual)"; break;
+        default:                            cap_str = ""; break;
+    }
+
+    int written = 0;
+    if (filename && filename[0] != '\0') {
+        written = snprintf(out_name, cap, "%s%s [%s]", type_str, cap_str, filename);
+    } else {
+        written = snprintf(out_name, cap, "%s%s", type_str, cap_str);
+    }
+
+    if (written < 0 || (size_t)written >= cap) {
+        out_name[cap - 1] = '\0';
+        return cap - 1;
+    }
+    return (size_t)written;
+}
+
+const char* flex_whisper_capability_to_string(flex_whisper_capability_t cap) {
+    switch (cap) {
+        case FLEX_WHISPER_CAP_ENGLISH_ONLY: return "English-only";
+        case FLEX_WHISPER_CAP_MULTILINGUAL: return "Multilingual";
+        case FLEX_WHISPER_CAP_UNKNOWN:
+        default:                            return "Unknown";
+    }
+}

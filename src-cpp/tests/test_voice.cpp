@@ -18,6 +18,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
 #include <QUuid>
@@ -2732,6 +2733,177 @@ void test_voice_controller_pending_audio_queue_cleans_up_on_load_failure()
     qunsetenv("FLEX_WHISPER_MODEL_PATH");
 }
 
+void test_whisper_model_discovery()
+{
+    std::cout << "[Test 52] WhisperModelResolver: local model discovery and capability classification...\n";
+
+    // 1. Missing directory returns empty list, does not throw or crash
+    {
+        QTemporaryDir tempBase;
+        EXPECT_TRUE(tempBase.isValid());
+        QString missingPath = tempBase.path() + "/nonexistent_models_subdir";
+        auto models = flex::voice::WhisperModelResolver::discoverInstalledModels(missingPath);
+        EXPECT_TRUE(models.empty());
+    }
+
+    // 2. Empty directory returns empty list
+    {
+        QTemporaryDir emptyDir;
+        EXPECT_TRUE(emptyDir.isValid());
+        auto models = flex::voice::WhisperModelResolver::discoverInstalledModels(emptyDir.path());
+        EXPECT_TRUE(models.empty());
+    }
+
+    // 3. Non-.bin files are ignored by directory discovery
+    {
+        QTemporaryDir dirWithTxt;
+        EXPECT_TRUE(dirWithTxt.isValid());
+        QFile txtFile(dirWithTxt.filePath("readme.txt"));
+        EXPECT_TRUE(txtFile.open(QIODevice::WriteOnly));
+        txtFile.write("Not a model");
+        txtFile.close();
+
+        auto models = flex::voice::WhisperModelResolver::discoverInstalledModels(dirWithTxt.path());
+        EXPECT_TRUE(models.empty());
+    }
+
+    // 4. Inspect file: missing, empty path, and unreadable
+    {
+        auto infoEmpty = flex::voice::WhisperModelResolver::inspectModelFile("");
+        EXPECT_FALSE(infoEmpty.isValid());
+        EXPECT_TRUE(infoEmpty.validity == flex::voice::ModelValidityStatus::Missing);
+
+        auto infoMissing = flex::voice::WhisperModelResolver::inspectModelFile("C:/nonexistent_dir_12345/ggml-model.bin");
+        EXPECT_FALSE(infoMissing.isValid());
+        EXPECT_TRUE(infoMissing.validity == flex::voice::ModelValidityStatus::Missing);
+    }
+
+    // 5. Inspect file: file too small (< 1 MB)
+    {
+        QTemporaryDir tempDir;
+        EXPECT_TRUE(tempDir.isValid());
+        QString smallPath = tempDir.filePath("too_small.bin");
+        QFile smallFile(smallPath);
+        EXPECT_TRUE(smallFile.open(QIODevice::WriteOnly));
+        smallFile.write(QByteArray(1024, 'A')); // 1 KB
+        smallFile.close();
+
+        auto infoSmall = flex::voice::WhisperModelResolver::inspectModelFile(smallPath);
+        EXPECT_FALSE(infoSmall.isValid());
+        EXPECT_TRUE(infoSmall.validity == flex::voice::ModelValidityStatus::TooSmall);
+        EXPECT_TRUE(infoSmall.diagnosticMessage.contains("1MB"));
+    }
+
+    // 6. Inspect file: bad magic (not GGML)
+    {
+        QTemporaryDir tempDir;
+        EXPECT_TRUE(tempDir.isValid());
+        QString badMagicPath = tempDir.filePath("bad_magic.bin");
+        QFile badFile(badMagicPath);
+        EXPECT_TRUE(badFile.open(QIODevice::WriteOnly));
+        uint32_t badHdr[4] = { 0x11223344, 51864, 1500, 384 };
+        badFile.write(reinterpret_cast<const char*>(badHdr), sizeof(badHdr));
+        badFile.resize(1024 * 1024 + 100);
+        badFile.close();
+
+        auto infoBad = flex::voice::WhisperModelResolver::inspectModelFile(badMagicPath);
+        EXPECT_FALSE(infoBad.isValid());
+        EXPECT_TRUE(infoBad.validity == flex::voice::ModelValidityStatus::InvalidFormat);
+        EXPECT_TRUE(infoBad.capability == flex::voice::WhisperModelCapability::Unknown);
+        EXPECT_TRUE(infoBad.diagnosticMessage.contains("Invalid GGML magic"));
+    }
+
+    // 7. Synthetic Multilingual and English-only models in directory discovery
+    {
+        QTemporaryDir tempDir;
+        EXPECT_TRUE(tempDir.isValid());
+
+        // Model A: Multilingual base model (n_vocab = 51865)
+        QString multiPath = tempDir.filePath("ggml-base.bin");
+        QFile multiFile(multiPath);
+        EXPECT_TRUE(multiFile.open(QIODevice::WriteOnly));
+        uint32_t multiHdr[4] = { 0x67676d6c, 51865, 1500, 512 };
+        multiFile.write(reinterpret_cast<const char*>(multiHdr), sizeof(multiHdr));
+        multiFile.resize(1024 * 1024 + 200);
+        multiFile.close();
+
+        // Model B: English-only tiny model (n_vocab = 51864)
+        QString enPath = tempDir.filePath("ggml-tiny.en.bin");
+        QFile enFile(enPath);
+        EXPECT_TRUE(enFile.open(QIODevice::WriteOnly));
+        uint32_t enHdr[4] = { 0x67676d6c, 51864, 1500, 384 };
+        enFile.write(reinterpret_cast<const char*>(enHdr), sizeof(enHdr));
+        enFile.resize(1024 * 1024 + 200);
+        enFile.close();
+
+        // Model C: Corrupted .bin file alongside them
+        QString corruptPath = tempDir.filePath("ggml-corrupted.bin");
+        QFile corruptFile(corruptPath);
+        EXPECT_TRUE(corruptFile.open(QIODevice::WriteOnly));
+        corruptFile.write(QByteArray(500, 'X')); // Too small
+        corruptFile.close();
+
+        auto discovered = flex::voice::WhisperModelResolver::discoverInstalledModels(tempDir.path(), multiPath);
+        EXPECT_EQ(3, (int)discovered.size());
+
+        // Stable alphabetical ordering:
+        // [0] ggml-base.bin
+        // [1] ggml-corrupted.bin
+        // [2] ggml-tiny.en.bin
+        EXPECT_STR_EQ("ggml-base.bin", discovered[0].fileName.toStdString());
+        EXPECT_TRUE(discovered[0].isValid());
+        EXPECT_TRUE(discovered[0].isMultilingual());
+        EXPECT_FALSE(discovered[0].isEnglishOnly());
+        EXPECT_FALSE(discovered[0].isDefaultModel);
+        EXPECT_TRUE(discovered[0].isSelectedModel); // Was passed as currentlySelectedPath
+        EXPECT_TRUE(discovered[0].displayName.contains("Base"));
+        EXPECT_TRUE(discovered[0].displayName.contains("(Multilingual)"));
+
+        EXPECT_STR_EQ("ggml-corrupted.bin", discovered[1].fileName.toStdString());
+        EXPECT_FALSE(discovered[1].isValid());
+        EXPECT_TRUE(discovered[1].validity == flex::voice::ModelValidityStatus::TooSmall);
+
+        EXPECT_STR_EQ("ggml-tiny.en.bin", discovered[2].fileName.toStdString());
+        EXPECT_TRUE(discovered[2].isValid());
+        EXPECT_FALSE(discovered[2].isMultilingual());
+        EXPECT_TRUE(discovered[2].isEnglishOnly());
+        EXPECT_TRUE(discovered[2].isDefaultModel);
+        EXPECT_FALSE(discovered[2].isSelectedModel);
+        EXPECT_TRUE(discovered[2].displayName.contains("Tiny"));
+        EXPECT_TRUE(discovered[2].displayName.contains("(English)"));
+    }
+
+    // 8. Enum string conversions
+    EXPECT_STR_EQ("English-only", flex::voice::WhisperModelResolver::whisperModelCapabilityToString(flex::voice::WhisperModelCapability::EnglishOnly).toStdString());
+    EXPECT_STR_EQ("Multilingual", flex::voice::WhisperModelResolver::whisperModelCapabilityToString(flex::voice::WhisperModelCapability::Multilingual).toStdString());
+    EXPECT_STR_EQ("Unknown", flex::voice::WhisperModelResolver::whisperModelCapabilityToString(flex::voice::WhisperModelCapability::Unknown).toStdString());
+
+    EXPECT_STR_EQ("Valid", flex::voice::WhisperModelResolver::modelValidityStatusToString(flex::voice::ModelValidityStatus::Valid).toStdString());
+    EXPECT_STR_EQ("Missing", flex::voice::WhisperModelResolver::modelValidityStatusToString(flex::voice::ModelValidityStatus::Missing).toStdString());
+    EXPECT_STR_EQ("Unreadable", flex::voice::WhisperModelResolver::modelValidityStatusToString(flex::voice::ModelValidityStatus::Unreadable).toStdString());
+    EXPECT_STR_EQ("TooSmall", flex::voice::WhisperModelResolver::modelValidityStatusToString(flex::voice::ModelValidityStatus::TooSmall).toStdString());
+    EXPECT_STR_EQ("InvalidFormat", flex::voice::WhisperModelResolver::modelValidityStatusToString(flex::voice::ModelValidityStatus::InvalidFormat).toStdString());
+
+    // 9. If default model exists in %USERPROFILE%\.flex\models\whisper\, discovery correctly inspects it
+    QString defaultPath = flex::voice::WhisperModelResolver::defaultModelPath();
+    if (QFileInfo::exists(defaultPath)) {
+        auto models = flex::voice::WhisperModelResolver::discoverInstalledModels();
+        EXPECT_FALSE(models.empty());
+        bool foundDefault = false;
+        for (const auto& m : models) {
+            if (m.isDefaultModel) {
+                foundDefault = true;
+                EXPECT_TRUE(m.isValid());
+                EXPECT_TRUE(m.isEnglishOnly());
+                EXPECT_FALSE(m.isMultilingual());
+                EXPECT_TRUE(m.fileSizeBytes > 1024 * 1024);
+                EXPECT_TRUE(m.isSelectedModel);
+            }
+        }
+        EXPECT_TRUE(foundDefault);
+    }
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -2804,6 +2976,7 @@ int main(int argc, char* argv[])
     test_whisper_model_resolver_canonical_path();
     test_voice_controller_pending_audio_queue_during_model_load();
     test_voice_controller_pending_audio_queue_cleans_up_on_load_failure();
+    test_whisper_model_discovery();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

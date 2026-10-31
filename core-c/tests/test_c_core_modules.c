@@ -1015,6 +1015,89 @@ static void test_whisper_pipeline_suite(int *total_run, int *total_passed, int *
     C_ASSERT(prompt_len > 0, "Built combined technical prompt");
     C_ASSERT(strstr(prompt_buf, "React, TypeScript") != NULL, "Combined prompt contains custom terms");
     C_ASSERT(strstr(prompt_buf, "FLEX") != NULL, "Combined prompt preserves base glossary");
+
+    /* Header inspection and capability classification */
+    flex_whisper_model_header_t hdr;
+    C_ASSERT(!flex_whisper_inspect_header(NULL, &hdr), "NULL model path rejected");
+    C_ASSERT(!flex_whisper_inspect_header("", &hdr), "Empty model path rejected");
+    C_ASSERT(!flex_whisper_inspect_header("nonexistent_path/nonexistent.bin", &hdr), "Missing model path rejected");
+    C_ASSERT(hdr.capability == FLEX_WHISPER_CAP_UNKNOWN, "Missing file capability is unknown");
+
+    /* Create temporary synthetic test files for C inspection */
+    const char* mock_tiny_file = "temp_c_mock_tiny.bin";
+    FILE* f_mock = fopen(mock_tiny_file, "wb");
+    if (f_mock) {
+        /* Write 100 bytes (too small, < 1MB) */
+        char dummy[100] = {0};
+        fwrite(dummy, 1, sizeof(dummy), f_mock);
+        fclose(f_mock);
+
+        C_ASSERT(!flex_whisper_inspect_header(mock_tiny_file, &hdr), "Undersized file (< 1MB) rejected");
+        C_ASSERT(strstr(hdr.error_detail, "1MB") != NULL, "Error detail mentions 1MB threshold");
+        remove(mock_tiny_file);
+    }
+
+    const char* mock_bad_magic = "temp_c_mock_bad_magic.bin";
+    f_mock = fopen(mock_bad_magic, "wb");
+    if (f_mock) {
+        uint32_t bad_hdr[4] = { 0x12345678, 51864, 1500, 384 };
+        fwrite(bad_hdr, sizeof(uint32_t), 4, f_mock);
+        /* Pad to > 1MB */
+        fseek(f_mock, 1024 * 1024 + 100, SEEK_SET);
+        fputc(0, f_mock);
+        fclose(f_mock);
+
+        C_ASSERT(!flex_whisper_inspect_header(mock_bad_magic, &hdr), "File with bad magic rejected");
+        C_ASSERT(strstr(hdr.error_detail, "Invalid GGML magic") != NULL, "Error detail mentions Invalid GGML magic");
+        remove(mock_bad_magic);
+    }
+
+    const char* mock_multi_file = "temp_c_mock_multi.bin";
+    f_mock = fopen(mock_multi_file, "wb");
+    if (f_mock) {
+        uint32_t multi_hdr[4] = { 0x67676d6c, 51865, 1500, 384 };
+        fwrite(multi_hdr, sizeof(uint32_t), 4, f_mock);
+        fseek(f_mock, 1024 * 1024 + 100, SEEK_SET);
+        fputc(0, f_mock);
+        fclose(f_mock);
+
+        C_ASSERT(flex_whisper_inspect_header(mock_multi_file, &hdr), "Valid multilingual header accepted");
+        C_ASSERT(hdr.is_valid_format, "Multilingual file format is valid");
+        C_ASSERT(hdr.magic == 0x67676d6c, "GGML magic matches");
+        C_ASSERT(hdr.n_vocab == 51865, "Vocab matches 51865");
+        C_ASSERT(hdr.capability == FLEX_WHISPER_CAP_MULTILINGUAL, "Classified as Multilingual");
+        remove(mock_multi_file);
+    }
+
+    const char* mock_en_file = "temp_c_mock_en.bin";
+    f_mock = fopen(mock_en_file, "wb");
+    if (f_mock) {
+        uint32_t en_hdr[4] = { 0x67676d6c, 51864, 1500, 384 };
+        fwrite(en_hdr, sizeof(uint32_t), 4, f_mock);
+        fseek(f_mock, 1024 * 1024 + 100, SEEK_SET);
+        fputc(0, f_mock);
+        fclose(f_mock);
+
+        C_ASSERT(flex_whisper_inspect_header(mock_en_file, &hdr), "Valid English-only header accepted");
+        C_ASSERT(hdr.is_valid_format, "English-only file format is valid");
+        C_ASSERT(hdr.capability == FLEX_WHISPER_CAP_ENGLISH_ONLY, "Classified as English-only");
+        remove(mock_en_file);
+    }
+
+    /* Display name and string conversion helpers */
+    char disp_buf[128];
+    flex_whisper_format_display_name("ggml-tiny.en.bin", FLEX_WHISPER_MODEL_TINY, FLEX_WHISPER_CAP_ENGLISH_ONLY, disp_buf, sizeof(disp_buf));
+    C_ASSERT(strstr(disp_buf, "Tiny") != NULL, "Display name contains model size");
+    C_ASSERT(strstr(disp_buf, "(English)") != NULL, "Display name contains English capability");
+    C_ASSERT(strstr(disp_buf, "[ggml-tiny.en.bin]") != NULL, "Display name contains filename");
+
+    flex_whisper_format_display_name("ggml-base.bin", FLEX_WHISPER_MODEL_BASE, FLEX_WHISPER_CAP_MULTILINGUAL, disp_buf, sizeof(disp_buf));
+    C_ASSERT(strstr(disp_buf, "Base") != NULL, "Display name contains Base size");
+    C_ASSERT(strstr(disp_buf, "(Multilingual)") != NULL, "Display name contains Multilingual capability");
+
+    C_ASSERT_STR_EQ("English-only", flex_whisper_capability_to_string(FLEX_WHISPER_CAP_ENGLISH_ONLY), "Capability string English-only");
+    C_ASSERT_STR_EQ("Multilingual", flex_whisper_capability_to_string(FLEX_WHISPER_CAP_MULTILINGUAL), "Capability string Multilingual");
+    C_ASSERT_STR_EQ("Unknown", flex_whisper_capability_to_string(FLEX_WHISPER_CAP_UNKNOWN), "Capability string Unknown");
 }
 
 static void test_tts_pipeline_suite(int *total_run, int *total_passed, int *total_failed) {

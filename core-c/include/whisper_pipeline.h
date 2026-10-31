@@ -113,6 +113,56 @@ size_t flex_whisper_build_default_prompt(
     size_t buf_cap
 );
 
+typedef enum {
+    FLEX_WHISPER_CAP_UNKNOWN = 0,
+    FLEX_WHISPER_CAP_ENGLISH_ONLY = 1,
+    FLEX_WHISPER_CAP_MULTILINGUAL = 2
+} flex_whisper_capability_t;
+
+typedef struct {
+    bool is_valid_format;
+    uint32_t magic;
+    int32_t n_vocab;
+    int32_t n_audio_ctx;
+    int32_t n_audio_state;
+    int64_t file_size_bytes;
+    flex_whisper_capability_t capability;
+    char error_detail[128];
+} flex_whisper_model_header_t;
+
+/**
+ * Reads and validates the GGML Whisper model header (first 16 bytes)
+ * without loading tensors or allocating model weights into RAM.
+ *
+ * Verifies GGML magic (0x67676d6c / "ggml") and inspects vocabulary size:
+ * - n_vocab >= 51865: Multilingual model
+ * - n_vocab >= 50000: English-only model (standard 51864)
+ * - Otherwise: Unknown / invalid format.
+ *
+ * Returns true if the file exists, is readable, >= 1MB, and has valid GGML magic.
+ */
+bool flex_whisper_inspect_header(
+    const char* file_path,
+    flex_whisper_model_header_t* out_header
+);
+
+/**
+ * Formats a user-friendly display name for a model file based on its filename,
+ * classified model type, and verified capability.
+ */
+size_t flex_whisper_format_display_name(
+    const char* filename,
+    flex_whisper_model_type_t model_type,
+    flex_whisper_capability_t capability,
+    char* out_name,
+    size_t cap
+);
+
+/**
+ * Returns a static string representation of a capability enum.
+ */
+const char* flex_whisper_capability_to_string(flex_whisper_capability_t cap);
+
 #ifdef __cplusplus
 }
 #endif
