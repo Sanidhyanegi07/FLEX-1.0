@@ -1,5 +1,7 @@
 #include "flex/voice/speech_to_text_service.hpp"
 #include "flex/voice/whisper_model_resolver.hpp"
+#include "whisper_pipeline.h"
+#include <mutex>
 
 #include <whisper.h>
 
@@ -68,6 +70,35 @@ public:
         return (m_ctx != nullptr);
     }
 
+    void setLanguage(const std::string& lang) override
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        m_language = lang.empty() ? "en" : lang;
+    }
+
+    [[nodiscard]] std::string language() const override
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        return m_language;
+    }
+
+    void setInitialPrompt(const std::string& prompt) override
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        m_initialPrompt = prompt;
+    }
+
+    [[nodiscard]] std::string initialPrompt() const override
+    {
+        std::lock_guard<std::mutex> lock(m_configMutex);
+        return m_initialPrompt;
+    }
+
+    [[nodiscard]] bool isMultilingual() const override
+    {
+        return (m_ctx != nullptr && whisper_is_multilingual(m_ctx) != 0);
+    }
+
     TranscriptionResult transcribe(const std::vector<float>& samples, int nThreads) override
     {
         TranscriptionResult result;
@@ -98,9 +129,27 @@ public:
 
         m_abortFlag.store(false);
 
+        std::string currentLang;
+        std::string currentPrompt;
+        {
+            std::lock_guard<std::mutex> lock(m_configMutex);
+            currentLang = m_language;
+            currentPrompt = m_initialPrompt;
+        }
+
+        bool isMulti = (m_ctx != nullptr && whisper_is_multilingual(m_ctx) != 0);
+        flex_whisper_lang_config_t langCfg;
+        flex_whisper_resolve_language(currentLang.c_str(), isMulti, &langCfg);
+
+        if (langCfg.fallback_applied) {
+            std::cout << "[SpeechToText] WARNING: " << langCfg.warning_message << "\n";
+            result.warningMessage = QString::fromUtf8(langCfg.warning_message);
+        }
+
         int threads = std::max(1, nThreads);
         std::cout << "[SpeechToText] Starting Whisper inference on " << sampleCount << " samples ("
-                  << (sampleCount * 1000 / 16000) << " ms) using " << threads << " CPU threads...\n";
+                  << (sampleCount * 1000 / 16000) << " ms) using " << threads << " CPU threads, language: '"
+                  << langCfg.effective_language << "'...\n";
 
         auto startTime = std::chrono::steady_clock::now();
 
@@ -110,8 +159,16 @@ public:
         params.print_realtime = false;
         params.print_timestamps = false;
         params.translate = false;
-        params.language = "en";
+        params.language = langCfg.effective_language;
+        params.detect_language = false;
         params.n_threads = threads;
+
+        char promptBuf[512];
+        flex_whisper_build_default_prompt(currentPrompt.c_str(), promptBuf, sizeof(promptBuf));
+        std::string effectivePrompt = promptBuf;
+        if (!effectivePrompt.empty()) {
+            params.initial_prompt = effectivePrompt.c_str();
+        }
 
         // Connect abort callback for responsive mid-inference cancellation
         params.abort_callback = [](void* userData) -> bool {
@@ -189,6 +246,9 @@ private:
     whisper_context* m_ctx{nullptr};
     std::string m_modelPath;
     std::atomic<bool> m_abortFlag{false};
+    mutable std::mutex m_configMutex;
+    std::string m_language{"en"};
+    std::string m_initialPrompt{""};
 };
 
 /**
@@ -249,6 +309,20 @@ public slots:
     {
         if (m_engine) {
             m_engine->cancel();
+        }
+    }
+
+    void setLanguage(const QString& lang)
+    {
+        if (m_engine) {
+            m_engine->setLanguage(lang.toStdString());
+        }
+    }
+
+    void setInitialPrompt(const QString& prompt)
+    {
+        if (m_engine) {
+            m_engine->setInitialPrompt(prompt.toStdString());
         }
     }
 
@@ -566,10 +640,63 @@ QString SpeechToTextService::lastErrorMessage() const
     return m_impl->m_lastErrorMessage;
 }
 
+void SpeechToTextService::setLanguage(const QString& language)
+{
+    if (m_impl->m_engine) {
+        m_impl->m_engine->setLanguage(language.toStdString());
+    }
+    if (m_impl->m_worker) {
+        QMetaObject::invokeMethod(m_impl->m_worker, "setLanguage", Qt::QueuedConnection,
+                                  Q_ARG(QString, language));
+    }
+}
+
+QString SpeechToTextService::language() const
+{
+    if (m_impl->m_engine) {
+        return QString::fromStdString(m_impl->m_engine->language());
+    }
+    return QStringLiteral("en");
+}
+
+void SpeechToTextService::setInitialPrompt(const QString& prompt)
+{
+    if (m_impl->m_engine) {
+        m_impl->m_engine->setInitialPrompt(prompt.toStdString());
+    }
+    if (m_impl->m_worker) {
+        QMetaObject::invokeMethod(m_impl->m_worker, "setInitialPrompt", Qt::QueuedConnection,
+                                  Q_ARG(QString, prompt));
+    }
+}
+
+QString SpeechToTextService::initialPrompt() const
+{
+    if (m_impl->m_engine) {
+        return QString::fromStdString(m_impl->m_engine->initialPrompt());
+    }
+    return QString();
+}
+
+bool SpeechToTextService::isMultilingual() const
+{
+    if (m_impl->m_engine) {
+        return m_impl->m_engine->isMultilingual();
+    }
+    return false;
+}
+
 void SpeechToTextService::setEngine(std::shared_ptr<ISpeechToTextEngine> engine)
 {
+    std::string currentLang = m_impl->m_engine ? m_impl->m_engine->language() : "en";
+    std::string currentPrompt = m_impl->m_engine ? m_impl->m_engine->initialPrompt() : "";
+
     cancel();
     m_impl->m_engine = std::move(engine);
+    if (m_impl->m_engine) {
+        m_impl->m_engine->setLanguage(currentLang);
+        m_impl->m_engine->setInitialPrompt(currentPrompt);
+    }
 
     if (m_impl->m_worker && m_impl->m_workerThread && m_impl->m_workerThread->isRunning()) {
         QMetaObject::invokeMethod(m_impl->m_worker, "cleanup", Qt::BlockingQueuedConnection);

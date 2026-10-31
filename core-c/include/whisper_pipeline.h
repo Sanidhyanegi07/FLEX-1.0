@@ -76,6 +76,43 @@ flex_whisper_model_type_t flex_whisper_classify_model(const char* model_path);
  */
 uint32_t flex_whisper_model_ram_mb(flex_whisper_model_type_t model_type);
 
+typedef struct {
+    char effective_language[16];
+    bool is_multilingual_required;
+    bool fallback_applied;
+    char warning_message[128];
+} flex_whisper_lang_config_t;
+
+/**
+ * Checks whether a Whisper model filename or path indicates multilingual support.
+ * Returns false if the path contains ".en." or ends with ".en.bin" (English-only).
+ * Returns true for standard multilingual models or unknown.
+ */
+bool flex_whisper_is_model_multilingual_by_name(const char* model_path);
+
+/**
+ * Resolves requested transcription language against model capabilities.
+ * If model is English-only and language is "hi" or "auto", cleanly falls back to "en"
+ * and records an informative warning message.
+ */
+bool flex_whisper_resolve_language(
+    const char* requested_language,
+    bool model_is_multilingual,
+    flex_whisper_lang_config_t* out_config
+);
+
+/**
+ * Builds the default technical and contextual vocabulary prompt for Whisper inference.
+ * If custom_terms is provided, combines it with the base technical glossary:
+ * "FLEX, C11, C++, CMake, MinGW-w64, GCC, Qt, SQLite, Ollama, Qwen, Whisper"
+ * Returns number of bytes written to out_buf.
+ */
+size_t flex_whisper_build_default_prompt(
+    const char* custom_terms,
+    char* out_buf,
+    size_t buf_cap
+);
+
 #ifdef __cplusplus
 }
 #endif

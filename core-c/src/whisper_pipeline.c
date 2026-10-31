@@ -183,3 +183,92 @@ uint32_t flex_whisper_model_ram_mb(flex_whisper_model_type_t model_type) {
     }
 }
 
+bool flex_whisper_is_model_multilingual_by_name(const char* model_path) {
+    if (!model_path || model_path[0] == '\0') {
+        return true;
+    }
+
+    char lower[256];
+    size_t len = strlen(model_path);
+    if (len >= sizeof(lower)) len = sizeof(lower) - 1;
+    for (size_t i = 0; i < len; ++i) {
+        lower[i] = (char)tolower((unsigned char)model_path[i]);
+    }
+    lower[len] = '\0';
+
+    if (strstr(lower, ".en.") != NULL ||
+        strstr(lower, "-en.") != NULL ||
+        strstr(lower, ".en.bin") != NULL ||
+        strstr(lower, "tiny.en") != NULL ||
+        strstr(lower, "base.en") != NULL ||
+        strstr(lower, "small.en") != NULL ||
+        strstr(lower, "medium.en") != NULL) {
+        return false;
+    }
+
+    return true;
+}
+
+bool flex_whisper_resolve_language(
+    const char* requested_language,
+    bool model_is_multilingual,
+    flex_whisper_lang_config_t* out_config
+) {
+    if (!out_config) return false;
+    memset(out_config, 0, sizeof(flex_whisper_lang_config_t));
+
+    const char* req = (requested_language && requested_language[0] != '\0')
+                      ? requested_language : "en";
+
+    char lower[16];
+    size_t len = strlen(req);
+    if (len >= sizeof(lower)) len = sizeof(lower) - 1;
+    for (size_t i = 0; i < len; ++i) {
+        lower[i] = (char)tolower((unsigned char)req[i]);
+    }
+    lower[len] = '\0';
+
+    if (strcmp(lower, "hi") == 0 || strcmp(lower, "auto") == 0) {
+        out_config->is_multilingual_required = true;
+    } else {
+        out_config->is_multilingual_required = false;
+    }
+
+    if (!model_is_multilingual && out_config->is_multilingual_required) {
+        strncpy(out_config->effective_language, "en", sizeof(out_config->effective_language) - 1);
+        out_config->fallback_applied = true;
+        snprintf(out_config->warning_message, sizeof(out_config->warning_message),
+                 "Model is English-only; requested language '%s' fell back to 'en'.", lower);
+    } else {
+        strncpy(out_config->effective_language, lower, sizeof(out_config->effective_language) - 1);
+        out_config->fallback_applied = false;
+        out_config->warning_message[0] = '\0';
+    }
+
+    return true;
+}
+
+size_t flex_whisper_build_default_prompt(
+    const char* custom_terms,
+    char* out_buf,
+    size_t buf_cap
+) {
+    if (!out_buf || buf_cap < 8) return 0;
+
+    static const char BASE_GLOSSARY[] =
+        "FLEX, C11, C++, CMake, MinGW-w64, GCC, Qt, SQLite, Ollama, Qwen, Whisper";
+
+    int written = 0;
+    if (custom_terms && custom_terms[0] != '\0') {
+        written = snprintf(out_buf, buf_cap, "%s, %s", custom_terms, BASE_GLOSSARY);
+    } else {
+        written = snprintf(out_buf, buf_cap, "%s", BASE_GLOSSARY);
+    }
+
+    if (written < 0 || (size_t)written >= buf_cap) {
+        out_buf[buf_cap - 1] = '\0';
+        return buf_cap - 1;
+    }
+    return (size_t)written;
+}
+

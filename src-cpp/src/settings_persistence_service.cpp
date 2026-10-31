@@ -41,6 +41,8 @@ static void appSettingsToCConfig(const AppSettings& src, FlexAppConfig* dst)
     dst->tts_rate = src.ttsRate;
     dst->tts_volume = src.ttsVolume;
     std::strncpy(dst->whisper_model_path, src.whisperModelPath.c_str(), sizeof(dst->whisper_model_path) - 1);
+    std::strncpy(dst->whisper_language, src.whisperLanguage.empty() ? "en" : src.whisperLanguage.c_str(), sizeof(dst->whisper_language) - 1);
+    std::strncpy(dst->whisper_prompt, src.whisperPrompt.c_str(), sizeof(dst->whisper_prompt) - 1);
 }
 
 static void cConfigToAppSettings(const FlexAppConfig& src, AppSettings* dst)
@@ -54,6 +56,8 @@ static void cConfigToAppSettings(const FlexAppConfig& src, AppSettings* dst)
     dst->ttsRate = src.tts_rate;
     dst->ttsVolume = src.tts_volume;
     dst->whisperModelPath = src.whisper_model_path;
+    dst->whisperLanguage = (src.whisper_language[0] != '\0') ? src.whisper_language : "en";
+    dst->whisperPrompt = src.whisper_prompt;
 }
 
 std::vector<std::string> SettingsPersistenceService::validateSettings(const AppSettings& settings)

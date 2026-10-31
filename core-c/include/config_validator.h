@@ -20,6 +20,8 @@ typedef struct {
     int tts_rate;
     int tts_volume;
     char whisper_model_path[256];
+    char whisper_language[16];
+    char whisper_prompt[256];
 } FlexAppConfig;
 
 typedef struct {
@@ -73,7 +75,9 @@ typedef enum {
     FLEX_CFG_ERR_INVALID_URL = 11,
     FLEX_CFG_ERR_INVALID_TEMPERATURE = 12,
     FLEX_CFG_ERR_INVALID_NUM_CTX = 13,
-    FLEX_CFG_ERR_INVALID_TIMEOUT = 14
+    FLEX_CFG_ERR_INVALID_TIMEOUT = 14,
+    FLEX_CFG_ERR_INVALID_WHISPER_LANG = 15,
+    FLEX_CFG_ERR_INVALID_WHISPER_PROMPT = 16
 } flex_cfg_status_t;
 
 typedef struct {
@@ -175,6 +179,22 @@ flex_cfg_status_t flex_validate_context_window(
  */
 flex_cfg_status_t flex_validate_timeout(
     int timeout_seconds,
+    flex_cfg_result_t* out_result
+);
+
+/**
+ * Validates whisper transcription language code ("en", "hi", "auto").
+ */
+flex_cfg_status_t flex_validate_whisper_language(
+    const char* language,
+    flex_cfg_result_t* out_result
+);
+
+/**
+ * Validates whisper contextual prompt string (optional, up to 255 chars).
+ */
+flex_cfg_status_t flex_validate_whisper_prompt(
+    const char* prompt,
     flex_cfg_result_t* out_result
 );
 

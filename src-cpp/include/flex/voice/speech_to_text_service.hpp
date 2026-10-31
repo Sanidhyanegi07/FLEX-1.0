@@ -38,6 +38,7 @@ struct TranscriptionResult {
     int64_t inferenceDurationMs{0};
     SpeechToTextError error{SpeechToTextError::None};
     QString errorMessage;
+    QString warningMessage;
 };
 
 /**
@@ -51,6 +52,11 @@ public:
     [[nodiscard]] virtual bool isModelLoaded() const = 0;
     virtual TranscriptionResult transcribe(const std::vector<float>& samples, int nThreads = 4) = 0;
     virtual void cancel() = 0;
+    virtual void setLanguage(const std::string& lang) { (void)lang; }
+    [[nodiscard]] virtual std::string language() const { return "en"; }
+    virtual void setInitialPrompt(const std::string& prompt) { (void)prompt; }
+    [[nodiscard]] virtual std::string initialPrompt() const { return ""; }
+    [[nodiscard]] virtual bool isMultilingual() const { return false; }
 };
 
 class SpeechToTextServiceImpl;
@@ -87,6 +93,13 @@ public:
     // Transcription
     bool transcribeAsync(const AudioBuffer& audioBuffer);
     void cancel();
+
+    // Language & Vocabulary Configuration
+    void setLanguage(const QString& language);
+    [[nodiscard]] QString language() const;
+    void setInitialPrompt(const QString& prompt);
+    [[nodiscard]] QString initialPrompt() const;
+    [[nodiscard]] bool isMultilingual() const;
 
     // State Inspection
     [[nodiscard]] bool isBusy() const;

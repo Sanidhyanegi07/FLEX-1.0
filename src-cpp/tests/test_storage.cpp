@@ -531,6 +531,8 @@ void test_settings_persistence()
     EXPECT_EQ(30, loadRes.settings.ollamaTimeout);
     EXPECT_EQ(0, loadRes.settings.ttsRate);
     EXPECT_EQ(100, loadRes.settings.ttsVolume);
+    EXPECT_STR_EQ("en", loadRes.settings.whisperLanguage);
+    EXPECT_TRUE(loadRes.settings.whisperPrompt.empty());
 
     // 2. Save valid custom configuration
     flex::AppSettings custom;
@@ -542,6 +544,8 @@ void test_settings_persistence()
     custom.audioInputDevice = "Test Mic Array";
     custom.ttsRate = 3;
     custom.ttsVolume = 85;
+    custom.whisperLanguage = "hi";
+    custom.whisperPrompt = "FLEX technical vocabulary";
 
     auto saveRes = flex::SettingsPersistenceService::saveSettings(custom, configPath);
     EXPECT_TRUE(saveRes.success);
@@ -558,6 +562,8 @@ void test_settings_persistence()
     EXPECT_STR_EQ("Test Mic Array", reloadRes.settings.audioInputDevice);
     EXPECT_EQ(3, reloadRes.settings.ttsRate);
     EXPECT_EQ(85, reloadRes.settings.ttsVolume);
+    EXPECT_STR_EQ("hi", reloadRes.settings.whisperLanguage);
+    EXPECT_STR_EQ("FLEX technical vocabulary", reloadRes.settings.whisperPrompt);
 
     // 4. Pre-validation strictly rejects invalid values
     flex::AppSettings invalidCfg = custom;
@@ -578,6 +584,10 @@ void test_settings_persistence()
 
     invalidCfg = custom;
     invalidCfg.ttsVolume = 150; // Out of range 0..100
+    EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
+
+    invalidCfg = custom;
+    invalidCfg.whisperLanguage = "fr"; // Unsupported language
     EXPECT_FALSE(flex::SettingsPersistenceService::saveSettings(invalidCfg, configPath).success);
 
     // 5. Existing valid configuration preserved after rejected save

@@ -525,6 +525,36 @@ public:
         m_cancelled.store(true);
     }
 
+    void setLanguage(const std::string& lang) override
+    {
+        m_language = lang;
+    }
+
+    [[nodiscard]] std::string language() const override
+    {
+        return m_language;
+    }
+
+    void setInitialPrompt(const std::string& prompt) override
+    {
+        m_prompt = prompt;
+    }
+
+    [[nodiscard]] std::string initialPrompt() const override
+    {
+        return m_prompt;
+    }
+
+    void setMultilingual(bool multi)
+    {
+        m_multilingual = multi;
+    }
+
+    [[nodiscard]] bool isMultilingual() const override
+    {
+        return m_multilingual;
+    }
+
     void reset()
     {
         m_cancelled.store(false);
@@ -540,6 +570,9 @@ public:
     std::string m_transcribeErrorMessage;
     std::string m_mockText{"Testing FLEX voice recognition."};
     std::string m_lastModelPath;
+    std::string m_language{"en"};
+    std::string m_prompt{""};
+    bool m_multilingual{false};
     int m_delayMs{0};
     int m_loadModelCalls{0};
     int m_transcribeCalls{0};
@@ -1909,6 +1942,82 @@ void test_stt_real_model_with_speech_fixture()
               << receivedText.toStdString() << "\"\n";
 }
 
+void test_stt_language_and_prompt_configuration()
+{
+    std::cout << "[Test 29c] SpeechToText: configurable language and contextual prompt verification...\n";
+
+    auto mockEngine = std::make_shared<MockSpeechToTextEngine>();
+    flex::voice::SpeechToTextService service(mockEngine);
+
+    // 1. Defaults verification
+    EXPECT_STR_EQ("en", service.language().toStdString());
+    EXPECT_TRUE(service.initialPrompt().isEmpty());
+    EXPECT_FALSE(service.isMultilingual());
+
+    // 2. Setting language on service propagates to engine
+    service.setLanguage("hi");
+    EXPECT_STR_EQ("hi", service.language().toStdString());
+
+    service.setLanguage("auto");
+    EXPECT_STR_EQ("auto", service.language().toStdString());
+
+    // 3. Setting initial prompt propagates to engine
+    service.setInitialPrompt("FLEX, C11, C++, Ollama");
+    EXPECT_STR_EQ("FLEX, C11, C++, Ollama", service.initialPrompt().toStdString());
+
+    // 4. Verification with real WhisperCppEngine and English-only model fallback
+    auto resolution = flex::voice::WhisperModelResolver::resolveModelPath();
+    if (resolution.isFound()) {
+        flex::voice::SpeechToTextService realService;
+        bool loaded = realService.loadModelSync(resolution.resolvedPath, 15000);
+        EXPECT_TRUE(loaded);
+
+        // Real tiny.en model must report isMultilingual() == false
+        EXPECT_FALSE(realService.isMultilingual());
+
+        // Configure Hindi language on English-only model
+        realService.setLanguage("hi");
+        EXPECT_STR_EQ("hi", realService.language().toStdString());
+
+        // Configure technical prompt
+        realService.setInitialPrompt("FLEX 1.0, Speech Recognition, C11");
+        EXPECT_STR_EQ("FLEX 1.0, Speech Recognition, C11", realService.initialPrompt().toStdString());
+
+        // Transcribe a short 1-second audio buffer
+        flex::voice::AudioBuffer shortBuf;
+        shortBuf.sampleRate = 16000;
+        shortBuf.channelCount = 1;
+        shortBuf.sampleSizeBits = 16;
+        shortBuf.samples.resize(16000, 0.001f);
+        shortBuf.durationMs = 1000;
+
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        timer.setInterval(15000);
+        bool finishedCleanly = false;
+
+        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(&realService, &flex::voice::SpeechToTextService::transcriptionFinished,
+                         [&](const QString&, int64_t) {
+            finishedCleanly = true;
+            loop.quit();
+        });
+        QObject::connect(&realService, &flex::voice::SpeechToTextService::transcriptionError,
+                         [&](flex::voice::SpeechToTextError, const QString&) {
+            loop.quit();
+        });
+
+        timer.start();
+        bool started = realService.transcribeAsync(shortBuf);
+        EXPECT_TRUE(started);
+        loop.exec();
+
+        EXPECT_TRUE(finishedCleanly);
+        std::cout << "  [PASS] Real engine successfully transcribed with Hindi fallback and prompt conditioning!\n";
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Voice Conversation Pipeline Tests (Tests 30 to 48)
 // -----------------------------------------------------------------------------
@@ -2671,6 +2780,7 @@ int main(int argc, char* argv[])
     test_stt_empty_transcription_output();
     test_stt_real_model_smoke_test();
     test_stt_real_model_with_speech_fixture();
+    test_stt_language_and_prompt_configuration();
 
     test_voice_controller_successful_recording_to_transcription();
     test_voice_controller_empty_silent_transcription();

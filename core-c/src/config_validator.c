@@ -213,6 +213,78 @@ flex_cfg_status_t flex_validate_whisper_path(
     return FLEX_CFG_VALID;
 }
 
+flex_cfg_status_t flex_validate_whisper_language(
+    const char* language,
+    flex_cfg_result_t* out_result
+) {
+    if (out_result) {
+        memset(out_result, 0, sizeof(flex_cfg_result_t));
+        out_result->status = FLEX_CFG_VALID;
+    }
+
+    if (!language) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_NULL;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail), "Whisper language pointer is NULL");
+        }
+        return FLEX_CFG_ERR_NULL;
+    }
+
+    char lower[16];
+    size_t len = strlen(language);
+    if (len == 0 || len >= sizeof(lower)) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_WHISPER_LANG;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail),
+                     "Whisper language '%s' has invalid length (%zu)", language, len);
+        }
+        return FLEX_CFG_ERR_INVALID_WHISPER_LANG;
+    }
+
+    for (size_t i = 0; i < len; ++i) {
+        lower[i] = (char)tolower((unsigned char)language[i]);
+    }
+    lower[len] = '\0';
+
+    if (strcmp(lower, "en") != 0 && strcmp(lower, "hi") != 0 && strcmp(lower, "auto") != 0) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_WHISPER_LANG;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail),
+                     "Whisper language '%s' is unsupported. Allowed: 'en', 'hi', 'auto'", language);
+        }
+        return FLEX_CFG_ERR_INVALID_WHISPER_LANG;
+    }
+
+    return FLEX_CFG_VALID;
+}
+
+flex_cfg_status_t flex_validate_whisper_prompt(
+    const char* prompt,
+    flex_cfg_result_t* out_result
+) {
+    if (out_result) {
+        memset(out_result, 0, sizeof(flex_cfg_result_t));
+        out_result->status = FLEX_CFG_VALID;
+    }
+
+    if (!prompt) {
+        /* NULL prompt is valid (prompt is optional) */
+        return FLEX_CFG_VALID;
+    }
+
+    size_t len = strlen(prompt);
+    if (len > 255) {
+        if (out_result) {
+            out_result->status = FLEX_CFG_ERR_INVALID_WHISPER_PROMPT;
+            snprintf(out_result->error_detail, sizeof(out_result->error_detail),
+                     "Whisper prompt length (%zu) exceeds 255 character limit", len);
+        }
+        return FLEX_CFG_ERR_INVALID_WHISPER_PROMPT;
+    }
+
+    return FLEX_CFG_VALID;
+}
+
 flex_cfg_status_t flex_validate_tts_rate(
     int rate,
     flex_cfg_result_t* out_result
@@ -474,6 +546,8 @@ const char* flex_cfg_status_to_string(flex_cfg_status_t status) {
         case FLEX_CFG_ERR_INVALID_TEMPERATURE: return "ERR_INVALID_TEMPERATURE";
         case FLEX_CFG_ERR_INVALID_NUM_CTX: return "ERR_INVALID_NUM_CTX";
         case FLEX_CFG_ERR_INVALID_TIMEOUT: return "ERR_INVALID_TIMEOUT";
+        case FLEX_CFG_ERR_INVALID_WHISPER_LANG: return "ERR_INVALID_WHISPER_LANG";
+        case FLEX_CFG_ERR_INVALID_WHISPER_PROMPT: return "ERR_INVALID_WHISPER_PROMPT";
         default: return "UNKNOWN";
     }
 }
@@ -490,6 +564,8 @@ void flex_app_config_init_defaults(FlexAppConfig* config) {
     config->tts_rate = 0;
     config->tts_volume = 100;
     config->whisper_model_path[0] = '\0';
+    strncpy(config->whisper_language, "en", sizeof(config->whisper_language) - 1);
+    config->whisper_prompt[0] = '\0';
 }
 
 bool flex_validate_app_config(
@@ -533,6 +609,21 @@ bool flex_validate_app_config(
 
     if (config->whisper_model_path[0] != '\0') {
         RECORD_CFG_ERR(flex_validate_whisper_path(config->whisper_model_path, &res), "whisper_model_path");
+    }
+
+    if (config->whisper_language[0] != '\0') {
+        RECORD_CFG_ERR(flex_validate_whisper_language(config->whisper_language, &res), "whisper_language");
+    } else {
+        valid = false;
+        if (out_validation && out_validation->error_count < 8) {
+            snprintf(out_validation->errors[out_validation->error_count],
+                     sizeof(out_validation->errors[0]), "whisper_language: Language code cannot be empty");
+            out_validation->error_count++;
+        }
+    }
+
+    if (config->whisper_prompt[0] != '\0') {
+        RECORD_CFG_ERR(flex_validate_whisper_prompt(config->whisper_prompt, &res), "whisper_prompt");
     }
 
     #undef RECORD_CFG_ERR
@@ -600,6 +691,23 @@ bool flex_app_config_from_kv(
         out_config->whisper_model_path[sizeof(out_config->whisper_model_path) - 1] = '\0';
     }
 
+    const char* lang = flex_kv_get_str(store, "whisper.language");
+    if (lang && lang[0] != '\0') {
+        strncpy(out_config->whisper_language, lang, sizeof(out_config->whisper_language) - 1);
+        out_config->whisper_language[sizeof(out_config->whisper_language) - 1] = '\0';
+    } else {
+        strncpy(out_config->whisper_language, "en", sizeof(out_config->whisper_language) - 1);
+        out_config->whisper_language[sizeof(out_config->whisper_language) - 1] = '\0';
+    }
+
+    const char* prompt = flex_kv_get_str(store, "whisper.initial_prompt");
+    if (prompt && prompt[0] != '\0') {
+        strncpy(out_config->whisper_prompt, prompt, sizeof(out_config->whisper_prompt) - 1);
+        out_config->whisper_prompt[sizeof(out_config->whisper_prompt) - 1] = '\0';
+    } else {
+        out_config->whisper_prompt[0] = '\0';
+    }
+
     return flex_validate_app_config(out_config, out_validation);
 }
 
@@ -623,6 +731,17 @@ bool flex_app_config_to_kv(
 
     if (config->whisper_model_path[0] != '\0') {
         if (!flex_kv_set(out_store, "whisper.model_path", config->whisper_model_path)) {
+            return false;
+        }
+    }
+
+    const char* lang_to_save = (config->whisper_language[0] != '\0') ? config->whisper_language : "en";
+    if (!flex_kv_set(out_store, "whisper.language", lang_to_save)) {
+        return false;
+    }
+
+    if (config->whisper_prompt[0] != '\0') {
+        if (!flex_kv_set(out_store, "whisper.initial_prompt", config->whisper_prompt)) {
             return false;
         }
     }

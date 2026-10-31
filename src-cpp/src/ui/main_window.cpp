@@ -63,8 +63,16 @@ MainWindow::MainWindow(
             m_chatView->textToSpeechService()->setRate(loadRes.settings.ttsRate);
             m_chatView->textToSpeechService()->setVolume(loadRes.settings.ttsVolume);
         }
-        if (!loadRes.settings.whisperModelPath.empty() && m_voiceController->speechToTextService()) {
-            m_voiceController->speechToTextService()->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
+        if (m_voiceController && m_voiceController->speechToTextService()) {
+            if (!loadRes.settings.whisperModelPath.empty()) {
+                m_voiceController->speechToTextService()->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
+            }
+            if (!loadRes.settings.whisperLanguage.empty()) {
+                m_voiceController->speechToTextService()->setLanguage(QString::fromStdString(loadRes.settings.whisperLanguage));
+            }
+            if (!loadRes.settings.whisperPrompt.empty()) {
+                m_voiceController->speechToTextService()->setInitialPrompt(QString::fromStdString(loadRes.settings.whisperPrompt));
+            }
         }
     }
     m_settingsView->setAudioCaptureService(m_chatView->audioCaptureService());

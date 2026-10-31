@@ -617,6 +617,51 @@ static void test_config_validator_suite(int *total_run, int *total_passed, int *
     C_ASSERT(flex_validate_timeout(60, &res) == FLEX_CFG_VALID, "Timeout 60s valid");
     C_ASSERT(flex_validate_timeout(0, &res) == FLEX_CFG_ERR_INVALID_TIMEOUT, "Timeout 0s rejected");
     C_ASSERT(flex_validate_timeout(1000, &res) == FLEX_CFG_ERR_INVALID_TIMEOUT, "Timeout > 600s rejected");
+
+    /* Whisper Language & Contextual Prompt Validators */
+    C_ASSERT(flex_validate_whisper_language("en", &res) == FLEX_CFG_VALID, "Whisper lang 'en' valid");
+    C_ASSERT(flex_validate_whisper_language("hi", &res) == FLEX_CFG_VALID, "Whisper lang 'hi' valid");
+    C_ASSERT(flex_validate_whisper_language("auto", &res) == FLEX_CFG_VALID, "Whisper lang 'auto' valid");
+    C_ASSERT(flex_validate_whisper_language("EN", &res) == FLEX_CFG_VALID, "Whisper lang 'EN' valid (case-insensitive)");
+    C_ASSERT(flex_validate_whisper_language("HI", &res) == FLEX_CFG_VALID, "Whisper lang 'HI' valid (case-insensitive)");
+    C_ASSERT(flex_validate_whisper_language("Auto", &res) == FLEX_CFG_VALID, "Whisper lang 'Auto' valid (case-insensitive)");
+    C_ASSERT(flex_validate_whisper_language(NULL, &res) == FLEX_CFG_ERR_NULL, "Whisper lang NULL returns ERR_NULL");
+    C_ASSERT(flex_validate_whisper_language("", &res) == FLEX_CFG_ERR_INVALID_WHISPER_LANG, "Whisper lang empty rejected");
+    C_ASSERT(flex_validate_whisper_language("fr", &res) == FLEX_CFG_ERR_INVALID_WHISPER_LANG, "Whisper lang 'fr' rejected");
+    C_ASSERT(flex_validate_whisper_language("unsupported_language_string", &res) == FLEX_CFG_ERR_INVALID_WHISPER_LANG, "Long invalid lang rejected");
+
+    C_ASSERT(flex_validate_whisper_prompt(NULL, &res) == FLEX_CFG_VALID, "Whisper prompt NULL valid");
+    C_ASSERT(flex_validate_whisper_prompt("", &res) == FLEX_CFG_VALID, "Whisper prompt empty valid");
+    C_ASSERT(flex_validate_whisper_prompt("FLEX, C11, C++, Whisper, Ollama", &res) == FLEX_CFG_VALID, "Technical prompt valid");
+    char long_prompt[300];
+    memset(long_prompt, 'A', 280);
+    long_prompt[280] = '\0';
+    C_ASSERT(flex_validate_whisper_prompt(long_prompt, &res) == FLEX_CFG_ERR_INVALID_WHISPER_PROMPT, "Prompt > 255 chars rejected");
+
+    /* FlexAppConfig schema and KV round-trip with Whisper settings */
+    FlexAppConfig app_cfg;
+    flex_app_config_init_defaults(&app_cfg);
+    C_ASSERT_STR_EQ("en", app_cfg.whisper_language, "Default whisper language initialized to en");
+    C_ASSERT(app_cfg.whisper_prompt[0] == '\0', "Default whisper prompt initialized to empty");
+
+    FlexAppConfigValidation val_res;
+    C_ASSERT(flex_validate_app_config(&app_cfg, &val_res), "Default app config validates successfully");
+
+    FlexKvStore kv_store;
+    C_ASSERT(flex_app_config_to_kv(&app_cfg, &kv_store), "App config to KV store succeeded");
+    FlexAppConfig reloaded_cfg;
+    C_ASSERT(flex_app_config_from_kv(&kv_store, &reloaded_cfg, &val_res), "App config from KV store succeeded");
+    C_ASSERT_STR_EQ("en", reloaded_cfg.whisper_language, "Reloaded whisper language matches default");
+    C_ASSERT(reloaded_cfg.whisper_prompt[0] == '\0', "Reloaded whisper prompt matches empty");
+
+    /* Custom language and technical prompt KV persistence */
+    strncpy(app_cfg.whisper_language, "hi", sizeof(app_cfg.whisper_language) - 1);
+    strncpy(app_cfg.whisper_prompt, "FLEX, C11, GCC, CMake", sizeof(app_cfg.whisper_prompt) - 1);
+    C_ASSERT(flex_app_config_to_kv(&app_cfg, &kv_store), "App config with Hindi and custom prompt to KV succeeded");
+    FlexAppConfig reloaded_custom;
+    C_ASSERT(flex_app_config_from_kv(&kv_store, &reloaded_custom, &val_res), "Reloaded custom app config from KV succeeded");
+    C_ASSERT_STR_EQ("hi", reloaded_custom.whisper_language, "Reloaded custom whisper language is Hindi");
+    C_ASSERT_STR_EQ("FLEX, C11, GCC, CMake", reloaded_custom.whisper_prompt, "Reloaded custom prompt matches");
 }
 
 static void test_voice_fsm_suite(int *total_run, int *total_passed, int *total_failed) {
@@ -913,6 +958,63 @@ static void test_whisper_pipeline_suite(int *total_run, int *total_passed, int *
 
     C_ASSERT(flex_whisper_classify_model("ggml-tiny.en.bin") == FLEX_WHISPER_MODEL_TINY, "Classified tiny model");
     C_ASSERT(flex_whisper_model_ram_mb(FLEX_WHISPER_MODEL_TINY) == 75, "Tiny model RAM estimate 75MB");
+
+    /* Multilingual model classification by name */
+    C_ASSERT(!flex_whisper_is_model_multilingual_by_name("ggml-tiny.en.bin"), "tiny.en is English-only");
+    C_ASSERT(!flex_whisper_is_model_multilingual_by_name("models/whisper/ggml-base.en.bin"), "base.en is English-only");
+    C_ASSERT(!flex_whisper_is_model_multilingual_by_name("C:\\models\\ggml-small.en.bin"), "small.en is English-only");
+    C_ASSERT(flex_whisper_is_model_multilingual_by_name("ggml-tiny.bin"), "tiny.bin is multilingual");
+    C_ASSERT(flex_whisper_is_model_multilingual_by_name("models/whisper/ggml-base.bin"), "base.bin is multilingual");
+    C_ASSERT(flex_whisper_is_model_multilingual_by_name("ggml-small.bin"), "small.bin is multilingual");
+    C_ASSERT(flex_whisper_is_model_multilingual_by_name("ggml-large-v3.bin"), "large-v3.bin is multilingual");
+
+    /* Language resolution and English-only model fallback gating */
+    flex_whisper_lang_config_t lang_cfg;
+
+    /* Case A: English-only model with Hindi -> clean fallback to English */
+    C_ASSERT(flex_whisper_resolve_language("hi", false, &lang_cfg), "Language resolved for Hindi on .en model");
+    C_ASSERT(lang_cfg.fallback_applied, "Fallback applied for Hindi on English-only model");
+    C_ASSERT_STR_EQ("en", lang_cfg.effective_language, "Effective language fell back to 'en'");
+    C_ASSERT(lang_cfg.is_multilingual_required, "Multilingual capability was required");
+    C_ASSERT(strstr(lang_cfg.warning_message, "English-only") != NULL, "Warning mentions English-only");
+
+    /* Case B: English-only model with Auto -> clean fallback to English */
+    C_ASSERT(flex_whisper_resolve_language("auto", false, &lang_cfg), "Language resolved for auto on .en model");
+    C_ASSERT(lang_cfg.fallback_applied, "Fallback applied for auto on English-only model");
+    C_ASSERT_STR_EQ("en", lang_cfg.effective_language, "Effective language fell back to 'en'");
+
+    /* Case C: English-only model with English -> no fallback */
+    C_ASSERT(flex_whisper_resolve_language("en", false, &lang_cfg), "Language resolved for en on .en model");
+    C_ASSERT(!lang_cfg.fallback_applied, "No fallback needed for English");
+    C_ASSERT_STR_EQ("en", lang_cfg.effective_language, "Effective language is 'en'");
+    C_ASSERT(lang_cfg.warning_message[0] == '\0', "No warning for supported English");
+
+    /* Case D: Multilingual model with Hindi -> directly accepted */
+    C_ASSERT(flex_whisper_resolve_language("hi", true, &lang_cfg), "Language resolved for Hindi on multi model");
+    C_ASSERT(!lang_cfg.fallback_applied, "No fallback for Hindi on multilingual model");
+    C_ASSERT_STR_EQ("hi", lang_cfg.effective_language, "Effective language is Hindi");
+
+    /* Case E: Multilingual model with Auto -> directly accepted */
+    C_ASSERT(flex_whisper_resolve_language("auto", true, &lang_cfg), "Language resolved for auto on multi model");
+    C_ASSERT(!lang_cfg.fallback_applied, "No fallback for auto on multilingual model");
+    C_ASSERT_STR_EQ("auto", lang_cfg.effective_language, "Effective language is auto");
+
+    /* Case F: Multilingual model with uppercase 'HI' -> normalized */
+    C_ASSERT(flex_whisper_resolve_language("HI", true, &lang_cfg), "Language resolved for uppercase HI");
+    C_ASSERT_STR_EQ("hi", lang_cfg.effective_language, "Normalized to lowercase 'hi'");
+
+    /* Contextual prompt building */
+    char prompt_buf[512];
+    size_t prompt_len = flex_whisper_build_default_prompt(NULL, prompt_buf, sizeof(prompt_buf));
+    C_ASSERT(prompt_len > 0, "Built default technical prompt");
+    C_ASSERT(strstr(prompt_buf, "FLEX") != NULL, "Default prompt contains FLEX");
+    C_ASSERT(strstr(prompt_buf, "C11") != NULL, "Default prompt contains C11");
+    C_ASSERT(strstr(prompt_buf, "Whisper") != NULL, "Default prompt contains Whisper");
+
+    prompt_len = flex_whisper_build_default_prompt("React, TypeScript", prompt_buf, sizeof(prompt_buf));
+    C_ASSERT(prompt_len > 0, "Built combined technical prompt");
+    C_ASSERT(strstr(prompt_buf, "React, TypeScript") != NULL, "Combined prompt contains custom terms");
+    C_ASSERT(strstr(prompt_buf, "FLEX") != NULL, "Combined prompt preserves base glossary");
 }
 
 static void test_tts_pipeline_suite(int *total_run, int *total_passed, int *total_failed) {

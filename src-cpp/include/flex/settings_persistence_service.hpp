@@ -24,6 +24,8 @@ struct AppSettings {
     int ttsRate{0};                   // SAPI rate: -10 to +10, default 0
     int ttsVolume{100};               // SAPI volume: 0 to 100, default 100
     std::string whisperModelPath{""}; // Empty string indicates auto-resolved path
+    std::string whisperLanguage{"en"}; // "en", "hi", "auto"
+    std::string whisperPrompt{""};    // Optional technical/contextual prompt
 };
 
 /**

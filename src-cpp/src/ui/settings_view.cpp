@@ -360,8 +360,16 @@ void SettingsView::onSaveClicked()
         m_tts->setVolume(newSettings.ttsVolume);
     }
 
-    if (m_stt && !newSettings.whisperModelPath.empty()) {
-        m_stt->loadModel(QString::fromStdString(newSettings.whisperModelPath));
+    if (m_stt) {
+        if (!newSettings.whisperModelPath.empty()) {
+            m_stt->loadModel(QString::fromStdString(newSettings.whisperModelPath));
+        }
+        if (!newSettings.whisperLanguage.empty()) {
+            m_stt->setLanguage(QString::fromStdString(newSettings.whisperLanguage));
+        }
+        if (!newSettings.whisperPrompt.empty()) {
+            m_stt->setInitialPrompt(QString::fromStdString(newSettings.whisperPrompt));
+        }
     }
 
     m_saveStatusLabel->setText("✓ Settings saved successfully to configuration file.");
