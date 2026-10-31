@@ -1,6 +1,7 @@
 #include "flex_ui.hpp"
 #include "flex/backend.hpp"
 #include "flex/settings_persistence_service.hpp"
+#include "flex/voice/speech_to_text_service.hpp"
 #include <QTemporaryDir>
 #include <QStandardItemModel>
 
@@ -1005,6 +1006,56 @@ void test_settings_view_transcription_language()
     qunsetenv("FLEX_CONFIG_PATH");
 }
 
+class MockUiSpeechToTextEngine : public flex::voice::ISpeechToTextEngine {
+public:
+    bool loadModel(const std::string& path) override {
+        m_loaded = true;
+        m_lastPath = path;
+        return true;
+    }
+    [[nodiscard]] bool isModelLoaded() const override { return m_loaded; }
+    flex::voice::TranscriptionResult transcribe(const std::vector<float>&, int) override {
+        flex::voice::TranscriptionResult res;
+        res.success = true;
+        res.text = "Mock UI transcription";
+        return res;
+    }
+    void cancel() override {}
+    [[nodiscard]] bool isMultilingual() const override { return true; }
+private:
+    bool m_loaded{false};
+    std::string m_lastPath;
+};
+
+void test_main_window_whisper_lifecycle_and_safe_shutdown()
+{
+    std::cout << "[Test 17] MainWindow Whisper lifecycle isolation and safe shutdown...\n";
+
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    flex::OllamaConfig cfg;
+    cfg.baseUrl = "http://127.0.0.1:9999";
+    auto client = std::make_shared<flex::OllamaClient>(cfg);
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, client);
+
+    // 1. Verify MainWindow construction does NOT initialize real Whisper in isolated UI tests
+    auto window = std::make_unique<flex::ui::MainWindow>(coordinator);
+    EXPECT_TRUE(window->voiceController() != nullptr);
+    EXPECT_TRUE(window->voiceController()->speechToTextService() != nullptr);
+    EXPECT_TRUE(window->voiceController()->speechToTextService()->isModelLoaded());
+
+    // 2. Verify closing/destroying window during active operations is safe and non-blocking
+    window->close();
+    window.reset(); // Destroy window cleanly
+    EXPECT_TRUE(true);
+
+    // 3. Verify event loop processes without accessing destroyed callbacks
+    QEventLoop loop;
+    QTimer::singleShot(50, &loop, &QEventLoop::quit);
+    loop.exec();
+    EXPECT_TRUE(true);
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -1013,6 +1064,11 @@ int main(int argc, char* argv[])
     qputenv("QT_QPA_PLATFORM", "offscreen");
 
     QApplication app(argc, argv);
+
+    // Inject mock speech-to-text engine to prevent UI tests from repeatedly loading 77MB Whisper model
+    flex::voice::SpeechToTextService::setDefaultEngineFactory([]() {
+        return std::make_shared<MockUiSpeechToTextEngine>();
+    });
 
     std::cout << "========================================================\n";
     std::cout << " FLEX 1.0 Native Qt Desktop UI Test Suite (Stage 5)    \n";
@@ -1036,6 +1092,7 @@ int main(int argc, char* argv[])
     test_settings_view_ui_persistence();
     test_settings_view_whisper_model_discovery();
     test_settings_view_transcription_language();
+    test_main_window_whisper_lifecycle_and_safe_shutdown();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

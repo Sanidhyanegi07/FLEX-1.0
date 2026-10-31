@@ -13,9 +13,11 @@ namespace flex::ui {
 
 MainWindow::MainWindow(
     std::shared_ptr<BackendCoordinator> coordinator,
+    std::shared_ptr<voice::VoiceConversationController> voiceController,
     QWidget* parent)
     : QMainWindow(parent)
     , m_coordinator(std::move(coordinator))
+    , m_voiceController(std::move(voiceController))
 {
     bool isDefaultCoordinator = false;
     if (!m_coordinator) {
@@ -41,14 +43,16 @@ MainWindow::MainWindow(
     setupUi();
     connectCoordinatorSignals();
 
-    // Initialize voice conversation controller
-    m_voiceController = std::make_shared<voice::VoiceConversationController>(
-        m_coordinator,
-        m_chatView->audioCaptureService(),
-        nullptr,
-        m_chatView->textToSpeechService(),
-        this
-    );
+    // Initialize voice conversation controller if not provided
+    if (!m_voiceController) {
+        m_voiceController = std::make_shared<voice::VoiceConversationController>(
+            m_coordinator,
+            m_chatView->audioCaptureService(),
+            nullptr,
+            m_chatView->textToSpeechService(),
+            this
+        );
+    }
     m_chatView->setVoiceController(m_voiceController);
     if (m_voiceStudioView) {
         m_voiceStudioView->setVoiceController(m_voiceController);
@@ -64,7 +68,7 @@ MainWindow::MainWindow(
             m_chatView->textToSpeechService()->setVolume(loadRes.settings.ttsVolume);
         }
         if (m_voiceController && m_voiceController->speechToTextService()) {
-            if (!loadRes.settings.whisperModelPath.empty()) {
+            if (!loadRes.settings.whisperModelPath.empty() && !m_voiceController->speechToTextService()->isModelLoaded()) {
                 m_voiceController->speechToTextService()->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
             }
             if (!loadRes.settings.whisperLanguage.empty()) {

@@ -298,29 +298,50 @@ public:
         m_latestQueuedRequestId.store(reqId);
     }
 
+    void setShuttingDown(bool shuttingDown)
+    {
+        m_isShuttingDown.store(shuttingDown);
+        if (m_engine) {
+            m_engine->cancel();
+        }
+    }
+
+    [[nodiscard]] bool isShuttingDown() const
+    {
+        return m_isShuttingDown.load();
+    }
+
 public slots:
     void doLoadModel(const QString& modelPath, quint64 requestId)
     {
+        if (m_isShuttingDown.load()) {
+            return;
+        }
+
         if (!m_engine) {
             emit modelLoadResult(false, "Speech-to-text engine is not initialized.", requestId, modelPath);
             return;
         }
 
         // Check if request is already obsolete before starting expensive load
-        if (requestId != m_latestQueuedRequestId.load()) {
+        if (m_isShuttingDown.load() || requestId != m_latestQueuedRequestId.load()) {
             std::cout << "[SpeechToText] Skipping obsolete model load request #" << requestId
                       << " (current active request: #" << m_latestQueuedRequestId.load() << ")\n";
-            emit modelLoadResult(false, "Model load request was superseded by a newer request.", requestId, modelPath);
+            if (!m_isShuttingDown.load()) {
+                emit modelLoadResult(false, "Model load request was superseded by a newer request.", requestId, modelPath);
+            }
             return;
         }
 
         bool ok = m_engine->loadModel(modelPath.toStdString());
 
-        // Check if request was superseded while loading
-        if (requestId != m_latestQueuedRequestId.load()) {
+        // Check if request was superseded or service is shutting down while loading
+        if (m_isShuttingDown.load() || requestId != m_latestQueuedRequestId.load()) {
             std::cout << "[SpeechToText] Discarding obsolete model load result for request #" << requestId
                       << " (current active request: #" << m_latestQueuedRequestId.load() << ")\n";
-            emit modelLoadResult(false, "Model load request was superseded by a newer request.", requestId, modelPath);
+            if (!m_isShuttingDown.load()) {
+                emit modelLoadResult(false, "Model load request was superseded by a newer request.", requestId, modelPath);
+            }
             return;
         }
 
@@ -333,6 +354,10 @@ public slots:
 
     void doTranscribe(const std::vector<float>& samples, int64_t audioDurationMs)
     {
+        if (m_isShuttingDown.load()) {
+            return;
+        }
+
         if (!m_engine) {
             TranscriptionResult res;
             res.error = SpeechToTextError::ModelNotFound;
@@ -343,6 +368,9 @@ public slots:
 
         int threads = std::max(1, QThread::idealThreadCount() / 2);
         auto result = m_engine->transcribe(samples, threads);
+        if (m_isShuttingDown.load()) {
+            return;
+        }
         result.durationMs = audioDurationMs;
         emit transcriptionResult(result);
     }
@@ -382,7 +410,10 @@ signals:
 private:
     std::shared_ptr<ISpeechToTextEngine> m_engine;
     std::atomic<quint64> m_latestQueuedRequestId{0};
+    std::atomic<bool> m_isShuttingDown{false};
 };
+
+static SpeechToTextService::EngineFactory s_defaultEngineFactory = nullptr;
 
 } // anonymous namespace
 
@@ -396,7 +427,11 @@ public:
         : m_engine(std::move(engine))
     {
         if (!m_engine) {
-            m_engine = std::make_shared<WhisperCppEngine>();
+            if (s_defaultEngineFactory) {
+                m_engine = s_defaultEngineFactory();
+            } else {
+                m_engine = std::make_shared<WhisperCppEngine>();
+            }
         }
     }
 
@@ -466,10 +501,21 @@ SpeechToTextService::~SpeechToTextService()
 {
     cancel();
 
-    if (m_impl->m_worker && m_impl->m_workerThread && m_impl->m_workerThread->isRunning()) {
-        QMetaObject::invokeMethod(m_impl->m_worker, "cleanup", Qt::BlockingQueuedConnection);
+    if (m_impl) {
+        std::lock_guard<std::mutex> lock(m_impl->m_stateMutex);
+        m_impl->m_currentLoadRequestId = 0;
+        if (m_impl->m_worker) {
+            m_impl->m_worker->setShuttingDown(true);
+            disconnect(m_impl->m_worker, nullptr, this, nullptr);
+        }
+    }
+
+    if (m_impl && m_impl->m_workerThread && m_impl->m_workerThread->isRunning()) {
         m_impl->m_workerThread->quit();
-        m_impl->m_workerThread->wait(2000);
+        if (!m_impl->m_workerThread->wait(2000)) {
+            m_impl->m_workerThread->terminate();
+            m_impl->m_workerThread->wait(1000);
+        }
     }
 }
 
@@ -768,6 +814,16 @@ bool SpeechToTextService::isMultilingual() const
     return false;
 }
 
+void SpeechToTextService::setDefaultEngineFactory(EngineFactory factory)
+{
+    s_defaultEngineFactory = std::move(factory);
+}
+
+void SpeechToTextService::resetDefaultEngineFactory()
+{
+    s_defaultEngineFactory = nullptr;
+}
+
 void SpeechToTextService::setEngine(std::shared_ptr<ISpeechToTextEngine> engine)
 {
     std::string currentLang = m_impl->m_engine ? m_impl->m_engine->language() : "en";
@@ -780,10 +836,17 @@ void SpeechToTextService::setEngine(std::shared_ptr<ISpeechToTextEngine> engine)
         m_impl->m_engine->setInitialPrompt(currentPrompt);
     }
 
-    if (m_impl->m_worker && m_impl->m_workerThread && m_impl->m_workerThread->isRunning()) {
-        QMetaObject::invokeMethod(m_impl->m_worker, "cleanup", Qt::BlockingQueuedConnection);
+    if (m_impl->m_worker) {
+        m_impl->m_worker->setShuttingDown(true);
+        disconnect(m_impl->m_worker, nullptr, this, nullptr);
+    }
+
+    if (m_impl->m_workerThread && m_impl->m_workerThread->isRunning()) {
         m_impl->m_workerThread->quit();
-        m_impl->m_workerThread->wait(2000);
+        if (!m_impl->m_workerThread->wait(2000)) {
+            m_impl->m_workerThread->terminate();
+            m_impl->m_workerThread->wait(1000);
+        }
     }
 
     m_impl->m_workerThread = new QThread(this);

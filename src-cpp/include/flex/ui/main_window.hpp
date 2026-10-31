@@ -40,6 +40,7 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(
         std::shared_ptr<BackendCoordinator> coordinator = nullptr,
+        std::shared_ptr<voice::VoiceConversationController> voiceController = nullptr,
         QWidget* parent = nullptr);
 
     ~MainWindow() override;

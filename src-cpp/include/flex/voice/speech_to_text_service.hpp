@@ -109,6 +109,9 @@ public:
 
     // Engine injection for unit testing
     void setEngine(std::shared_ptr<ISpeechToTextEngine> engine);
+    using EngineFactory = std::function<std::shared_ptr<ISpeechToTextEngine>()>;
+    static void setDefaultEngineFactory(EngineFactory factory);
+    static void resetDefaultEngineFactory();
 
 signals:
     void stateChanged(flex::voice::SpeechToTextState newState);
