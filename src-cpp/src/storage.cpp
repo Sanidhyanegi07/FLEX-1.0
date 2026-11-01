@@ -483,7 +483,7 @@ public:
         QSqlDatabase db = getDatabase();
 
         QSqlQuery query(db);
-        query.prepare(
+        if (!query.prepare(
             "INSERT INTO memory_entries (id, key, content, category, created_at, updated_at) "
             "VALUES (:id, :key, :content, :category, :created_at, :updated_at) "
             "ON CONFLICT(id) DO UPDATE SET "
@@ -491,7 +491,9 @@ public:
             "  content = excluded.content, "
             "  category = excluded.category, "
             "  updated_at = excluded.updated_at;"
-        );
+        )) {
+            throw StorageWriteError("Failed to prepare save memory entry: " + query.lastError().text().toStdString());
+        }
         query.bindValue(":id", QString::fromStdString(memId));
         query.bindValue(":key", QString::fromStdString(cleanKey));
         query.bindValue(":content", QString::fromStdString(cleanContent));
@@ -511,7 +513,9 @@ public:
         QSqlDatabase db = getDatabase();
 
         QSqlQuery query(db);
-        query.prepare("SELECT id, key, content, category, created_at, updated_at FROM memory_entries ORDER BY updated_at DESC LIMIT :limit;");
+        if (!query.prepare("SELECT id, key, content, category, created_at, updated_at FROM memory_entries ORDER BY updated_at DESC LIMIT :limit;")) {
+            throw StorageReadError("Failed to prepare list memory entries: " + query.lastError().text().toStdString());
+        }
         query.bindValue(":limit", std::max(1, limit));
 
         if (!query.exec()) {
@@ -538,7 +542,9 @@ public:
         QSqlDatabase db = getDatabase();
 
         QSqlQuery query(db);
-        query.prepare("SELECT id, key, content, category, created_at, updated_at FROM memory_entries WHERE id = :id;");
+        if (!query.prepare("SELECT id, key, content, category, created_at, updated_at FROM memory_entries WHERE id = :id;")) {
+            throw StorageReadError("Failed to prepare get memory entry: " + query.lastError().text().toStdString());
+        }
         query.bindValue(":id", QString::fromStdString(id));
 
         if (!query.exec()) {
@@ -576,7 +582,9 @@ public:
         QSqlDatabase db = getDatabase();
 
         QSqlQuery query(db);
-        query.prepare("UPDATE memory_entries SET key = :key, content = :content, category = :category, updated_at = :updated_at WHERE id = :id;");
+        if (!query.prepare("UPDATE memory_entries SET key = :key, content = :content, category = :category, updated_at = :updated_at WHERE id = :id;")) {
+            throw StorageWriteError("Failed to prepare update memory entry: " + query.lastError().text().toStdString());
+        }
         query.bindValue(":key", QString::fromStdString(cleanKey));
         query.bindValue(":content", QString::fromStdString(cleanContent));
         query.bindValue(":category", QString::fromStdString(cleanCat));
@@ -595,7 +603,9 @@ public:
         QSqlDatabase db = getDatabase();
 
         QSqlQuery query(db);
-        query.prepare("DELETE FROM memory_entries WHERE id = :id;");
+        if (!query.prepare("DELETE FROM memory_entries WHERE id = :id;")) {
+            throw StorageWriteError("Failed to prepare delete memory entry: " + query.lastError().text().toStdString());
+        }
         query.bindValue(":id", QString::fromStdString(id));
 
         if (!query.exec()) {
@@ -616,13 +626,15 @@ public:
 
         QString pattern = QString("%%1%").arg(QString::fromStdString(cleanQuery));
         QSqlQuery query(db);
-        query.prepare(
+        if (!query.prepare(
             "SELECT id, key, content, category, created_at, updated_at "
             "FROM memory_entries "
             "WHERE key LIKE :pat1 OR content LIKE :pat2 OR category LIKE :pat3 "
             "ORDER BY updated_at DESC "
             "LIMIT :limit;"
-        );
+        )) {
+            throw StorageReadError("Failed to prepare search memory entries: " + query.lastError().text().toStdString());
+        }
         query.bindValue(":pat1", pattern);
         query.bindValue(":pat2", pattern);
         query.bindValue(":pat3", pattern);
@@ -1175,16 +1187,15 @@ private:
                 throw StorageInitError("Failed to create conversation updated index: " + query.lastError().text().toStdString());
             }
 
-            query.prepare("INSERT INTO schema_version (version, applied_at) VALUES (1, :applied_at);");
-            query.exec("CREATE TABLE IF NOT EXISTS memory_entries ("
-                       "id TEXT PRIMARY KEY, key TEXT NOT NULL, "
-                       "content TEXT NOT NULL, category TEXT DEFAULT 'general', "
-                       "created_at TEXT NOT NULL, updated_at TEXT NOT NULL);");
-            query.exec("CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries(key);");
-            query.bindValue(":applied_at", utcNowIso());
-            if (!query.exec()) {
+            QSqlQuery verQuery(db);
+            if (!verQuery.prepare("INSERT INTO schema_version (version, applied_at) VALUES (1, :applied_at);")) {
                 db.rollback();
-                throw StorageInitError("Failed to record schema version: " + query.lastError().text().toStdString());
+                throw StorageInitError("Failed to prepare schema version 1 statement: " + verQuery.lastError().text().toStdString());
+            }
+            verQuery.bindValue(":applied_at", utcNowIso());
+            if (!verQuery.exec()) {
+                db.rollback();
+                throw StorageInitError("Failed to record schema version: " + verQuery.lastError().text().toStdString());
             }
         }
 
@@ -1217,12 +1228,30 @@ private:
                 throw StorageInitError("Failed to create document_chunks index: " + query.lastError().text().toStdString());
             }
 
-            query.prepare("INSERT INTO schema_version (version, applied_at) VALUES (2, :applied_at);");
-            query.bindValue(":applied_at", utcNowIso());
-            if (!query.exec()) {
+            QSqlQuery verQuery2(db);
+            if (!verQuery2.prepare("INSERT INTO schema_version (version, applied_at) VALUES (2, :applied_at);")) {
                 db.rollback();
-                throw StorageInitError("Failed to record schema version 2: " + query.lastError().text().toStdString());
+                throw StorageInitError("Failed to prepare schema version 2 statement: " + verQuery2.lastError().text().toStdString());
             }
+            verQuery2.bindValue(":applied_at", utcNowIso());
+            if (!verQuery2.exec()) {
+                db.rollback();
+                throw StorageInitError("Failed to record schema version 2: " + verQuery2.lastError().text().toStdString());
+            }
+        }
+
+        // Ensure memory_entries table exists (guarantees schema completeness for databases upgraded across versions)
+        if (!query.exec("CREATE TABLE IF NOT EXISTS memory_entries ("
+                        "id TEXT PRIMARY KEY, key TEXT NOT NULL, "
+                        "content TEXT NOT NULL, category TEXT DEFAULT 'general', "
+                        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL);")) {
+            db.rollback();
+            throw StorageInitError("Failed to create memory_entries table: " + query.lastError().text().toStdString());
+        }
+
+        if (!query.exec("CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries(key);")) {
+            db.rollback();
+            throw StorageInitError("Failed to create memory_entries key index: " + query.lastError().text().toStdString());
         }
 
         if (!db.commit()) {

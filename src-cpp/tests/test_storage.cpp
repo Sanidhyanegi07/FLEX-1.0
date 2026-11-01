@@ -8,6 +8,8 @@
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QUuid>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 
 #include <cassert>
 #include <iostream>
@@ -787,6 +789,83 @@ void test_knowledge_base_documents_and_chunks()
     }
 }
 
+void test_legacy_database_migration_memory_entries_regression()
+{
+    std::cout << "[Test 15] Regression: Upgrading legacy v1/v2 database lacking memory_entries table...\n";
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+    QString dbPath = tempDir.filePath("legacy_v1_no_memory.db");
+
+    // 1. Manually create a legacy v1 database (conversations + messages only, no memory_entries)
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "legacy_builder");
+        db.setDatabaseName(dbPath);
+        EXPECT_TRUE(db.open());
+
+        QSqlQuery q(db);
+        EXPECT_TRUE(q.exec("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);"));
+        EXPECT_TRUE(q.exec("INSERT INTO schema_version VALUES (1, '2026-10-27T13:59:03.000Z');"));
+        EXPECT_TRUE(q.exec("CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"));
+        EXPECT_TRUE(q.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, model TEXT, sequence_num INTEGER NOT NULL, created_at TEXT NOT NULL);"));
+        EXPECT_TRUE(q.exec("INSERT INTO conversations VALUES ('c1', 'Existing Chat', '2026-10-27T14:00:00Z', '2026-10-27T14:00:00Z');"));
+        EXPECT_TRUE(q.exec("INSERT INTO messages VALUES ('m1', 'c1', 'user', 'Hello from legacy db', NULL, 0, '2026-10-27T14:00:00Z');"));
+
+        db.close();
+    }
+    QSqlDatabase::removeDatabase("legacy_builder");
+
+    // 2. Open with ConversationStorage: applyMigrations runs
+    {
+        flex::ConversationStorage storage(dbPath.toStdString());
+        EXPECT_FALSE(storage.isDegraded());
+
+        // Existing data must remain intact
+        EXPECT_EQ(1, storage.getConversationCount());
+        auto messages = storage.getMessages("c1");
+        EXPECT_EQ(1, messages.size());
+        EXPECT_STR_EQ("Hello from legacy db", messages[0].content);
+
+        // listMemoryEntries must succeed without throwing "Parameter count mismatch"
+        std::vector<flex::MemoryEntry> list;
+        bool threw = false;
+        try {
+            list = storage.listMemoryEntries(100);
+        } catch (const std::exception& e) {
+            threw = true;
+            std::cerr << "Unexpected error listing memory: " << e.what() << "\n";
+        }
+        EXPECT_FALSE(threw);
+        EXPECT_EQ(0, list.size());
+
+        // Save, retrieve, and search memory entries
+        std::string memId = storage.saveMemoryEntry("User Rule", "No Python in production", "policy");
+        EXPECT_FALSE(memId.empty());
+
+        auto retrievedList = storage.listMemoryEntries(50);
+        EXPECT_EQ(1, retrievedList.size());
+        EXPECT_STR_EQ("User Rule", retrievedList[0].key);
+        EXPECT_STR_EQ("No Python in production", retrievedList[0].content);
+
+        auto searchRes = storage.searchMemoryEntries("Python", 10);
+        EXPECT_EQ(1, searchRes.size());
+        EXPECT_STR_EQ(memId, searchRes[0].id);
+    }
+
+    // 3. Test on actual AppData database if present
+    QString realDbPath = QString::fromStdString(flex::ConversationStorage::getDefaultDatabasePath());
+    if (QFile::exists(realDbPath)) {
+        flex::ConversationStorage realStorage(realDbPath.toStdString());
+        EXPECT_FALSE(realStorage.isDegraded());
+        if (realStorage.isDegraded()) {
+            std::cerr << "Real DB is degraded! Error: " << realStorage.storageError().value_or("") << "\n";
+        } else {
+            std::cout << "[Test 15] Successfully opened and migrated real AppData DB: " << realDbPath.toStdString() << "\n";
+            auto memList = realStorage.listMemoryEntries(10);
+            std::cout << "[Test 15] Real DB memory entries count: " << memList.size() << "\n";
+        }
+    }
+}
+
 } // anonymous namespace
 
 int main(int argc, char *argv[])
@@ -811,6 +890,7 @@ int main(int argc, char *argv[])
     test_settings_persistence();
     test_persistent_memory_facts();
     test_knowledge_base_documents_and_chunks();
+    test_legacy_database_migration_memory_entries_regression();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";
