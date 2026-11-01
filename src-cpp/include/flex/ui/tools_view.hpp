@@ -81,7 +81,10 @@ private:
     QPushButton* m_fileReadBtn{nullptr};
     QPushButton* m_fileSendChatBtn{nullptr};
     QLabel* m_fileMetricsLabel{nullptr};
+    QLabel* m_workspaceRootLabel{nullptr};
     QTextBrowser* m_fileContentBrowser{nullptr};
+    QString m_explicitlyAuthorizedPath;
+    QString m_workspaceRoot{"."};
 
     // Diagnostics widgets
     QTextBrowser* m_sysInfoBrowser{nullptr};

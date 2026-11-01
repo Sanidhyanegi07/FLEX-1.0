@@ -83,6 +83,9 @@ public:
     [[nodiscard]] QString lastAssistantResponse() const;
 
     // Subsystem accessors
+    [[nodiscard]] std::string conversationId() const noexcept;
+    void setConversationId(const std::string& cid);
+    void resetSession();
     [[nodiscard]] std::shared_ptr<AudioCaptureService> audioCaptureService() const noexcept;
     [[nodiscard]] std::shared_ptr<SpeechToTextService> speechToTextService() const noexcept;
     [[nodiscard]] std::shared_ptr<TextToSpeechService> textToSpeechService() const noexcept;
@@ -107,6 +110,7 @@ signals:
     void speechStarted();
     void speechFinished();
     void errorOccurred(const QString& errorMessage);
+    void spokenTranscriptSubmitted(const QString& conversationId, const QString& text);
     void voiceOutputToggled(bool enabled);
 
 private slots:
@@ -142,6 +146,7 @@ private:
     bool m_autoSubmit{false}; // Default: user reviews/edits transcript
 
     bool m_voiceCoreOpActive{false};
+    std::string m_sessionConversationId;
     uint64_t m_currentChatRequestId{0};
     QString m_lastTranscript;
     QString m_lastErrorMessage;

@@ -3017,6 +3017,58 @@ void test_stt_model_replacement_failure_and_stale_completion_rejection()
 
 } // anonymous namespace
 
+
+void test_voice_controller_conversation_isolation_and_scoping()
+{
+    std::cout << "[Test 54] VoiceController: dedicated conversation isolation and scoping...\n";
+    VoiceTestContext ctx;
+    ctx.setOllamaResponse("Voice isolated response.");
+    ctx.controller->setAutoSubmitEnabled(false);
+
+    // Pre-existing Chat conversation A
+    std::string chatConvA = ctx.storage->createConversation("Existing Text Chat");
+    ctx.storage->saveMessage(chatConvA, "user", "Prior chat message");
+    ctx.storage->saveMessage(chatConvA, "assistant", "Prior assistant reply");
+
+    QString emittedConvId;
+    QString emittedText;
+    QObject::connect(ctx.controller.get(), &flex::voice::VoiceConversationController::spokenTranscriptSubmitted,
+                     [&](const QString& cid, const QString& txt) {
+        emittedConvId = cid;
+        emittedText = txt;
+    });
+
+    ctx.controller->startRecording();
+    std::string voiceCid = ctx.controller->conversationId();
+    EXPECT_FALSE(voiceCid.empty());
+    EXPECT_TRUE(voiceCid != chatConvA);
+
+    ctx.controller->stopRecording();
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Reviewing;
+    }));
+
+    ctx.controller->submitTranscript("Spoken query in voice studio.");
+    EXPECT_STR_EQ(voiceCid, emittedConvId.toStdString());
+    EXPECT_STR_EQ("Spoken query in voice studio.", emittedText.toStdString());
+
+    EXPECT_TRUE(waitForCondition([&]() {
+        return ctx.controller->state() == flex::voice::VoiceSessionState::Idle;
+    }));
+
+    // Verify Chat A remains isolated and unchanged
+    auto msgsA = ctx.storage->getMessages(chatConvA);
+    EXPECT_EQ(2, msgsA.size());
+    EXPECT_STR_EQ("Prior chat message", msgsA[0].content);
+    EXPECT_STR_EQ("Prior assistant reply", msgsA[1].content);
+
+    // Verify Voice conversation has user and assistant messages
+    auto msgsVoice = ctx.storage->getMessages(voiceCid);
+    EXPECT_EQ(2, msgsVoice.size());
+    EXPECT_STR_EQ("Spoken query in voice studio.", msgsVoice[0].content);
+    EXPECT_STR_EQ("Voice isolated response.", msgsVoice[1].content);
+}
+
 int main(int argc, char* argv[])
 {
     QCoreApplication app(argc, argv);
@@ -3089,6 +3141,7 @@ int main(int argc, char* argv[])
     test_voice_controller_pending_audio_queue_cleans_up_on_load_failure();
     test_whisper_model_discovery();
     test_stt_model_replacement_failure_and_stale_completion_rejection();
+    test_voice_controller_conversation_isolation_and_scoping();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

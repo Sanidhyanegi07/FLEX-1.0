@@ -151,6 +151,21 @@ QString VoiceConversationController::lastAssistantResponse() const
     return m_lastAssistantResponse;
 }
 
+std::string VoiceConversationController::conversationId() const noexcept
+{
+    return m_sessionConversationId;
+}
+
+void VoiceConversationController::setConversationId(const std::string& cid)
+{
+    m_sessionConversationId = cid;
+}
+
+void VoiceConversationController::resetSession()
+{
+    m_sessionConversationId.clear();
+}
+
 std::shared_ptr<AudioCaptureService> VoiceConversationController::audioCaptureService() const noexcept
 {
     return m_audioCapture;
@@ -194,6 +209,14 @@ bool VoiceConversationController::startRecording()
         setState(VoiceSessionState::Error);
         emit errorOccurred(m_lastErrorMessage);
         return false;
+    }
+
+    // Ensure voice session is bound to a dedicated conversation ID
+    if (m_sessionConversationId.empty() && m_coordinator) {
+        try {
+            m_sessionConversationId = m_coordinator->createConversation("Voice Session");
+        } catch (...) {
+        }
     }
 
     // Stop TTS if speaking before starting capture
@@ -284,10 +307,11 @@ bool VoiceConversationController::submitTranscript(const QString& transcriptText
         return false;
     }
 
-    if (m_coordinator->coreSession().isProcessing()) {
-        m_lastErrorMessage = "System is currently busy with another operation.";
-        emit errorOccurred(m_lastErrorMessage);
-        return false;
+    if (m_sessionConversationId.empty() && m_coordinator) {
+        try {
+            m_sessionConversationId = m_coordinator->createConversation("Voice Session");
+        } catch (...) {
+        }
     }
 
     // Authoritative Voice FSM check: verify submission invariant
@@ -315,9 +339,14 @@ bool VoiceConversationController::submitTranscript(const QString& transcriptText
 
     ChatRequest req;
     req.message = trimmed.toStdString();
+    if (!m_sessionConversationId.empty()) {
+        req.conversationId = m_sessionConversationId;
+    }
     req.streaming = false;
+    req.allowQueueing = true;
 
     m_currentChatRequestId = m_coordinator->sendChatAsync(req);
+    emit spokenTranscriptSubmitted(QString::fromStdString(m_sessionConversationId), trimmed);
     if (m_currentChatRequestId == 0) {
         setState(VoiceSessionState::Error);
         m_lastErrorMessage = "Failed to dispatch chat request to backend coordinator.";

@@ -2,6 +2,7 @@
 #include "flex/ui/theme.hpp"
 #include "tool_engine.h"
 
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -117,6 +118,11 @@ QWidget* ToolsView::createFileReaderTab()
     descLbl->setStyleSheet(QString("font-size: 12px; color: %1;").arg(Theme::TextMuted));
     layout->addWidget(descLbl);
 
+    m_workspaceRoot = QDir::currentPath();
+    m_workspaceRootLabel = new QLabel(QString("Workspace Root: %1 (External files chosen via Browse are authorized for single-read)").arg(m_workspaceRoot), tab);
+    m_workspaceRootLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::TextAccentCyan));
+    layout->addWidget(m_workspaceRootLabel);
+
     auto* pathRow = new QHBoxLayout();
     m_filePathEdit = new QLineEdit(tab);
     m_filePathEdit->setPlaceholderText("Workspace relative path (e.g. CMakeLists.txt or docs/spec.md)...");
@@ -218,7 +224,14 @@ QString ToolsView::readFile(const QString& relPath)
 {
     char buf[FLEX_TOOL_MAX_RESULT_BUF];
     flex_tool_exec_meta_t meta;
-    flex_tool_status_t st = flex_tool_read_file(".", relPath.toUtf8().constData(), 0, buf, sizeof(buf), &meta);
+    flex_tool_status_t st;
+
+    QString canonical = QFileInfo(relPath).canonicalFilePath();
+    if (!m_explicitlyAuthorizedPath.isEmpty() && !canonical.isEmpty() && canonical == m_explicitlyAuthorizedPath) {
+        st = flex_tool_read_authorized_file(relPath.toUtf8().constData(), 0, buf, sizeof(buf), &meta);
+    } else {
+        st = flex_tool_read_file(".", relPath.toUtf8().constData(), 0, buf, sizeof(buf), &meta);
+    }
 
     QString text = QString::fromUtf8(buf);
     if (m_fileMetricsLabel && m_fileContentBrowser) {
@@ -287,11 +300,12 @@ void ToolsView::onFileBrowseClicked()
 {
     QString file = QFileDialog::getOpenFileName(
         this,
-        "Select Workspace File to Read",
-        ".",
-        "Supported Files (*.txt *.md *.c *.h *.cpp *.hpp *.json *.ini *.cmake);;All Files (*.*)"
+        "Select File to Inspect",
+        QDir::currentPath(),
+        "Supported Files (*.txt *.md *.c *.h *.cpp *.hpp *.json *.ini *.cmake *.csv *.xml *.yaml *.yml *.toml *.log);;All Files (*.*)"
     );
     if (!file.isEmpty() && m_filePathEdit) {
+        m_explicitlyAuthorizedPath = QFileInfo(file).canonicalFilePath();
         m_filePathEdit->setText(file);
         onFileReadClicked();
     }
@@ -306,7 +320,8 @@ void ToolsView::onFileReadClicked()
 void ToolsView::onSendFileToChatClicked()
 {
     if (!m_fileContentBrowser || m_fileContentBrowser->toPlainText().isEmpty()) return;
-    emit attachToolOutputToChat("workspace_read_file", m_fileContentBrowser->toPlainText());
+    QString path = m_filePathEdit ? m_filePathEdit->text().trimmed() : "workspace_file";
+    emit attachToolOutputToChat(QString("Attached File: %1").arg(path), m_fileContentBrowser->toPlainText());
 }
 
 void ToolsView::onRefreshSysInfoClicked()

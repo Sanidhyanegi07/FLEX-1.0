@@ -762,6 +762,20 @@ static void test_memory_index_suite(int *total_run, int *total_passed, int *tota
     C_ASSERT(dist == 3, "Levenshtein distance kitten -> sitting is 3");
     float sim = flex_mem_jaro_winkler_similarity("DIXON", "DICKSONX");
     C_ASSERT(sim > 0.75f, "Jaro-Winkler similarity DIXON vs DICKSONX is high");
+
+    /* Bidirectional and keyword relevance verification */
+    float rel1 = flex_mem_fact_relevance("What's my name?", "My Name", "Sanidhya Negi");
+    C_ASSERT(rel1 > 15.0f, "Relevance of 'What's my name?' for key 'My Name' is high");
+
+    float rel2 = flex_mem_fact_relevance("What is your favorite editor?", "editor", "Neovim");
+    C_ASSERT(rel2 > 10.0f, "Relevance of 'What is your favorite editor?' for key 'editor' is high");
+
+    char kw[8][32];
+    size_t nkw = flex_mem_extract_query_keywords("What's my name?", kw, 8);
+    C_ASSERT(nkw >= 3, "Extracted at least 3 keywords from 'What's my name?'");
+
+    float sim_q = flex_mem_query_similarity("What's my name?", "My Name");
+    C_ASSERT(sim_q >= 0.8f, "Query similarity between 'What's my name?' and 'My Name' is >= 0.8");
 }
 
 static void test_sqlite_codec_suite(int *total_run, int *total_passed, int *total_failed) {
@@ -2115,6 +2129,24 @@ static void test_tool_engine_suite(int *total_run, int *total_passed, int *total
     st = flex_tool_read_file(".", "test_sandbox_doc.txt", 100, out_buf, sizeof(out_buf), &meta);
     C_ASSERT(st == FLEX_TOOL_STATUS_OK, "Reading test_sandbox_doc.txt succeeded");
     C_ASSERT(strstr(out_buf, "FLEX Safe Sandbox") != NULL, "test_sandbox_doc.txt content verified");
+
+    /* 3b. Authorized file reading verification */
+    st = flex_tool_read_authorized_file(NULL, 0, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_INVALID_ARG, "Null path returns INVALID_ARG");
+
+    st = flex_tool_read_authorized_file("unauthorized.exe", 0, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_SECURITY_VIOLATION, "Disallowed extension returns SECURITY_VIOLATION");
+
+    st = flex_tool_read_authorized_file("nonexistent_authorized_file.txt", 0, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_IO_ERROR, "Nonexistent file returns IO_ERROR");
+
+    st = flex_tool_read_authorized_file("test_sandbox_doc.txt", 0, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_OK, "Authorized reading succeeded for valid file");
+    C_ASSERT(strstr(out_buf, "FLEX Safe Sandbox") != NULL, "Authorized read content verified");
+
+    st = flex_tool_read_authorized_file("test_sandbox_doc.txt", 5, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_OVERFLOW, "Exceeding max bytes returns OVERFLOW");
+
     remove("test_sandbox_doc.txt");
 
     /* 4. System info collector */

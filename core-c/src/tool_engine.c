@@ -150,14 +150,24 @@ static bool is_permitted_file_type(const char* filename) {
     if (!filename) return false;
     if (flex_workspace_is_supported_doc_ext(filename)) return true;
 
-    /* Also permit standard project source/config files for inspection */
+    const char* base = strrchr(filename, '/');
+    if (!base) base = strrchr(filename, '\\');
+    const char* name = base ? base + 1 : filename;
+    if (strcmp(name, "CMakeLists.txt") == 0 || strcmp(name, "Makefile") == 0 ||
+        strcmp(name, "LICENSE") == 0 || strcmp(name, "README") == 0) {
+        return true;
+    }
+
     const char* ext = strrchr(filename, '.');
     if (!ext) return false;
     if (strcmp(ext, ".c") == 0 || strcmp(ext, ".h") == 0 ||
-        strcmp(ext, ".cpp") == 0 || strcmp(ext, ".hpp") == 0 ||
+        strcmp(ext, ".cpp") == 0 || strcmp(ext, ".hpp") == 0 || strcmp(ext, ".cc") == 0 ||
         strcmp(ext, ".json") == 0 || strcmp(ext, ".ini") == 0 ||
         strcmp(ext, ".cmake") == 0 || strcmp(ext, ".txt") == 0 ||
-        strcmp(ext, ".md") == 0) {
+        strcmp(ext, ".md") == 0 || strcmp(ext, ".csv") == 0 ||
+        strcmp(ext, ".xml") == 0 || strcmp(ext, ".yaml") == 0 ||
+        strcmp(ext, ".yml") == 0 || strcmp(ext, ".toml") == 0 ||
+        strcmp(ext, ".log") == 0) {
         return true;
     }
     return false;
@@ -306,6 +316,125 @@ flex_tool_status_t flex_tool_read_file(
         strncat(out_buf, "\n```", out_cap - strlen(out_buf) - 1);
     }
 
+    free(raw_data);
+
+    if (out_meta) {
+        out_meta->status = FLEX_TOOL_STATUS_OK;
+        out_meta->is_error = false;
+        out_meta->result_len = strlen(out_buf);
+        snprintf(out_meta->result_summary, sizeof(out_meta->result_summary),
+                 "Read %zu bytes (%zu lines)", actual_read, metrics.total_lines);
+    }
+    return FLEX_TOOL_STATUS_OK;
+}
+
+flex_tool_status_t flex_tool_read_authorized_file(
+    const char* file_path,
+    size_t max_bytes,
+    char* out_buf,
+    size_t out_cap,
+    flex_tool_exec_meta_t* out_meta
+) {
+    init_meta(out_meta, "authorized_read_file");
+    if (!out_buf || out_cap == 0) return FLEX_TOOL_STATUS_INVALID_ARG;
+    out_buf[0] = '\0';
+
+    if (!file_path || file_path[0] == '\0') {
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_INVALID_ARG;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "Empty file path");
+        }
+        snprintf(out_buf, out_cap, "Error: File path cannot be empty.");
+        return FLEX_TOOL_STATUS_INVALID_ARG;
+    }
+
+    if (!is_permitted_file_type(file_path)) {
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_SECURITY_VIOLATION;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "Unauthorized file extension");
+        }
+        snprintf(out_buf, out_cap, "Security Error: File type is not permitted for reading (must be text or source code).");
+        return FLEX_TOOL_STATUS_SECURITY_VIOLATION;
+    }
+
+    FILE* fp = fopen(file_path, "rb");
+    if (!fp) {
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_IO_ERROR;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "Cannot open authorized file");
+        }
+        snprintf(out_buf, out_cap, "IO Error: Cannot open file '%s'.", file_path);
+        return FLEX_TOOL_STATUS_IO_ERROR;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    if (file_size < 0) {
+        fclose(fp);
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_IO_ERROR;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "Failed to query file size");
+        }
+        snprintf(out_buf, out_cap, "IO Error: Failed to determine size of '%s'.", file_path);
+        return FLEX_TOOL_STATUS_IO_ERROR;
+    }
+
+    size_t limit = (max_bytes > 0 && max_bytes < FLEX_TOOL_DEFAULT_MAX_FILE_BYTES)
+                       ? max_bytes : FLEX_TOOL_DEFAULT_MAX_FILE_BYTES;
+
+    if ((size_t)file_size > limit) {
+        fclose(fp);
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_OVERFLOW;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "File size exceeds 1 MB limit");
+        }
+        snprintf(out_buf, out_cap, "IO Error: File size (%ld bytes) exceeds maximum permitted limit (%zu bytes).", file_size, limit);
+        return FLEX_TOOL_STATUS_OVERFLOW;
+    }
+
+    size_t bytes_to_read = (size_t)file_size;
+    char* raw_data = (char*)malloc(bytes_to_read + 1);
+    if (!raw_data) {
+        fclose(fp);
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_IO_ERROR;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "Out of memory");
+        }
+        snprintf(out_buf, out_cap, "Error: Memory allocation failure while reading file.");
+        return FLEX_TOOL_STATUS_IO_ERROR;
+    }
+
+    size_t actual_read = fread(raw_data, 1, bytes_to_read, fp);
+    fclose(fp);
+    raw_data[actual_read] = '\0';
+
+    int enc = flex_workspace_detect_text_encoding((const unsigned char*)raw_data, actual_read);
+    if (enc == -1 || !flex_workspace_is_printable_text((const uint8_t*)raw_data, actual_read)) {
+        free(raw_data);
+        if (out_meta) {
+            out_meta->status = FLEX_TOOL_STATUS_SECURITY_VIOLATION;
+            out_meta->is_error = true;
+            snprintf(out_meta->result_summary, sizeof(out_meta->result_summary), "Binary file detected");
+        }
+        snprintf(out_buf, out_cap, "Security Error: File contains binary or non-printable data.");
+        return FLEX_TOOL_STATUS_SECURITY_VIOLATION;
+    }
+
+    flex_file_metrics_t metrics;
+    memset(&metrics, 0, sizeof(metrics));
+    flex_analyze_source_buffer(raw_data, actual_read, &metrics);
+
+    size_t copy_len = (actual_read < out_cap - 1) ? actual_read : (out_cap - 1);
+    memcpy(out_buf, raw_data, copy_len);
+    out_buf[copy_len] = '\0';
     free(raw_data);
 
     if (out_meta) {

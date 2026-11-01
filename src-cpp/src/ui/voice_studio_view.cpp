@@ -211,7 +211,6 @@ void VoiceStudioView::onConfirmTranscriptClicked()
     if (!text.isEmpty()) {
         m_reviewCard->setVisible(false);
         m_controller->submitTranscript(text);
-        emit sendSpokenPromptRequested(text);
     }
 }
 

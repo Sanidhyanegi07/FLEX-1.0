@@ -55,12 +55,19 @@ static float score_record_match(const char* text, const char* query, size_t* out
     if (sub) {
         score += 10.0f; /* High reward for substring match */
         *out_offset = (size_t)(sub - text);
+    } else {
+        /* Reverse substring match: does query contain text (e.g. "What's my name?" contains "My Name") */
+        const char* rev_sub = flex_str_casestr(query, text);
+        if (rev_sub) {
+            score += 10.0f;
+            *out_offset = 0;
+        }
     }
 
     /* Word token matching with plural stem support */
     char q_copy[64];
     snprintf(q_copy, sizeof(q_copy), "%.63s", query);
-    char* token = strtok(q_copy, " \t\r\n.,?!;:");
+    char* token = strtok(q_copy, " \t\r\n.,?!;:'\"");
 
     while (token) {
         size_t t_len = strlen(token);
@@ -78,7 +85,7 @@ static float score_record_match(const char* text, const char* query, size_t* out
                 match++;
             }
         }
-        token = strtok(NULL, " \t\r\n.,?!;:");
+        token = strtok(NULL, " \t\r\n.,?!;:'\"");
     }
 
     return score;
@@ -154,9 +161,15 @@ float flex_mem_fact_relevance(
 
     if (key && *key != '\0') {
         score += score_record_match(key, query, &dummy_offset) * 2.5f; /* Key match weighted higher */
+        if (flex_str_casestr(query, key) != NULL) {
+            score += 15.0f;
+        }
     }
     if (content && *content != '\0') {
         score += score_record_match(content, query, &dummy_offset);
+        if (flex_str_casestr(query, content) != NULL) {
+            score += 10.0f;
+        }
     }
     return score;
 }
@@ -389,4 +402,63 @@ size_t flex_mem_fact_to_json(
 
     if (written < 0 || (size_t)written >= buf_cap) return 0;
     return (size_t)written;
+}
+
+
+size_t flex_mem_extract_query_keywords(
+    const char* query,
+    char keywords[][32],
+    size_t max_keywords
+) {
+    if (!query || !keywords || max_keywords == 0) return 0;
+
+    char q_copy[256];
+    snprintf(q_copy, sizeof(q_copy), "%.255s", query);
+    char* token = strtok(q_copy, " \t\r\n.,?!;:'\"`~@#$%^&*()-_=+[]{}|/<>");
+    size_t count = 0;
+
+    while (token && count < max_keywords) {
+        size_t len = strlen(token);
+        if (len > 1) {
+            for (size_t i = 0; i < len && i < 31; ++i) {
+                keywords[count][i] = (char)tolower((unsigned char)token[i]);
+                keywords[count][i + 1] = '\0';
+            }
+            count++;
+        }
+        token = strtok(NULL, " \t\r\n.,?!;:'\"`~@#$%^&*()-_=+[]{}|/<>");
+    }
+    return count;
+}
+
+float flex_mem_query_similarity(
+    const char* query,
+    const char* target
+) {
+    if (!query || !target) return 0.0f;
+    size_t qlen = strlen(query);
+    size_t tlen = strlen(target);
+    if (qlen == 0 || tlen == 0) return 0.0f;
+
+    if (flex_str_casecmp(query, target) == 0) return 1.0f;
+
+    if (flex_str_casestr(query, target) != NULL || flex_str_casestr(target, query) != NULL) {
+        return 0.85f;
+    }
+
+    char kw[16][32];
+    size_t nkw = flex_mem_extract_query_keywords(query, kw, 16);
+    if (nkw == 0) return 0.0f;
+
+    size_t hits = 0;
+    for (size_t i = 0; i < nkw; ++i) {
+        if (flex_str_casestr(target, kw[i]) != NULL) {
+            hits++;
+        }
+    }
+
+    float token_ratio = (float)hits / (float)nkw;
+    float jw = flex_mem_jaro_winkler_similarity(query, target);
+
+    return (token_ratio * 0.7f) + (jw * 0.3f);
 }

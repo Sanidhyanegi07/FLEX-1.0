@@ -57,6 +57,7 @@ struct ChatRequest {
     std::optional<std::string> systemPrompt{std::nullopt};
     std::optional<double> timeoutSeconds{std::nullopt};
     bool streaming{false};
+    bool allowQueueing{false};
     int maxHistoryMessages{20};
 };
 

@@ -648,6 +648,15 @@ void test_persistent_memory_facts()
         EXPECT_EQ(1, found.size());
         EXPECT_STR_EQ(id1, found[0].id);
 
+        // 2b. Regression test: Key substring in natural question ("What's my name?" matching "My Name")
+        std::string nameId = storage.saveMemoryEntry("My Name", "Sanidhya Negi", "identity");
+        EXPECT_FALSE(nameId.empty());
+        auto nameFound = storage.searchMemoryEntries("What's my name?");
+        EXPECT_FALSE(nameFound.empty());
+        EXPECT_STR_EQ("My Name", nameFound[0].key);
+        EXPECT_STR_EQ("Sanidhya Negi", nameFound[0].content);
+        storage.deleteMemoryEntry(nameId);
+
         // 3. Update
         bool updated = storage.updateMemoryEntry(id1, "Language Preference", "Prefers C11, C++17, and Qt 6", "preference");
         EXPECT_TRUE(updated);
@@ -866,6 +875,77 @@ void test_legacy_database_migration_memory_entries_regression()
     }
 }
 
+
+
+void test_knowledge_base_real_document_extraction_and_search()
+{
+    std::cout << "[Test 16] Knowledge Base: Real document extraction, chunk scoring, and out-of-scope verification...\n";
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+    QString dbPath = tempDir.filePath("kb_real_doc_test.db");
+
+    flex::ConversationStorage storage(dbPath.toStdString());
+    EXPECT_FALSE(storage.isDegraded());
+
+    QString testDocPath = "C:/Users/sanid/Downloads/FLEX_Knowledge_Base_Test.txt";
+    QString fileContent;
+    QFile f(testDocPath);
+    if (f.exists() && f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        fileContent = QString::fromUtf8(f.readAll());
+        f.close();
+    } else {
+        fileContent =
+            "FLEX KNOWLEDGE BASE TEST DOCUMENT\n"
+            "Document title: Northstar Robotics Lab - TrailBeacon Operations Note\n"
+            "1. PROJECT AND PRODUCT\n"
+            "The project is named Northstar. The product developed by the project is called TrailBeacon, a portable outdoor location beacon. The project coordinator is Mira Sen. The laboratory is located in Room 204 of the Innovation Block.\n"
+            "2. HARDWARE AND SENSORS\n"
+            "TrailBeacon contains three sensors: a GPS receiver, a barometric altimeter, and an accelerometer. It charges through a USB-C port. The battery takes 90 minutes to charge from 10 percent to 100 percent when the device is switched off.\n"
+            "3. BATTERY AND TRACKING\n"
+            "In standard tracking mode, a fully charged TrailBeacon battery lasts 18 hours. In emergency mode, TrailBeacon sends its latest location every 30 seconds.\n"
+            "7. DOCUMENT LIMITATIONS\n"
+            "This note does not specify a mobile network provider, a retail price, a manufacturing country, or a cloud storage provider. Those details must not be guessed from this document.\n";
+    }
+    EXPECT_FALSE(fileContent.isEmpty());
+
+    std::string importErr;
+    std::string docId = storage.saveDocument("FLEX_Knowledge_Base_Test.txt", testDocPath.toStdString(), fileContent.toStdString(), &importErr);
+    EXPECT_FALSE(docId.empty());
+    EXPECT_TRUE(importErr.empty());
+
+    auto docs = storage.listDocuments();
+    EXPECT_EQ(1, static_cast<int>(docs.size()));
+    EXPECT_STR_EQ("FLEX_Knowledge_Base_Test.txt", docs[0].filename);
+    EXPECT_TRUE(docs[0].fileSize > 0);
+    EXPECT_TRUE(docs[0].chunkCount >= 1);
+
+    auto chunks = storage.listDocumentChunks(docId);
+    EXPECT_FALSE(chunks.empty());
+    EXPECT_STR_EQ("FLEX_Knowledge_Base_Test.txt", chunks[0].documentName);
+
+    auto sensorChunks = storage.searchKnowledgeChunks("What sensors does TrailBeacon have?", 3);
+    EXPECT_FALSE(sensorChunks.empty());
+    EXPECT_TRUE(sensorChunks[0].content.find("altimeter") != std::string::npos ||
+                sensorChunks[0].content.find("accelerometer") != std::string::npos);
+
+    auto roomChunks = storage.searchKnowledgeChunks("Where is the laboratory located?", 3);
+    EXPECT_FALSE(roomChunks.empty());
+    EXPECT_TRUE(roomChunks[0].content.find("Room 204") != std::string::npos);
+
+    auto batteryChunks = storage.searchKnowledgeChunks("How long does the battery last in standard tracking?", 3);
+    EXPECT_FALSE(batteryChunks.empty());
+    EXPECT_TRUE(batteryChunks[0].content.find("18 hours") != std::string::npos);
+
+    auto limitChunks = storage.searchKnowledgeChunks("What is the mobile network provider?", 3);
+    EXPECT_FALSE(limitChunks.empty());
+    EXPECT_TRUE(limitChunks[0].content.find("does not specify a mobile network provider") != std::string::npos);
+
+    bool delOk = storage.deleteDocument(docId);
+    EXPECT_TRUE(delOk);
+    EXPECT_EQ(0, static_cast<int>(storage.listDocuments().size()));
+    EXPECT_EQ(0, static_cast<int>(storage.listDocumentChunks(docId).size()));
+}
+
 } // anonymous namespace
 
 int main(int argc, char *argv[])
@@ -891,6 +971,7 @@ int main(int argc, char *argv[])
     test_persistent_memory_facts();
     test_knowledge_base_documents_and_chunks();
     test_legacy_database_migration_memory_entries_regression();
+    test_knowledge_base_real_document_extraction_and_search();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

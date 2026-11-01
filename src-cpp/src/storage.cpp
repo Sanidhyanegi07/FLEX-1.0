@@ -624,27 +624,22 @@ public:
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         QSqlDatabase db = getDatabase();
 
-        QString pattern = QString("%%1%").arg(QString::fromStdString(cleanQuery));
         QSqlQuery query(db);
         if (!query.prepare(
             "SELECT id, key, content, category, created_at, updated_at "
             "FROM memory_entries "
-            "WHERE key LIKE :pat1 OR content LIKE :pat2 OR category LIKE :pat3 "
             "ORDER BY updated_at DESC "
-            "LIMIT :limit;"
+            "LIMIT 100;"
         )) {
             throw StorageReadError("Failed to prepare search memory entries: " + query.lastError().text().toStdString());
         }
-        query.bindValue(":pat1", pattern);
-        query.bindValue(":pat2", pattern);
-        query.bindValue(":pat3", pattern);
-        query.bindValue(":limit", std::max(1, limit));
 
         if (!query.exec()) {
             throw StorageReadError("Failed to search memory entries: " + query.lastError().text().toStdString());
         }
 
-        std::vector<MemoryEntry> results;
+        std::vector<std::pair<MemoryEntry, float>> scored;
+        std::vector<MemoryEntry> allCandidates;
         while (query.next()) {
             MemoryEntry entry;
             entry.id = query.value(0).toString().toStdString();
@@ -653,15 +648,27 @@ public:
             entry.category = query.value(3).toString().toStdString();
             entry.createdAt = query.value(4).toString().toStdString();
             entry.updatedAt = query.value(5).toString().toStdString();
-            results.push_back(std::move(entry));
+
+            float score = flex_mem_fact_relevance(cleanQuery.c_str(), entry.key.c_str(), entry.content.c_str());
+            if (score > 0.0f) {
+                scored.emplace_back(entry, score);
+            }
+            allCandidates.push_back(std::move(entry));
         }
 
-        if (!results.empty()) {
-            std::sort(results.begin(), results.end(), [&](const MemoryEntry& a, const MemoryEntry& b) {
-                float sa = flex_mem_fact_relevance(cleanQuery.c_str(), a.key.c_str(), a.content.c_str());
-                float sb = flex_mem_fact_relevance(cleanQuery.c_str(), b.key.c_str(), b.content.c_str());
-                return sa > sb;
+        std::vector<MemoryEntry> results;
+        int maxResults = std::max(1, limit);
+        if (!scored.empty()) {
+            std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) {
+                return a.second > b.second;
             });
+            for (size_t i = 0; i < scored.size() && (int)results.size() < maxResults; ++i) {
+                results.push_back(std::move(scored[i].first));
+            }
+        } else if (allCandidates.size() <= 10) {
+            for (size_t i = 0; i < allCandidates.size() && (int)results.size() < maxResults; ++i) {
+                results.push_back(std::move(allCandidates[i]));
+            }
         }
 
         return results;

@@ -59,6 +59,25 @@ MainWindow::MainWindow(
     if (m_voiceStudioView) {
         m_voiceStudioView->setVoiceController(m_voiceController);
     }
+    if (m_voiceController) {
+        connect(m_voiceController.get(), &voice::VoiceConversationController::spokenTranscriptSubmitted,
+                this, [this](const QString& convId, const QString& /*text*/) {
+            switchView("home");
+            m_navSidebar->setActiveView("home");
+            auto convOpt = m_coordinator->getConversation(convId.toStdString());
+            QString title = convOpt.has_value() ? QString::fromStdString(convOpt->title) : "Voice Session";
+            auto messages = m_coordinator->getConversationMessages(convId.toStdString());
+            m_chatView->setConversation(convId, title, messages);
+            m_chatView->setInputEnabled(false);
+            m_chatView->setVisualState(CoreVisualState::Thinking);
+            m_chatView->startAssistantMessage();
+            refreshConversations();
+            if (auto* clist = conversationListWidget()) {
+                clist->selectConversation(convId);
+            }
+            updateCoreStateDisplay();
+        });
+    }
 
     // Apply hardware preferences to services and wire SettingsView
     if (loadRes.success) {
@@ -177,11 +196,6 @@ void MainWindow::setupUi()
 
     // 1: Voice Studio
     m_voiceStudioView = new VoiceStudioView(nullptr, m_viewStack);
-    connect(m_voiceStudioView, &VoiceStudioView::sendSpokenPromptRequested, this, [this](const QString& text) {
-        switchView("home");
-        m_navSidebar->setActiveView("home");
-        handleSendChat(text);
-    });
     m_viewStack->addWidget(m_voiceStudioView);
 
     // 2: Memory
@@ -380,6 +394,7 @@ void MainWindow::handleSendChat(const QString& promptText)
         req.conversationId = m_chatView->conversationId().toStdString();
     }
     req.streaming = true;
+    req.allowQueueing = true;
 
     m_chatView->setInputEnabled(false);
     m_chatView->setVisualState(CoreVisualState::Thinking);
@@ -576,7 +591,9 @@ void MainWindow::updateCoreStateDisplay()
 void MainWindow::onChatToken(uint64_t requestId, const QString& token)
 {
     if (requestId != m_currentRequestId) {
-        return;
+        if (!m_voiceController || m_chatView->conversationId().toStdString() != m_voiceController->conversationId()) {
+            return;
+        }
     }
     m_chatView->setVisualState(CoreVisualState::Responding);
     m_chatView->appendAssistantChunk(token);
@@ -584,57 +601,63 @@ void MainWindow::onChatToken(uint64_t requestId, const QString& token)
 
 void MainWindow::onChatFinished(uint64_t requestId, const flex::ChatResult& result)
 {
-    if (requestId != m_currentRequestId) {
-        return;
+    bool isCurrentReq = (requestId == m_currentRequestId);
+    if (isCurrentReq) {
+        m_currentRequestId = 0;
     }
-    m_currentRequestId = 0;
     m_opCount++;
     if (m_topHeader) {
         m_topHeader->setOpCount(m_opCount);
     }
 
-    m_chatView->setInputEnabled(true);
     updateCoreStateDisplay();
 
-    if (result.success) {
-        m_chatView->setVisualState(CoreVisualState::Idle);
-        m_chatView->finishAssistantMessage(QString::fromStdString(result.responseText));
+    bool isCurrentConv = (!result.conversationId.empty() && m_chatView->conversationId().toStdString() == result.conversationId);
 
-        // If this was a new conversation, update ChatView's conversation ID
-        if (m_chatView->conversationId().isEmpty() && !result.conversationId.empty()) {
-            auto convOpt = m_coordinator->getConversation(result.conversationId);
-            QString title = convOpt.has_value() ? QString::fromStdString(convOpt->title) : "New Chat";
-            auto messages = m_coordinator->getConversationMessages(result.conversationId);
-            m_chatView->setConversation(QString::fromStdString(result.conversationId), title, messages);
+    if (result.success) {
+        if (isCurrentConv || isCurrentReq) {
+            m_chatView->setInputEnabled(true);
+            m_chatView->setVisualState(CoreVisualState::Idle);
+            m_chatView->finishAssistantMessage(QString::fromStdString(result.responseText));
+
+            if (m_chatView->conversationId().isEmpty() && !result.conversationId.empty()) {
+                auto convOpt = m_coordinator->getConversation(result.conversationId);
+                QString title = convOpt.has_value() ? QString::fromStdString(convOpt->title) : "New Chat";
+                auto messages = m_coordinator->getConversationMessages(result.conversationId);
+                m_chatView->setConversation(QString::fromStdString(result.conversationId), title, messages);
+            }
         }
 
         refreshConversations();
-        if (!result.conversationId.empty()) {
+        if (!result.conversationId.empty() && (isCurrentConv || isCurrentReq)) {
             if (auto* clist = conversationListWidget()) {
                 clist->selectConversation(QString::fromStdString(result.conversationId));
             }
         }
     } else {
-        m_chatView->setVisualState(CoreVisualState::Error);
-        m_chatView->finishAssistantMessage();
-        QString errStr = QString::fromStdString(result.error.message);
-        if (errStr.isEmpty()) {
-            errStr = "An error occurred during inference.";
+        if (isCurrentConv || isCurrentReq) {
+            m_chatView->setInputEnabled(true);
+            m_chatView->setVisualState(CoreVisualState::Error);
+            m_chatView->finishAssistantMessage();
+            QString errStr = QString::fromStdString(result.error.message);
+            if (errStr.isEmpty()) {
+                errStr = "An error occurred during inference.";
+            }
+            m_chatView->showErrorBanner(errStr);
         }
-        m_chatView->showErrorBanner(errStr);
     }
 }
 
 void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error)
 {
-    if (requestId != m_currentRequestId) {
-        return;
+    bool isCurrentReq = (requestId == m_currentRequestId);
+    if (isCurrentReq) {
+        m_currentRequestId = 0;
+        m_chatView->setInputEnabled(true);
+        m_chatView->setVisualState(CoreVisualState::Error);
+        QString errStr = QString::fromStdString(error.message);
+        m_chatView->showErrorBanner(errStr);
     }
-    m_currentRequestId = 0;
-    m_chatView->setInputEnabled(true);
-    m_chatView->setVisualState(CoreVisualState::Error);
-    QString errStr = QString::fromStdString(error.message);
-    m_chatView->showErrorBanner(errStr);
     updateCoreStateDisplay();
 }
 

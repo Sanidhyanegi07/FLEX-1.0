@@ -87,6 +87,19 @@ flex_tool_status_t flex_tool_read_file(
 );
 
 /**
+ * Reads an explicitly user-authorized single file (e.g. selected via OS file dialog).
+ * Validates canonical presence, regular file type, supported extension whitelist,
+ * file size cap (max_bytes), and safe non-executable read-only access.
+ */
+flex_tool_status_t flex_tool_read_authorized_file(
+    const char* file_path,
+    size_t max_bytes,
+    char* out_buf,
+    size_t out_cap,
+    flex_tool_exec_meta_t* out_meta
+);
+
+/**
  * Collects local system and architecture diagnostics into formatted text.
  */
 flex_tool_status_t flex_tool_system_info(

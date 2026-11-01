@@ -178,6 +178,17 @@ size_t flex_mem_fact_to_json(
     size_t buf_cap
 );
 
+size_t flex_mem_extract_query_keywords(
+    const char* query,
+    char keywords[][32],
+    size_t max_keywords
+);
+
+float flex_mem_query_similarity(
+    const char* query,
+    const char* target
+);
+
 #ifdef __cplusplus
 }
 #endif
