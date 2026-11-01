@@ -241,6 +241,30 @@ float flex_audio_rms_to_db(float rms) {
     return db;
 }
 
+float flex_audio_calculate_int16_rms(const int16_t* samples, size_t count) {
+    if (!samples || count == 0) {
+        return 0.0f;
+    }
+    double sum = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+        double v = (double)samples[i] / 32768.0;
+        sum += v * v;
+    }
+    double mean = sum / (double)count;
+    return (float)sqrt(mean);
+}
+
+int flex_audio_level_to_percent(float rms) {
+    if (rms <= 0.0001f || isnan(rms)) {
+        return 0;
+    }
+    float pct = sqrtf(rms) * 100.0f;
+    if (pct > 100.0f) {
+        pct = 100.0f;
+    }
+    return (int)(pct + 0.5f);
+}
+
 void flex_vad_init(
     flex_vad_detector_t* vad,
     float initial_noise_floor,

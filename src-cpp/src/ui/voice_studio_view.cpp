@@ -1,5 +1,6 @@
 #include "flex/ui/voice_studio_view.hpp"
 #include "flex/ui/theme.hpp"
+#include "audio_dsp.h"
 
 #include <QHBoxLayout>
 #include <QScrollArea>
@@ -102,6 +103,17 @@ void VoiceStudioView::setupUi()
     btnRow->addWidget(m_voiceOutputBtn, 1);
     actionsLayout->addLayout(btnRow);
 
+    m_audioLevelBar = new QProgressBar(actionsCard);
+    m_audioLevelBar->setRange(0, 100);
+    m_audioLevelBar->setValue(0);
+    m_audioLevelBar->setTextVisible(false);
+    m_audioLevelBar->setFixedHeight(5);
+    m_audioLevelBar->setStyleSheet(
+        "QProgressBar { background-color: #1E293B; border-radius: 2px; border: none; } "
+        "QProgressBar::chunk { background-color: #38BDF8; border-radius: 2px; }"
+    );
+    actionsLayout->addWidget(m_audioLevelBar);
+
     m_telemetryDetailsLabel = new QLabel("Format: 16 kHz Mono PCM | Model: Whisper ggml-tiny.en | Engine: Windows SAPI 5.4", actionsCard);
     m_telemetryDetailsLabel->setStyleSheet("font-family: 'Consolas', monospace; font-size: 10px; color: #64748B;");
     m_telemetryDetailsLabel->setAlignment(Qt::AlignCenter);
@@ -167,6 +179,11 @@ void VoiceStudioView::setVoiceController(std::shared_ptr<voice::VoiceConversatio
             this, [this](const flex::voice::AudioBuffer& buffer) {
                 onAudioCaptured(buffer.sampleCount(), static_cast<double>(buffer.durationMs) / 1000.0);
             });
+
+    if (m_controller->audioCaptureService()) {
+        connect(m_controller->audioCaptureService().get(), &voice::AudioCaptureService::audioLevelChanged,
+                this, &VoiceStudioView::onAudioLevelChanged);
+    }
 
     updateUiForState(m_controller->state());
 }
@@ -240,6 +257,7 @@ void VoiceStudioView::updateUiForState(voice::VoiceSessionState state)
 {
     switch (state) {
     case voice::VoiceSessionState::Idle:
+        if (m_audioLevelBar) m_audioLevelBar->setValue(0);
         m_coreWidget->setVisualState(CoreVisualState::Idle);
         m_recordBtn->setText("🎙 Start Recording");
         m_recordBtn->setEnabled(true);
@@ -316,6 +334,13 @@ void VoiceStudioView::onAudioCaptured(size_t sampleCount, double durationSeconds
         .arg(sampleCount)
         .arg(QString::number(durationSeconds, 'f', 1))
     );
+}
+
+void VoiceStudioView::onAudioLevelChanged(double levelRms)
+{
+    if (m_audioLevelBar) {
+        m_audioLevelBar->setValue(flex_audio_level_to_percent(static_cast<float>(levelRms)));
+    }
 }
 
 } // namespace flex::ui

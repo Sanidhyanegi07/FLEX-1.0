@@ -88,6 +88,7 @@ add_library(flex_core_c STATIC
     core-c/src/kv_store.c
     core-c/src/string_util.c
     core-c/src/knowledge_chunker.c
+    core-c/src/tool_engine.c
 )
 
 target_include_directories(flex_core_c PUBLIC
@@ -244,6 +245,7 @@ if(FLEX_BUILD_DESKTOP OR FLEX_BUILD_TESTS)
         src-cpp/include/flex/ui/navigation_sidebar.hpp
         src-cpp/include/flex/ui/right_sidebar.hpp
         src-cpp/include/flex/ui/prototype_view.hpp
+        src-cpp/include/flex/ui/tools_view.hpp
         src-cpp/include/flex/ui/knowledge_view.hpp
         src-cpp/include/flex/ui/voice_studio_view.hpp
         src-cpp/include/flex/ui/memory_view.hpp
@@ -259,6 +261,7 @@ if(FLEX_BUILD_DESKTOP OR FLEX_BUILD_TESTS)
         src-cpp/src/ui/navigation_sidebar.cpp
         src-cpp/src/ui/right_sidebar.cpp
         src-cpp/src/ui/prototype_view.cpp
+        src-cpp/src/ui/tools_view.cpp
         src-cpp/src/ui/knowledge_view.cpp
         src-cpp/src/ui/voice_studio_view.cpp
         src-cpp/src/ui/memory_view.cpp
@@ -272,6 +275,7 @@ if(FLEX_BUILD_DESKTOP OR FLEX_BUILD_TESTS)
     target_include_directories(flex_ui PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src-cpp/include/flex
+        ${CMAKE_CURRENT_SOURCE_DIR}/core-c/include
     )
 
     target_link_libraries(flex_ui PUBLIC

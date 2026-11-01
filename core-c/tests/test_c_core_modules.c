@@ -567,6 +567,22 @@ static void test_audio_dsp_suite(int *total_run, int *total_passed, int *total_f
     float speech[160];
     for (int i = 0; i < 160; ++i) speech[i] = 0.3f;
     C_ASSERT(flex_vad_process_frame(&vad, speech, 160), "Speech detected as active");
+
+    /* 15. Native Int16 RMS calculation & VU Meter level mapping */
+    int16_t pcm16_quiet[160];
+    memset(pcm16_quiet, 0, sizeof(pcm16_quiet));
+    C_ASSERT(flex_audio_calculate_int16_rms(pcm16_quiet, 160) == 0.0f, "Zero PCM16 yields 0.0 RMS");
+    C_ASSERT(flex_audio_level_to_percent(0.0f) == 0, "0.0 RMS yields 0% VU level");
+
+    int16_t pcm16_active[100];
+    for (int i = 0; i < 100; ++i) {
+        pcm16_active[i] = 16384; /* ~0.5 amplitude */
+    }
+    float calc_rms = flex_audio_calculate_int16_rms(pcm16_active, 100);
+    C_ASSERT(fabsf(calc_rms - 0.5f) < 0.01f, "Half scale PCM16 calculates ~0.5 RMS");
+    int vu_pct = flex_audio_level_to_percent(calc_rms);
+    C_ASSERT(vu_pct > 65 && vu_pct <= 75, "0.5 RMS maps to ~71% VU percentage");
+    C_ASSERT(flex_audio_level_to_percent(1.0f) == 100, "1.0 RMS maps to 100% VU level");
 }
 
 static void test_config_validator_suite(int *total_run, int *total_passed, int *total_failed) {
@@ -841,6 +857,23 @@ static void test_workspace_analyzer_suite(int *total_run, int *total_passed, int
     C_ASSERT(flex_glob_match("*.c", "parser.c"), "*.c matches parser.c");
     C_ASSERT(flex_glob_match("test_*", "test_parser.c"), "test_* matches prefix");
     C_ASSERT(!flex_glob_match("*.c", "parser.cpp"), "*.c does not match .cpp");
+
+    /* Byte formatting & MIME type detection */
+    char byte_str[64];
+    flex_workspace_format_byte_size(512, byte_str, sizeof(byte_str));
+    C_ASSERT(strcmp(byte_str, "512 B") == 0, "512 B formatted correctly");
+    flex_workspace_format_byte_size(2048, byte_str, sizeof(byte_str));
+    C_ASSERT(strcmp(byte_str, "2.0 KB") == 0, "2048 formatted to 2.0 KB");
+    flex_workspace_format_byte_size(10485760, byte_str, sizeof(byte_str));
+    C_ASSERT(strcmp(byte_str, "10.0 MB") == 0, "10MB formatted to 10.0 MB");
+
+    C_ASSERT(strcmp(flex_workspace_get_mime_type("doc.md"), "text/markdown") == 0, ".md MIME is text/markdown");
+    C_ASSERT(strcmp(flex_workspace_get_mime_type("code.c"), "text/x-c") == 0, ".c MIME is text/x-c");
+    C_ASSERT(strcmp(flex_workspace_get_mime_type("code.cpp"), "text/x-c++") == 0, ".cpp MIME is text/x-c++");
+    C_ASSERT(strcmp(flex_workspace_get_mime_type("data.json"), "application/json") == 0, ".json MIME is application/json");
+
+    const uint8_t sample_txt[] = "Hello, world! This is valid plain text for workspace ingestion.\n";
+    C_ASSERT(flex_workspace_is_printable_text(sample_txt, sizeof(sample_txt) - 1), "Sample text detected as printable");
 }
 
 static void test_telemetry_collector_suite(int *total_run, int *total_passed, int *total_failed) {
@@ -2022,6 +2055,82 @@ static void test_knowledge_chunker_suite(int *total_run, int *total_passed, int 
     C_ASSERT(strcmp(hash1, hash3) != 0, "Different content yields distinct hash");
 }
 
+
+static void test_tool_engine_suite(int *total_run, int *total_passed, int *total_failed) {
+    printf("[Testing Native Tool Engine]...\n");
+
+    /* 1. Metadata and registry */
+    C_ASSERT(flex_tool_get_count() == 3, "Tool registry contains exactly 3 tools");
+    const char* t0 = flex_tool_get_name(0);
+    C_ASSERT(t0 != NULL, "Tool 0 name retrieved");
+    C_ASSERT_STR_EQ(t0, "calculator", "Tool 0 name matches");
+
+    const char* t1 = flex_tool_get_name(1);
+    C_ASSERT(t1 != NULL, "Tool 1 name retrieved");
+    C_ASSERT_STR_EQ(t1, "workspace_read_file", "Tool 1 name matches");
+
+    const char* t2 = flex_tool_get_name(2);
+    C_ASSERT(t2 != NULL, "Tool 2 name retrieved");
+    C_ASSERT_STR_EQ(t2, "system_status", "Tool 2 name matches");
+
+    C_ASSERT(flex_tool_is_valid_name("calculator"), "calculator is valid tool");
+    C_ASSERT(flex_tool_is_valid_name("workspace_read_file"), "workspace_read_file is valid tool");
+    C_ASSERT(flex_tool_is_valid_name("system_status"), "system_status is valid tool");
+    C_ASSERT(!flex_tool_is_valid_name("nonexistent_tool"), "nonexistent_tool is invalid");
+    C_ASSERT(flex_tool_get_description(0) != NULL, "Tool 0 description is available");
+    C_ASSERT(flex_tool_get_usage(0) != NULL, "Tool 0 usage is available");
+    C_ASSERT(flex_tool_get_description(999) == NULL, "Invalid tool index description is NULL");
+    C_ASSERT(strcmp(flex_tool_status_to_string(FLEX_TOOL_STATUS_OK), "SUCCESS") == 0, "Tool status string matches SUCCESS");
+    C_ASSERT(strcmp(flex_tool_status_to_string(FLEX_TOOL_STATUS_SECURITY_VIOLATION), "SECURITY_VIOLATION") == 0, "Security violation status string matches");
+
+    /* 2. Calculator tool */
+    char out_buf[1024];
+    flex_tool_exec_meta_t meta;
+    flex_tool_status_t st = flex_tool_calc_eval("(12 + 8) * 3 / 2", out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_OK, "Valid arithmetic expression evaluated");
+    C_ASSERT(strstr(out_buf, "30") != NULL, "Arithmetic expression result is 30");
+    C_ASSERT(meta.status == FLEX_TOOL_STATUS_OK, "Meta status recorded OK");
+    C_ASSERT(!meta.is_error, "Meta is_error is false");
+
+    /* Division by zero */
+    st = flex_tool_calc_eval("10 / 0", out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st != FLEX_TOOL_STATUS_OK, "Division by zero returns error");
+
+    /* Syntax error */
+    st = flex_tool_calc_eval("++", out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st != FLEX_TOOL_STATUS_OK, "Syntax error returns error");
+
+    /* 3. Workspace reader - sandbox boundary checks */
+    st = flex_tool_read_file(".", "../../../etc/passwd", 0, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_SECURITY_VIOLATION, "Path traversal rejected");
+
+    st = flex_tool_read_file(".", "malicious.exe", 0, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_SECURITY_VIOLATION, "Disallowed file extension rejected");
+
+    FILE* tmp_fp = fopen("test_sandbox_doc.txt", "wb");
+    if (tmp_fp) {
+        fputs("FLEX Safe Sandbox Test File", tmp_fp);
+        fclose(tmp_fp);
+    }
+    st = flex_tool_read_file(".", "test_sandbox_doc.txt", 100, out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_OK, "Reading test_sandbox_doc.txt succeeded");
+    C_ASSERT(strstr(out_buf, "FLEX Safe Sandbox") != NULL, "test_sandbox_doc.txt content verified");
+    remove("test_sandbox_doc.txt");
+
+    /* 4. System info collector */
+    st = flex_tool_system_info("1.0.0", out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_OK, "System info collection succeeded");
+    C_ASSERT(strstr(out_buf, "FLEX 1.0") != NULL, "System info contains application name");
+
+    /* 5. Tool dispatcher */
+    st = flex_tool_dispatch("calculator", "100 - 42", ".", out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_OK, "Dispatch to calc tool succeeded");
+    C_ASSERT(strstr(out_buf, "58") != NULL, "Dispatch calc result is 58");
+
+    st = flex_tool_dispatch("unknown_tool", "param", ".", out_buf, sizeof(out_buf), &meta);
+    C_ASSERT(st == FLEX_TOOL_STATUS_UNSUPPORTED, "Dispatch to unknown tool returned UNSUPPORTED");
+}
+
 void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total_failed) {
     printf("\n=== Running Extended C11 Core Subsystem Tests ===\n");
     test_request_validator_suite(total_run, total_passed, total_failed);
@@ -2067,5 +2176,6 @@ void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total
     test_kv_store_suite(total_run, total_passed, total_failed);
     test_string_util_suite(total_run, total_passed, total_failed);
     test_knowledge_chunker_suite(total_run, total_passed, total_failed);
+    test_tool_engine_suite(total_run, total_passed, total_failed);
     printf("Extended C11 Core Subsystem Tests completed.\n\n");
 }

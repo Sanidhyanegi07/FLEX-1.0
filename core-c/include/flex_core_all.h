@@ -48,5 +48,6 @@
 #include "kv_store.h"
 #include "string_util.h"
 #include "knowledge_chunker.h"
+#include "tool_engine.h"
 
 #endif /* FLEX_CORE_ALL_H */

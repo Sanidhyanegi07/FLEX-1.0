@@ -271,3 +271,58 @@ int flex_workspace_detect_text_encoding(
 
     return 0; /* Plain UTF-8 / ASCII */
 }
+
+size_t flex_workspace_format_byte_size(
+    uint64_t bytes,
+    char* out_buf,
+    size_t out_cap
+) {
+    if (!out_buf || out_cap == 0) return 0;
+    if (bytes < 1024) {
+        return (size_t)snprintf(out_buf, out_cap, "%llu B", (unsigned long long)bytes);
+    } else if (bytes < 1024ULL * 1024ULL) {
+        double kb = (double)bytes / 1024.0;
+        return (size_t)snprintf(out_buf, out_cap, "%.1f KB", kb);
+    } else if (bytes < 1024ULL * 1024ULL * 1024ULL) {
+        double mb = (double)bytes / (1024.0 * 1024.0);
+        return (size_t)snprintf(out_buf, out_cap, "%.1f MB", mb);
+    } else {
+        double gb = (double)bytes / (1024.0 * 1024.0 * 1024.0);
+        return (size_t)snprintf(out_buf, out_cap, "%.2f GB", gb);
+    }
+}
+
+const char* flex_workspace_get_mime_type(const char* filepath) {
+    if (!filepath) return "application/octet-stream";
+    const char* dot = strrchr(filepath, '.');
+    if (!dot) return "application/octet-stream";
+
+    if (strcmp(dot, ".txt") == 0) return "text/plain";
+    if (strcmp(dot, ".md") == 0 || strcmp(dot, ".markdown") == 0) return "text/markdown";
+    if (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0) return "text/x-c";
+    if (strcmp(dot, ".cpp") == 0 || strcmp(dot, ".hpp") == 0 || strcmp(dot, ".cc") == 0) return "text/x-c++";
+    if (strcmp(dot, ".json") == 0) return "application/json";
+    if (strcmp(dot, ".csv") == 0) return "text/csv";
+    if (strcmp(dot, ".wav") == 0) return "audio/wav";
+    if (strcmp(dot, ".bin") == 0) return "application/octet-stream";
+    if (strcmp(dot, ".db") == 0 || strcmp(dot, ".sqlite") == 0) return "application/x-sqlite3";
+    return "text/plain";
+}
+
+bool flex_workspace_is_printable_text(const uint8_t* buffer, size_t len) {
+    if (!buffer || len == 0) return true;
+    size_t printable = 0;
+    for (size_t i = 0; i < len; ++i) {
+        uint8_t b = buffer[i];
+        if (b == '\t' || b == '\r' || b == '\n') {
+            printable++;
+        } else if (b >= 32 && b <= 126) {
+            printable++;
+        } else if (b >= 0xC2 && b <= 0xF4) {
+            printable++;
+        } else if (b >= 0x80 && b <= 0xBF) {
+            printable++;
+        }
+    }
+    return ((double)printable / (double)len) >= 0.90;
+}

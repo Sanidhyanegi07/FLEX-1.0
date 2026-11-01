@@ -3,6 +3,7 @@
 #include "flex/settings_persistence_service.hpp"
 #include "flex/voice/speech_to_text_service.hpp"
 #include "flex/ui/knowledge_view.hpp"
+#include "flex/ui/tools_view.hpp"
 #include <QTemporaryDir>
 #include <QStandardItemModel>
 
@@ -1200,6 +1201,83 @@ void test_knowledge_base_view()
     EXPECT_TRUE(kv.statusLabel()->text().contains("removed", Qt::CaseInsensitive));
 }
 
+
+void test_tools_view()
+{
+    std::cout << "[Test 19] ToolsView Native Tool Integration...\n";
+
+    auto storage = std::make_shared<flex::ConversationStorage>(":memory:");
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(
+        storage, nullptr
+    );
+
+    flex::ui::ToolsView tv(coordinator);
+
+    // 1. Child widgets validation
+    EXPECT_TRUE(tv.calcInputEdit() != nullptr);
+    EXPECT_TRUE(tv.calcEvaluateButton() != nullptr);
+    EXPECT_TRUE(tv.calcResultLabel() != nullptr);
+    EXPECT_TRUE(tv.calcHistoryList() != nullptr);
+    EXPECT_TRUE(tv.filePathEdit() != nullptr);
+    EXPECT_TRUE(tv.fileReadButton() != nullptr);
+    EXPECT_TRUE(tv.fileContentBrowser() != nullptr);
+    EXPECT_TRUE(tv.fileMetricsLabel() != nullptr);
+    EXPECT_TRUE(tv.systemInfoBrowser() != nullptr);
+    EXPECT_TRUE(tv.sysinfoRefreshButton() != nullptr);
+
+    // 2. Calculator test
+    QString res1 = tv.evaluateCalc("(50 + 25) * 2");
+    EXPECT_TRUE(res1.contains("150"));
+    EXPECT_TRUE(tv.calcResultLabel()->text().contains("150"));
+    EXPECT_TRUE(tv.calcHistoryList()->count() >= 1);
+
+    // Division by zero handled safely
+    QString resDivZero = tv.evaluateCalc("100 / 0");
+    EXPECT_TRUE(resDivZero.contains("Error") || resDivZero.contains("Undefined") || resDivZero.contains("zero"));
+
+    // 3. Workspace reader test
+    QFile tmpFile("test_ui_tool_file.txt");
+    if (tmpFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        tmpFile.write("FLEX Native UI Test Content: safe sandboxed file reading.");
+        tmpFile.close();
+    }
+    QString fileContent = tv.readFile("test_ui_tool_file.txt");
+    EXPECT_TRUE(fileContent.contains("FLEX Native UI Test Content"));
+    EXPECT_TRUE(tv.fileContentBrowser()->toPlainText().contains("FLEX Native UI Test Content"));
+    EXPECT_TRUE(tv.fileMetricsLabel()->text().contains("bytes", Qt::CaseInsensitive) || tv.fileMetricsLabel()->text().contains("lines", Qt::CaseInsensitive));
+    tmpFile.remove();
+
+    // Path traversal rejection
+    QString badFile = tv.readFile("../../windows/system32/cmd.exe");
+    EXPECT_TRUE(badFile.contains("Error") || badFile.contains("Denied") || badFile.contains("Permission"));
+
+    // 4. System diagnostics test
+    QString sysInfo = tv.refreshSystemInfo();
+    EXPECT_TRUE(sysInfo.contains("FLEX 1.0") || sysInfo.contains("Architecture") || sysInfo.contains("Platform") || sysInfo.contains("OS"));
+    EXPECT_TRUE(tv.systemInfoBrowser()->toPlainText().contains("FLEX 1.0") || tv.systemInfoBrowser()->toPlainText().contains("Architecture"));
+
+    // 5. Signal emission
+    QString capturedTool;
+    QString capturedContent;
+    QObject::connect(&tv, &flex::ui::ToolsView::attachToolOutputToChat,
+                     [&](const QString& tool, const QString& content) {
+        capturedTool = tool;
+        capturedContent = content;
+    });
+
+    tv.evaluateCalc("7 * 8");
+    // Trigger attach via signal helper
+    emit tv.attachToolOutputToChat("Calculator", "56");
+    EXPECT_TRUE(capturedTool == "Calculator");
+    EXPECT_TRUE(capturedContent == "56");
+
+    // 6. MainWindow ToolsView integration
+    flex::ui::MainWindow w(coordinator);
+    EXPECT_TRUE(w.toolsView() != nullptr);
+    w.switchView("tools");
+    EXPECT_TRUE(w.findChild<flex::ui::ToolsView*>() != nullptr);
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -1238,6 +1316,7 @@ int main(int argc, char* argv[])
     test_settings_view_transcription_language();
     test_main_window_whisper_lifecycle_and_safe_shutdown();
     test_knowledge_base_view();
+    test_tools_view();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

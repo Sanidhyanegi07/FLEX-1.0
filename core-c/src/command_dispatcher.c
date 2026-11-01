@@ -1,4 +1,6 @@
 #include "command_dispatcher.h"
+#include "tool_engine.h"
+#include "math_evaluator.h"
 #include <string.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -15,39 +17,15 @@ static void evaluate_simple_calc(const char* expr, char* out_buf, size_t buf_cap
 
     while (*expr && isspace((unsigned char)*expr)) expr++;
     if (*expr == '\0') {
-        snprintf(out_buf, buf_cap, "Usage: /calc <num1> <op> <num2>");
+        snprintf(out_buf, buf_cap, "Usage: /calc <expression> (e.g. (10 + 2.5) * 4)");
         return;
     }
 
-    double a = 0.0, b = 0.0;
-    char op = 0;
-
-    if (sscanf(expr, "%lf %c %lf", &a, &op, &b) == 3) {
-        double result = 0.0;
-        bool valid = true;
-        switch (op) {
-            case '+': result = a + b; break;
-            case '-': result = a - b; break;
-            case '*': result = a * b; break;
-            case '/':
-                if (b != 0.0) {
-                    result = a / b;
-                } else {
-                    snprintf(out_buf, buf_cap, "Error: Division by zero");
-                    return;
-                }
-                break;
-            default:
-                valid = false;
-                break;
-        }
-        if (valid) {
-            snprintf(out_buf, buf_cap, "Calculation: %g %c %g = %g", a, op, b, result);
-            return;
-        }
+    flex_tool_exec_meta_t meta;
+    flex_tool_status_t status = flex_tool_calc_eval(expr, out_buf, buf_cap, &meta);
+    if (status != FLEX_TOOL_STATUS_OK && meta.result_summary[0] != '\0') {
+        snprintf(out_buf, buf_cap, "Calculator Error: %s", meta.result_summary);
     }
-
-    snprintf(out_buf, buf_cap, "Usage: /calc <num1> [+-*/] <num2>");
 }
 
 flex_dispatch_action_t flex_dispatch_input(
@@ -102,8 +80,10 @@ flex_dispatch_action_t flex_dispatch_input(
                      "FLEX 1.0 Built-in Commands:\n"
                      "  /help             - Displays this command reference\n"
                      "  /status           - Reports C Core lifecycle and memory diagnostics\n"
+                     "  /sysinfo          - Displays detailed system and platform diagnostics\n"
                      "  /voice            - Shows voice pipeline and Whisper status\n"
-                     "  /calc <a op b>    - Evaluates basic arithmetic\n"
+                     "  /calc <expr>      - Evaluates mathematical expressions with operator precedence\n"
+                     "  /read <path>      - Safely reads a workspace file with boundaries\n"
                      "  /clear            - Requests clearing conversation screen\n"
                      "  /reset            - Resets C Core state machine to IDLE");
             out_result->response_len = strlen(out_result->response_text);
@@ -120,6 +100,22 @@ flex_dispatch_action_t flex_dispatch_input(
                      "  Inference: Local Ollama Daemon (http://127.0.0.1:11434)\n"
                      "  Speech STT: whisper.cpp v1.7.4 (Offline GGML tiny.en)\n"
                      "  Speech TTS: Windows SAPI 5.4 COM");
+            out_result->response_len = strlen(out_result->response_text);
+        }
+        return FLEX_DISPATCH_HANDLED_INTERNAL;
+    }
+
+    if (strcmp(verb, "sysinfo") == 0) {
+        if (out_result) {
+            flex_tool_system_info("1.0.0", out_result->response_text, sizeof(out_result->response_text), NULL);
+            out_result->response_len = strlen(out_result->response_text);
+        }
+        return FLEX_DISPATCH_HANDLED_INTERNAL;
+    }
+
+    if (strcmp(verb, "read") == 0) {
+        if (out_result) {
+            flex_tool_read_file(".", p, 0, out_result->response_text, sizeof(out_result->response_text), NULL);
             out_result->response_len = strlen(out_result->response_text);
         }
         return FLEX_DISPATCH_HANDLED_INTERNAL;

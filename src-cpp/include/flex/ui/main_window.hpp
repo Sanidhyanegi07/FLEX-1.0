@@ -8,6 +8,7 @@
 #include "flex/ui/navigation_sidebar.hpp"
 #include "flex/ui/projects_view.hpp"
 #include "flex/ui/prototype_view.hpp"
+#include "flex/ui/tools_view.hpp"
 #include "flex/ui/knowledge_view.hpp"
 #include "flex/ui/right_sidebar.hpp"
 #include "flex/ui/settings_view.hpp"
@@ -50,10 +51,12 @@ public:
     [[nodiscard]] std::shared_ptr<voice::VoiceConversationController> voiceController() const { return m_voiceController; }
     [[nodiscard]] ChatView* chatView() const { return m_chatView; }
     [[nodiscard]] KnowledgeView* knowledgeView() const { return m_knowledgeView; }
+    [[nodiscard]] ToolsView* toolsView() const { return m_toolsView; }
     [[nodiscard]] ConversationListWidget* conversationListWidget() const;
 
 public slots:
     void handleSendChat(const QString& promptText);
+    void handleCancelChat();
     void handleNewConversation();
     void handleSelectConversation(const QString& conversationId);
     void handleDeleteConversation(const QString& conversationId);
@@ -93,7 +96,7 @@ private:
     MemoryView* m_memoryView{nullptr};
     KnowledgeView* m_knowledgeView{nullptr};
     ProjectsView* m_projectsView{nullptr};
-    PrototypeView* m_toolsView{nullptr};
+    ToolsView* m_toolsView{nullptr};
     SettingsView* m_settingsView{nullptr};
 
     // Diagnostics / Operation telemetry

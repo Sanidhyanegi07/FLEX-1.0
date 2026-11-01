@@ -85,6 +85,7 @@ public:
     [[nodiscard]] virtual std::string preferredDeviceId() const { return {}; }
     [[nodiscard]] virtual std::string activeDeviceName() const { return defaultDevice().name; }
     [[nodiscard]] virtual bool isFallbackActive() const { return false; }
+    [[nodiscard]] virtual double currentRmsLevel() const { return 0.0; }
 
     virtual void setErrorCallback(std::function<void(AudioCaptureError, const QString&)> callback)
     {

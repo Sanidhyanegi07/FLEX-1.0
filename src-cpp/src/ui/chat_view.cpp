@@ -407,7 +407,19 @@ void ChatView::setVisualState(CoreVisualState state)
 void ChatView::setInputEnabled(bool enabled)
 {
     m_inputEdit->setEnabled(enabled);
-    m_sendButton->setEnabled(enabled && !m_inputEdit->toPlainText().trimmed().isEmpty());
+    if (enabled) {
+        m_sendButton->setText("Send");
+        m_sendButton->setStyleSheet("");
+        m_sendButton->setEnabled(!m_inputEdit->toPlainText().trimmed().isEmpty());
+    } else {
+        m_sendButton->setText("⏹ Stop");
+        m_sendButton->setStyleSheet(
+            "QPushButton { background-color: #7F1D1D; color: #FCA5A5; border: 1px solid #DC2626; "
+            "border-radius: 6px; padding: 6px 14px; font-weight: 600; } "
+            "QPushButton:hover { background-color: #991B1B; color: #FFFFFF; }"
+        );
+        m_sendButton->setEnabled(true);
+    }
 
     m_loadingBanner->setVisible(!enabled);
     if (!enabled) {
@@ -443,6 +455,10 @@ void ChatView::focusInput()
 
 void ChatView::onSendClicked()
 {
+    if (!m_inputEdit->isEnabled()) {
+        emit stopRequested();
+        return;
+    }
     QString text = m_inputEdit->toPlainText().trimmed();
     if (text.isEmpty()) {
         return;

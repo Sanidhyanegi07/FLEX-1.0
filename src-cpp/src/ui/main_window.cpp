@@ -1,6 +1,8 @@
 #include "flex/ui/main_window.hpp"
 #include "flex/ui/theme.hpp"
+#include "flex/ui/tools_view.hpp"
 #include "flex/settings_persistence_service.hpp"
+#include "command_dispatcher.h"
 
 #include <QCloseEvent>
 #include <QHBoxLayout>
@@ -170,6 +172,7 @@ void MainWindow::setupUi()
     // 0: Home (Primary ChatView)
     m_chatView = new ChatView(m_viewStack);
     connect(m_chatView, &ChatView::sendRequested, this, &MainWindow::handleSendChat);
+    connect(m_chatView, &ChatView::stopRequested, this, &MainWindow::handleCancelChat);
     m_viewStack->addWidget(m_chatView);
 
     // 1: Voice Studio
@@ -204,21 +207,14 @@ void MainWindow::setupUi()
     });
     m_viewStack->addWidget(m_projectsView);
 
-    // 5: Tools (Truthful Architectural Specification)
-    m_toolsView = new PrototypeView(
-        "C Core Native Tools",
-        "⚙️",
-        "● STATUS: ARCHITECTURAL SPECIFICATION",
-        Theme::StatusSuccess,
-        "Native tools engine governed by the C11 Core. Command parsing, memory safety, and deterministic lifecycle tracking.",
-        "FLEX 1.0 enforces all command parsing through strict C11 native modules without dynamic heap allocations. Live dispatch is active in the Home chat pipeline.",
-        {
-            "External CLI tool execution plugins are not implemented in Stage 1.",
-            "Interactive tools dashboard is an architectural specification only; no fabricated buttons.",
-            "All command verification is performed automatically in the Home chat view."
-        },
-        m_viewStack
-    );
+    // 5: Tools (Native C11 Tools Subsystem)
+    m_toolsView = new ToolsView(m_coordinator, m_viewStack);
+    connect(m_toolsView, &ToolsView::attachToolOutputToChat, this, [this](const QString& toolName, const QString& content) {
+        switchView("home");
+        m_navSidebar->setActiveView("home");
+        m_chatView->setInputText(QString("[%1 Output]\n```\n%2\n```\n\n").arg(toolName, content));
+        m_chatView->focusInput();
+    });
     m_viewStack->addWidget(m_toolsView);
 
     // 6: Settings
@@ -256,6 +252,7 @@ void MainWindow::switchView(const QString& viewKey)
     } else if (viewKey == "projects") {
         m_viewStack->setCurrentWidget(m_projectsView);
     } else if (viewKey == "tools") {
+        m_toolsView->refreshSystemInfo();
         m_viewStack->setCurrentWidget(m_toolsView);
     } else if (viewKey == "settings") {
         m_settingsView->loadCurrentConfig();
@@ -337,6 +334,36 @@ void MainWindow::handleSendChat(const QString& promptText)
         return;
     }
 
+    if (flex_is_slash_command(trimmed.toUtf8().constData())) {
+        flex_dispatch_result_t dispResult{};
+        flex_dispatch_action_t action = flex_dispatch_input(trimmed.toUtf8().constData(), &dispResult);
+
+        if (dispResult.requires_clear_ui) {
+            handleNewConversation();
+            return;
+        }
+
+        m_chatView->appendUserMessage(trimmed);
+        QString responseText = QString::fromUtf8(dispResult.response_text);
+        if (action == FLEX_DISPATCH_HANDLED_INTERNAL) {
+            m_chatView->startAssistantMessage("c-core:tools");
+            m_chatView->appendAssistantChunk(responseText);
+            m_chatView->finishAssistantMessage(responseText);
+            m_chatView->setVisualState(CoreVisualState::Idle);
+            m_chatView->setInputEnabled(true);
+            m_chatView->focusInput();
+            return;
+        } else if (action == FLEX_DISPATCH_ERR_SYNTAX || action == FLEX_DISPATCH_ERR_POLICY) {
+            m_chatView->startAssistantMessage("c-core:tools");
+            m_chatView->appendAssistantChunk(responseText);
+            m_chatView->finishAssistantMessage(responseText);
+            m_chatView->setVisualState(CoreVisualState::Error);
+            m_chatView->setInputEnabled(true);
+            m_chatView->focusInput();
+            return;
+        }
+    }
+
     if (!m_coordinator) {
         m_chatView->showErrorBanner("Backend coordinator is not initialized.");
         return;
@@ -368,6 +395,22 @@ void MainWindow::handleSendChat(const QString& promptText)
         m_chatView->showErrorBanner("Failed to dispatch request to backend coordinator.");
         updateCoreStateDisplay();
     }
+}
+
+void MainWindow::handleCancelChat()
+{
+    if (m_coordinator) {
+        if (m_currentRequestId != 0) {
+            m_coordinator->cancelRequest(m_currentRequestId);
+            m_currentRequestId = 0;
+        } else {
+            m_coordinator->cancelAll();
+        }
+    }
+    m_chatView->setInputEnabled(true);
+    m_chatView->setVisualState(CoreVisualState::Idle);
+    m_chatView->finishAssistantMessage();
+    updateCoreStateDisplay();
 }
 
 void MainWindow::handleNewConversation()
@@ -587,9 +630,12 @@ void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error
     if (requestId != m_currentRequestId) {
         return;
     }
+    m_currentRequestId = 0;
+    m_chatView->setInputEnabled(true);
     m_chatView->setVisualState(CoreVisualState::Error);
     QString errStr = QString::fromStdString(error.message);
     m_chatView->showErrorBanner(errStr);
+    updateCoreStateDisplay();
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)

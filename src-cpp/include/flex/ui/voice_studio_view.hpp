@@ -7,6 +7,7 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QWidget>
 
@@ -51,6 +52,7 @@ private slots:
     void onTranscriptReady(const QString& transcript);
     void onVoiceError(const QString& errorMessage);
     void onAudioCaptured(size_t sampleCount, double durationSeconds);
+    void onAudioLevelChanged(double levelRms);
 
 private:
     void setupUi();
@@ -66,6 +68,7 @@ private:
     QPushButton* m_recordBtn{nullptr};
     QPushButton* m_testTtsBtn{nullptr};
     QPushButton* m_voiceOutputBtn{nullptr};
+    QProgressBar* m_audioLevelBar{nullptr};
 
     // Transcript review card
     QFrame* m_reviewCard{nullptr};

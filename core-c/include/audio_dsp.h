@@ -208,6 +208,22 @@ bool flex_vad_process_frame(
     size_t frame_count
 );
 
+/**
+ * Calculates RMS of 16-bit signed PCM audio samples, returning normalized RMS in [0.0, 1.0].
+ */
+float flex_audio_calculate_int16_rms(
+    const int16_t* samples,
+    size_t count
+);
+
+/**
+ * Maps RMS level (0.0 to 1.0) to dynamic VU percentage [0, 100] using
+ * square-root scaling for speech sensitivity.
+ */
+int flex_audio_level_to_percent(
+    float rms
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -448,6 +448,24 @@ public:
         return m_recording;
     }
 
+    [[nodiscard]] double currentRmsLevel() const override
+    {
+        if (!m_recording || m_pcmBuffer.isEmpty()) {
+            return 0.0;
+        }
+        int sampleSize = m_activeFormat.bytesPerSample();
+        if (sampleSize <= 0) return 0.0;
+        int checkBytes = qMin(static_cast<int>(m_pcmBuffer.size()), 2048 * sampleSize);
+        if (checkBytes <= 0) return 0.0;
+        const char* data = m_pcmBuffer.constData() + (m_pcmBuffer.size() - checkBytes);
+        if (m_activeFormat.sampleFormat() == QAudioFormat::Int16) {
+            return static_cast<double>(flex_audio_calculate_int16_rms(
+                reinterpret_cast<const int16_t*>(data),
+                static_cast<size_t>(checkBytes / sizeof(int16_t))));
+        }
+        return 0.0;
+    }
+
 private:
     void stopInternal()
     {
@@ -492,6 +510,7 @@ public:
     AudioCaptureError m_lastError{AudioCaptureError::None};
     QString m_lastErrorMessage;
     QTimer* m_maxDurationTimer{nullptr};
+    QTimer* m_levelTimer{nullptr};
     int m_maxDurationMs{30000}; // 30 seconds default duration cap
     bool m_wasMaxDurationReached{false};
 };
@@ -510,12 +529,23 @@ AudioCaptureService::AudioCaptureService(
     m_impl->m_maxDurationTimer->setSingleShot(true);
     connect(m_impl->m_maxDurationTimer, &QTimer::timeout, this, &AudioCaptureService::onMaxDurationTimeout);
 
+    m_impl->m_levelTimer = new QTimer(this);
+    connect(m_impl->m_levelTimer, &QTimer::timeout, this, [this]() {
+        if (m_impl->m_state == AudioCaptureState::Recording && m_impl->m_source) {
+            emit audioLevelChanged(m_impl->m_source->currentRmsLevel());
+        }
+    });
+
     if (m_impl->m_source) {
         m_impl->m_source->setErrorCallback([this](AudioCaptureError err, const QString& msg) {
             if (m_impl->m_state == AudioCaptureState::Recording) {
                 if (m_impl->m_maxDurationTimer) {
                     m_impl->m_maxDurationTimer->stop();
                 }
+                if (m_impl->m_levelTimer) {
+                    m_impl->m_levelTimer->stop();
+                }
+                emit audioLevelChanged(0.0);
                 m_impl->m_state = AudioCaptureState::Error;
                 m_impl->m_lastError = err;
                 m_impl->m_lastErrorMessage = msg;
@@ -613,6 +643,9 @@ bool AudioCaptureService::startCapture()
     if (m_impl->m_maxDurationMs > 0 && m_impl->m_maxDurationTimer) {
         m_impl->m_maxDurationTimer->start(m_impl->m_maxDurationMs);
     }
+    if (m_impl->m_levelTimer) {
+        m_impl->m_levelTimer->start(50);
+    }
 
     emit stateChanged(m_impl->m_state);
     emit captureStarted();
@@ -628,6 +661,10 @@ AudioBuffer AudioCaptureService::stopCapture()
     if (m_impl->m_maxDurationTimer) {
         m_impl->m_maxDurationTimer->stop();
     }
+    if (m_impl->m_levelTimer) {
+        m_impl->m_levelTimer->stop();
+    }
+    emit audioLevelChanged(0.0);
 
     m_impl->m_state = AudioCaptureState::Stopping;
     emit stateChanged(m_impl->m_state);
@@ -652,6 +689,10 @@ void AudioCaptureService::cancelCapture()
     if (m_impl->m_maxDurationTimer) {
         m_impl->m_maxDurationTimer->stop();
     }
+    if (m_impl->m_levelTimer) {
+        m_impl->m_levelTimer->stop();
+    }
+    emit audioLevelChanged(0.0);
 
     if (m_impl->m_source) {
         m_impl->m_source->cancel();
@@ -717,6 +758,10 @@ void AudioCaptureService::setCaptureSource(std::shared_ptr<IAudioCaptureSource> 
                 if (m_impl->m_maxDurationTimer) {
                     m_impl->m_maxDurationTimer->stop();
                 }
+                if (m_impl->m_levelTimer) {
+                    m_impl->m_levelTimer->stop();
+                }
+                emit audioLevelChanged(0.0);
                 m_impl->m_state = AudioCaptureState::Error;
                 m_impl->m_lastError = err;
                 m_impl->m_lastErrorMessage = msg;

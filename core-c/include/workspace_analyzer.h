@@ -89,6 +89,10 @@ bool flex_workspace_split_path(
 /**
  * Detects document encoding (0: UTF-8/ASCII, 1: UTF-8 BOM, 2: UTF-16LE, 3: UTF-16BE, -1: Binary).
  */
+size_t flex_workspace_format_byte_size(uint64_t bytes, char* out_buf, size_t out_cap);
+const char* flex_workspace_get_mime_type(const char* filepath);
+bool flex_workspace_is_printable_text(const uint8_t* buffer, size_t len);
+
 int flex_workspace_detect_text_encoding(
     const unsigned char* buffer,
     size_t len
