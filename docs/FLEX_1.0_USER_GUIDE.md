@@ -145,17 +145,30 @@ The **Settings** view allows you to customize the assistant:
 ## 4. Data Storage & User Privacy
 
 ### 4.1 Where Is My Data Stored?
-All conversations, memory facts, imported documents, and user preferences are saved in an embedded SQLite database on your local disk:
-```text
-C:\Users\<YourUsername>\AppData\Local\FLEX\flex_conversations.db
-```
-*(In portable standalone mode, the database may be stored locally as `conversations.db` alongside the executable).*
+All conversations, memory facts, imported documents, and user preferences are saved locally on your physical machine:
+
+1. **Relational Database (`conversations.db`):**
+   ```text
+   %LOCALAPPDATA%\FLEX\conversations.db
+   (e.g., C:\Users\<YourUsername>\AppData\Local\FLEX\conversations.db)
+   ```
+   *(Fallback path if LOCALAPPDATA is undefined: `%USERPROFILE%\.flex\conversations.db`)*
+
+2. **Application Settings (`config.ini`):**
+   ```text
+   %LOCALAPPDATA%\FLEX\config.ini
+   (e.g., C:\Users\<YourUsername>\AppData\Local\FLEX\config.ini)
+   ```
+
+3. **Offline Whisper Speech Models:**
+   - Pre-bundled portable release path: `<ApplicationDirectory>\models\whisper\ggml-tiny.en.bin`
+   - Default user directory: `%USERPROFILE%\.flex\models\whisper\ggml-tiny.en.bin`
 
 ### 4.2 Backing Up Your Data
 To back up your entire chat history, knowledge base, and memories:
 1. Close FLEX 1.0.
-2. Copy the `flex_conversations.db` file from the directory above to your backup drive or USB stick.
-3. To restore, simply place the file back in that folder before launching FLEX.
+2. Copy the `conversations.db` and `config.ini` files from `%LOCALAPPDATA%\FLEX\` to your backup drive or USB stick.
+3. To restore, simply place the files back into that folder before launching FLEX.
 
 ---
 

@@ -15,7 +15,7 @@
 ### 3-Minute Project Explanation
 > *"Commercial conversational AI assistants suffer from three fundamental problems: privacy violations, cloud downtime, and runtime resource bloat from Electron wrappers. In corporate and academic research environments, engineers cannot paste proprietary code into cloud interfaces due to data leakage risks.*
 >
-> *FLEX 1.0 solves this by creating a 100% offline, privacy-first desktop AI workspace. To achieve maximum performance, we designed a hybrid C11 and C++17 architecture. The core computational engine is written in standard C11 across 49 production modules. It implements a deterministic finite state machine to prevent race conditions, digital signal processing algorithms like linear audio resampling and RMS windowing, a sliding-window text chunker for documents, and a Myers diff engine. The desktop shell is built in C++17 with Qt 6, providing asynchronous worker threads, WASAPI audio recording, and local SQLite persistence.*
+> *FLEX 1.0 solves this by creating a 100% offline, privacy-first desktop AI workspace. To achieve maximum performance, we designed a hybrid C11 and C++17 architecture. The core computational engine is written in standard C11 across 49 production modules. It implements a deterministic finite state machine to prevent race conditions, digital signal processing algorithms like linear and Blackman-windowed sinc audio resampling, 4-way parallel RMS energy accumulation, a sliding-window text chunker for documents, and a Myers diff engine. The desktop shell is built in C++17 with Qt 6, providing asynchronous worker threads, WASAPI audio recording, and local SQLite persistence.*
 >
 > *When a user interacts with FLEX, they can type or speak. In voice mode, raw 16kHz audio is processed through our C DSP pipeline and transcribed locally by Whisper.cpp. The prompt is matched against long-term memory facts and Knowledge Base chunks using bidirectional keyword scoring in our C memory indexer. Context is injected into our local Ollama model (`qwen2.5-coder:3b`), and the response streams back token-by-token while being read aloud via native Windows SAPI. Everything is persistent, verifiable, and packaged into a portable 104 MB release."*
 
@@ -26,7 +26,7 @@
 > 3. **Memory & RAG Pipeline:** Before dispatching to Ollama, the coordinator executes a two-stage retrieval pass. First, `searchMemoryEntries` extracts keywords using C routines (`flex_mem_extract_query_keywords`) and computes bidirectional substring relevance to retrieve saved user facts. Second, `searchKnowledgeChunks` scores document chunks. Both are wrapped in untrusted data delimiters and injected into the LLM system prompt.
 > 4. **Inference & Streaming:** `OllamaClient` uses `QNetworkAccessManager` to stream HTTP NDJSON chunks from `127.0.0.1:11434`. Each token is emitted asynchronously to `ChatView` for smooth 60fps rendering without blocking the UI thread.
 > 5. **Multimodal Voice Pipeline:** `AudioCaptureService` captures WASAPI audio. `audio_dsp.c` normalizes and filters the PCM buffer. `SpeechToTextService` dispatches the audio to a dedicated worker thread running a GGML-quantized Whisper model with a target-specific `-O3` compiler optimization. The transcribed text is confirmed by the user, submitted to an isolated voice conversation, and synthesized using Windows SAPI 5.4.
-> 6. **Persistence & Portability:** All conversations, messages, facts, chunks, and settings are stored via parameterized SQL in SQLite 3. The entire distribution is packaged with `windeployqt` into a portable Windows zip requiring no installation.
+> 6. **Persistence & Portability:** All conversations, messages, facts, chunks, and settings are stored via parameterized SQL in SQLite 3 (`%LOCALAPPDATA%\FLEX\conversations.db`). The entire distribution is packaged with `windeployqt` into a portable Windows zip requiring no installation.
 
 ---
 
@@ -79,34 +79,39 @@
 *Answer:* In `core-c/src/state_manager.c` (`flex_state_dispatch`) and `core-c/src/voice_fsm.c`. It uses state lookup tables and switch transitions with $\mathcal{O}(1)$ time complexity and $\mathcal{O}(1)$ space complexity.
 
 **Q13: Which string searching and relevance algorithms are implemented in the C core?**  
-*Answer:* In `core-c/src/memory_index.c`, `flex_mem_fact_relevance()` implements bidirectional token intersection and reverse substring searching (`flex_str_casestr`). Its time complexity is $\mathcal{O}(N \times M)$ where $N$ is query length and $M$ is fact key length, operating in $\mathcal{O}(1)$ auxiliary space.
+*Answer:* In `core-c/src/memory_index.c`, `flex_mem_fact_relevance()` implements bidirectional token intersection and reverse substring searching (`flex_str_casestr`). Its time complexity is $\mathcal{O}(Q \times K + T_Q \times T_K)$ where $Q$ is query string length, $K$ is fact key length, $T_Q$ is query token count, and $T_K$ is fact key token count, operating in $\mathcal{O}(1)$ auxiliary space.
 
 **Q14: Where is a Queue data structure used in FLEX?**  
-*Answer:* In `src-cpp/src/backend.cpp`, an asynchronous FIFO queue `m_chatQueue` (`std::deque<QueuedChat>`) buffers incoming requests under mutex synchronization. Enqueue and dequeue operations are $\mathcal{O}(1)$ time complexity.
+*Answer:* In `src-cpp/src/backend.cpp`, an asynchronous FIFO queue `m_chatQueue` (`std::deque<QueuedChat>`) buffers incoming requests under mutex synchronization. Enqueue and dequeue operations are $\mathcal{O}(1)$ amortized time complexity; auxiliary space is $\mathcal{O}(M)$ where $M$ is the number of queued pending chat requests.
 
 **Q15: How does the Knowledge Base text chunking algorithm work?**  
-*Answer:* In `core-c/src/knowledge_chunker.c`, `flex_knowledge_chunk_text()` applies a sliding window algorithm. It identifies paragraph and sentence boundaries within a character budget (e.g. 500 characters) and maintains an overlap buffer (e.g. 50 characters) to preserve context continuity across chunk seams. Time complexity is linear $\mathcal{O}(N)$.
+*Answer:* In `core-c/src/knowledge_chunker.c`, `flex_knowledge_chunk_text()` applies a sliding window algorithm. It identifies paragraph and sentence boundaries within a character budget (e.g. 500 characters) and maintains an overlap buffer (e.g. 50 characters) to preserve context continuity across chunk seams. Time complexity is linear $\mathcal{O}(C_{doc})$ where $C_{doc}$ is the document character length; space is $\mathcal{O}(C_{doc})$ for the allocated chunk records.
 
 **Q16: How does the built-in Calculator evaluate arithmetic expressions?**  
-*Answer:* In `core-c/src/math_evaluator.c`, a recursive descent parser evaluates mathematical infix expressions with operator precedence (`+`, `-`, `*`, `/`) and parentheses. Time complexity is $\mathcal{O}(N)$ where $N$ is the number of tokens, with recursion space $\mathcal{O}(D)$ proportional to parentheses nesting depth.
+*Answer:* In `core-c/src/math_evaluator.c`, a recursive descent parser evaluates mathematical infix expressions with operator precedence (`+`, `-`, `*`, `/`) and parentheses. Time complexity is $\mathcal{O}(N_{tok})$ where $N_{tok}$ is token count, with recursion space $\mathcal{O}(D_{nest})$ proportional to maximum parentheses nesting depth.
 
-**Q17: What is the Bloom Filter in `bloom_filter.c`, and why is it used?**  
-*Answer:* It is a space-efficient probabilistic data structure that uses three Murmur3-based hash functions over a bit-array to test set membership. In memory lookups, if the Bloom filter returns `false`, the key is guaranteed not to exist, avoiding unnecessary disk/SQLite queries ($\mathcal{O}(k)$ time, $\mathcal{O}(M)$ bits space).
+**Q17: Is the Bloom Filter in `bloom_filter.c` called in the production memory retrieval path?**  
+*Answer:* No. `bloom_filter.c` is a fully implemented, unit-tested C11 core module featuring a 512-bit bitset and 3 Murmur3-based hash functions ($\mathcal{O}(k)$ time, $\mathcal{O}(1)$ space). However, it is a **standalone module not hooked into the active chat memory retrieval path**. In production, memory retrieval uses SQLite candidate selection followed by `flex_mem_extract_query_keywords` and `flex_mem_fact_relevance` in `memory_index.c`.
 
 **Q18: Which diff algorithm is implemented in `diff_engine.c`?**  
-*Answer:* It implements Myers difference algorithm to compute shortest edit scripts between two text buffers for file diffing in the Projects view. Time complexity is $\mathcal{O}((N + M) \times D)$ where $D$ is the edit distance.
+*Answer:* It implements Myers difference algorithm to compute shortest edit scripts between two text buffers for file diffing in the Projects view. Time complexity is $\mathcal{O}((L_1 + L_2) \times D)$ where $L_1, L_2$ are buffer line counts and $D$ is the edit distance; space complexity is $\mathcal{O}(L_1 + L_2 + D^2)$.
 
-**Q19: How are database records indexed in SQLite?**  
-*Answer:* SQLite creates B-Tree indexes (e.g., `idx_messages_cid` on `messages(conversation_id)`). Lookups, insertions, and deletions take $\mathcal{O}(\log N)$ logarithmic time.
+**Q19: Is SQLite B-Tree indexing an application-implemented algorithm?**  
+*Answer:* No. SQLite B-Tree indexing (`CREATE INDEX idx_messages_cid`) is an internal feature of the third-party embedded SQLite 3 database engine ($\mathcal{O}(\log N)$ lookup time). It is not custom application-implemented DSA.
 
 ---
 
 ### Group 5: Multimodal Voice Pipeline (STT, TTS, DSP)
 **Q20: Explain the complete voice-to-speech lifecycle in FLEX.**  
-*Answer:* 1. Microphone capture via WASAPI (`AudioCaptureService`). 2. Audio DSP normalization and linear resampling to 16kHz mono (`audio_dsp.c`). 3. Offline speech transcription via local Whisper.cpp transformer. 4. User reviews and confirms transcript. 5. Transcript dispatched to local Ollama LLM under dedicated conversation ID. 6. Generated text synthesized to audio via Windows SAPI 5.4.
+*Answer:* 1. Microphone capture via WASAPI (`AudioCaptureService`). 2. Audio DSP normalization and linear or sinc resampling to 16kHz mono (`audio_dsp.c`). 3. Offline speech transcription via local Whisper.cpp transformer. 4. User reviews and confirms transcript. 5. Transcript dispatched to local Ollama LLM under dedicated conversation ID. 6. Generated text synthesized to audio via Windows SAPI 5.4.
 
 **Q21: What audio DSP operations are performed before speech recognition?**  
-*Answer:* Audio decimation/resampling from device native rate (44.1kHz / 48kHz) to 16kHz Float32 mono, Hann windowing, RMS energy calculation for live VU meter feedback, and soft-clipping normalization.
+*Answer:* 
+1. Multi-channel to mono downmixing with anti-phase stereo cross-correlation analysis (`flex_audio_analyze_stereo`, `flex_audio_downmix_to_mono_safe`).
+2. Audio resampling to 16 kHz Mono via either fast linear interpolation (`flex_audio_resample_linear`, $\mathcal{O}(S_{out})$) or bandlimited Blackman-windowed sinc interpolation (`flex_audio_resample_bandlimited`, $\mathcal{O}(S_{out} \times R)$ with anti-aliasing cutoff $0.45 \times \frac{F_{out}}{F_{in}}$).
+3. 4-way parallel double-precision RMS energy calculation (`flex_audio_calculate_rms`, $\mathcal{O}(S_{in})$) and dynamic VU meter percent scaling.
+4. Conservative speech normalization with noise gate threshold (`flex_audio_normalize_speech`).
+*(Note: Hann windowing is not used; Blackman windowing is used in `flex_blackman_win` for sinc interpolation).*
 
 **Q22: What is the Whisper `-O3` compiler optimization bug, and how did you resolve it?**  
 *Answer:* In MinGW-w64 GCC 13+, global aggressive vectorization (`-O3`) on GGML tensor kernels caused memory alignment crashes during matrix multiplication. We isolated a target-specific compiler rule in `CMakeLists.txt` ensuring Whisper and GGML targets use stable vector flags while retaining `-O3` for pure C11 DSP routines.
@@ -121,7 +126,7 @@
 
 ### Group 6: Long-Term Memory & RAG
 **Q25: How does FLEX store and retrieve long-term memory facts?**  
-*Answer:* Facts are stored in SQLite table `memory_entries` with fields `key`, `content`, and `category`. During a chat turn, `searchMemoryEntries` extracts keywords from the user prompt and computes bidirectional substring relevance scores using C routines. Relevant facts are injected into the LLM system prompt.
+*Answer:* Facts are stored in SQLite table `memory_entries` with fields `key`, `content`, and `category`. During a chat turn, `searchMemoryEntries` extracts keywords from the user prompt and computes bidirectional substring relevance scores using C routines (`flex_mem_fact_relevance`). Relevant facts are injected into the LLM system prompt.
 
 **Q26: What was the bug where "What's my name?" failed to retrieve "My Name: Sanidhya Negi"?**  
 *Answer:* The original implementation executed SQL `WHERE key LIKE '%What\'s my name?%'`. Because the key (`"My Name"`) is a substring of the question—not vice-versa—the SQL query returned 0 rows. We fixed this by retrieving candidates and applying bidirectional matching in C (`flex_mem_fact_relevance`) where `flex_str_casestr(query, key)` evaluates to a positive score.
@@ -159,6 +164,13 @@
 
 **Q35: How many assertions pass across the test suites?**  
 *Answer:* A total of **67,761 assertions** pass with 100% success rate and zero failures.
+- `c_core_tests`: 1,386 assertions
+- `cpp_wrapper_tests`: 214 assertions
+- `cpp_storage_tests`: 235 assertions
+- `cpp_ollama_tests`: 67 assertions
+- `cpp_backend_tests`: 123 assertions
+- `cpp_ui_tests`: 201 assertions
+- `cpp_voice_tests`: 65,535 assertions
 
 **Q36: Which test verifies real audio inference rather than a mock?**  
 *Answer:* In `cpp_voice_tests` (`test_voice.cpp`), real Whisper speech recognition is validated using an authentic 16kHz WAV recording of President John F. Kennedy's inaugural address ("Ask not what your country can do for you...").
@@ -169,8 +181,11 @@
 ---
 
 ### Group 9: Packaging & Deployment
-**Q38: How is the Windows release package built?**  
-*Answer:* Running `scripts/package_release.ps1` compiles Release binaries with Ninja, stages `release/FLEX-1.0/`, runs `windeployqt` to collect Qt 6 DLLs, stages MinGW runtimes and FFmpeg plugins, bundles the Whisper model, verifies the executables, and compresses everything into `FLEX-1.0-Windows-x64.zip` (103.8 MB).
+**Q38: How is the Windows release package built, and how was it verified?**  
+*Answer:* Running `scripts/package_release.ps1` compiles Release binaries with Ninja, stages `release/FLEX-1.0/`, runs `windeployqt` to collect Qt 6 DLLs, stages MinGW runtimes and FFmpeg plugins, bundles the Whisper model, verifies the executables, and compresses everything into `FLEX-1.0-Windows-x64.zip` (103.79 MB, 45 files).
+- **Verification Levels:**
+  - Automated headless & IPC verification: `flex_bridge.exe` responded to stdin `STATUS` query; `flex_desktop.exe` launched in offscreen mode (`QT_QPA_PLATFORM=offscreen`) verifying clean DLL loading and zero startup crashes.
+  - Interactive desktop testing: Launching `FLEX-1.0.bat` directly for live GUI interactions.
 
 **Q39: What is `flex_bridge.exe`?**  
 *Answer:* It is a headless, line-based JSON IPC bridge built in pure C11. It allows external scripts or CLI tools to query FLEX status (`STATUS`), dispatch commands (`DISPATCH`), and reset state over standard input/output.
@@ -182,7 +197,7 @@
 
 ### Group 10: Limitations & Future Enhancements
 **Q41: What are the current limitations of FLEX 1.0?**  
-*Answer:* 1. Bundled Whisper model is English-only (`tiny.en`). 2. Conversational chat requires local Ollama service. 3. Document ingestion is limited to `.txt` and `.md` (no PDF/DOCX). 4. Authentication is strictly local with no cloud sync.
+*Answer:* 1. Bundled Whisper model is English-only (`tiny.en`). 2. Conversational chat requires local Ollama service. 3. Document ingestion is limited to `.txt` and `.md` (no PDF/DOCX). 4. Authentication is strictly local with no cloud sync. 5. Bloom filter is implemented as a standalone module but not hooked into production memory search.
 
 **Q42: Can FLEX run if Ollama is not installed or turned off?**  
 *Answer:* Yes. The application starts up cleanly, displaying an "AI Engine — Offline" indicator. Voice Studio recording, Whisper STT, SAPI TTS, Memory management, Knowledge Base chunking, Workspace browsing, and Native Tools continue to operate offline.
@@ -193,8 +208,8 @@
 **Q44: How could in-process LLM inference be added in future versions?**  
 *Answer:* By directly linking `llama.cpp` as a C/C++ static library, allowing FLEX to load `.gguf` quantized models directly into process memory without needing Ollama.
 
-**Q45: How does the application handle corrupted SQLite databases?**  
-*Answer:* `storage.cpp` tests database integrity on startup (`PRAGMA integrity_check`). If a legacy or malformed database is detected, it runs idempotent schema migrations (such as adding the `memory_entries` table) inside an atomic transaction.
+**Q45: Where is user data persisted, and how does the application handle corrupted SQLite databases?**  
+*Answer:* Data is persisted in `%LOCALAPPDATA%\FLEX\conversations.db` (Fallback: `%USERPROFILE%\.flex\conversations.db`) and settings in `%LOCALAPPDATA%\FLEX\config.ini`. On startup, `storage.cpp` tests database integrity (`PRAGMA integrity_check`) and runs idempotent schema migrations (such as adding the `memory_entries` table) inside an atomic transaction.
 
 **Q46: What happens if a user selects a file larger than 1 MB in the Workspace Reader?**  
 *Answer:* `flex_tool_read_authorized_file()` checks the file size before reading. If it exceeds 1,048,576 bytes, it rejects the operation with an explanatory error message, protecting memory from allocation exhaustion.
@@ -231,7 +246,7 @@
    **Defense:** *"The C core never executes uploaded files. All files read through `tool_engine.c` are inspected for binary non-text bytes, capped at 1 MB, and read into static character buffers purely as text data. Furthermore, `security_sandbox.c` rejects any path traversal patterns (`../`)."*
 
 6. **Examiner:** *"How do you handle audio buffer overruns or sample rate mismatches?"*  
-   **Defense:** *"WASAPI audio packets are captured into an atomic ring buffer. Our DSP routine `flex_dsp_resample_linear()` applies a linear interpolation filter that decodes any device sample rate (e.g., 44.1 kHz or 48 kHz) into the exact 16.0 kHz Float32 format expected by Whisper, normalizing amplitudes to prevent digital clipping."*
+   **Defense:** *"WASAPI audio packets are captured into an atomic ring buffer. Our DSP routine `flex_audio_resample_linear()` or `flex_audio_resample_bandlimited()` decodes any device sample rate (e.g., 44.1 kHz or 48 kHz) into the exact 16.0 kHz Float32 format expected by Whisper, normalizing amplitudes to prevent digital clipping."*
 
 7. **Examiner:** *"Why not use SQLite's FTS5 for full-text search instead of custom C code?"*  
    **Defense:** *"SQLite FTS5 requires compiling external tokenizer extensions and increases database file size. Our C11 `memory_index.c` implements bidirectional keyword matching in memory, allowing instant relevance scoring against natural language questions (e.g. matching 'What's my name?' with key 'My Name') without disk I/O."*
@@ -257,5 +272,4 @@ To demonstrate the application seamlessly during the viva:
 5. **Memory Retrieval Demonstration:** Open `Memory` tab. Add a fact: Key `Favorite Programming Language`, Content `C and C++`. Return to `Home` and ask: *"What language do I like best?"*. Observe that the model answers accurately using the injected memory.
 6. **Knowledge Base RAG Test:** Open `Knowledge` tab. Import `FLEX_Knowledge_Base_Test.txt`. Show chunk statistics. Search for `"sensors"`. Ask in Chat: *"Where is the laboratory located according to TrailBeacon notes?"*. Show that it retrieves Room 204.
 7. **Workspace Reader Security:** Open `Tools` → `Workspace Reader`. Click `Browse...`, select an external file (e.g., `CMakeLists.txt`). Show that it loads with line counts. Explain that arbitrary path traversal is blocked by the C11 sandbox.
-8. **Automated Testing Defense:** Open PowerShell and run `powershell -ExecutionPolicy Bypass -File scripts\test.ps1`. Show that all 7 test suites pass in 10 seconds.
-
+8. **Automated Testing Defense:** Open PowerShell and run `powershell -ExecutionPolicy Bypass -File scripts\test.ps1`. Show that all 7 test suites pass in ~9–10 seconds.
