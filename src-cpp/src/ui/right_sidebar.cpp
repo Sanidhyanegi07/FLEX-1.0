@@ -36,36 +36,35 @@ void RightSidebar::setupUi()
     avatarLbl->setStyleSheet(QString("font-size: 22px; color: %1;").arg(Theme::TextAccentViolet));
     avatarLbl->setAlignment(Qt::AlignCenter);
 
-    auto* welcomeTitle = new QLabel("Welcome to FLEX", m_profileCard);
+    auto* welcomeTitle = new QLabel("Local Workspace", m_profileCard);
     welcomeTitle->setStyleSheet("font-size: 12px; font-weight: 700; color: #F8FAFC;");
     welcomeTitle->setAlignment(Qt::AlignCenter);
 
-    auto* welcomeSub = new QLabel("Your personal AI workspace", m_profileCard);
+    auto* welcomeSub = new QLabel("Offline & Private Identity", m_profileCard);
     welcomeSub->setStyleSheet("font-size: 10px; color: #94A3B8;");
     welcomeSub->setAlignment(Qt::AlignCenter);
 
-    auto* signInBtn = new QPushButton("Sign In", m_profileCard);
-    signInBtn->setObjectName("NavButton");
-    signInBtn->setCursor(Qt::PointingHandCursor);
-    signInBtn->setStyleSheet(
+    auto* sessionBtn = new QPushButton("Session Details", m_profileCard);
+    sessionBtn->setObjectName("NavButton");
+    sessionBtn->setCursor(Qt::PointingHandCursor);
+    sessionBtn->setStyleSheet(
         QString("QPushButton { background-color: %1; color: #F8FAFC; border: 1px solid %2; "
                 "border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; text-align: center; }"
                 "QPushButton:hover { background-color: #2C1B5E; border-color: %3; }")
         .arg(Theme::BgSidebarActive, Theme::Border, Theme::BorderFocus)
     );
-    connect(signInBtn, &QPushButton::clicked, this, &RightSidebar::onSignInClicked);
+    connect(sessionBtn, &QPushButton::clicked, this, &RightSidebar::onSignInClicked);
 
-    auto* createLink = new QLabel("<a href='#' style='color: #38BDF8; text-decoration: none; font-size: 10px;'>Create Account</a>", m_profileCard);
-    createLink->setAlignment(Qt::AlignCenter);
-    createLink->setCursor(Qt::PointingHandCursor);
-    connect(createLink, &QLabel::linkActivated, this, [this](const QString&) { onSignInClicked(); });
+    auto* localNote = new QLabel("Cloud Auth: Not Required (Local Only)", m_profileCard);
+    localNote->setStyleSheet("font-size: 8px; font-style: italic; color: #64748B;");
+    localNote->setAlignment(Qt::AlignCenter);
 
     profLayout->addWidget(avatarLbl);
     profLayout->addWidget(welcomeTitle);
     profLayout->addWidget(welcomeSub);
     profLayout->addSpacing(4);
-    profLayout->addWidget(signInBtn);
-    profLayout->addWidget(createLink);
+    profLayout->addWidget(sessionBtn);
+    profLayout->addWidget(localNote);
 
     mainLayout->addWidget(m_profileCard);
 

@@ -394,7 +394,6 @@ void MainWindow::handleSendChat(const QString& promptText)
         req.conversationId = m_chatView->conversationId().toStdString();
     }
     req.streaming = true;
-    req.allowQueueing = true;
 
     m_chatView->setInputEnabled(false);
     m_chatView->setVisualState(CoreVisualState::Thinking);
@@ -658,6 +657,9 @@ void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error
         QString errStr = QString::fromStdString(error.message);
         m_chatView->showErrorBanner(errStr);
     }
+    updateCoreStateDisplay();
+}
+    m_chatView->showErrorBanner(errStr);
     updateCoreStateDisplay();
 }
 
