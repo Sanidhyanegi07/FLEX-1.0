@@ -68,6 +68,32 @@ void flex_analyze_source_buffer(
  */
 const char* flex_file_category_name(flex_file_category_t cat);
 
+/**
+ * Checks whether an imported document path matches permitted extensions (.txt, .md).
+ */
+bool flex_workspace_is_supported_doc_ext(const char* filepath);
+
+/**
+ * Extracts directory name, basename, and extension from a file path.
+ */
+bool flex_workspace_split_path(
+    const char* full_path,
+    char* out_dir,
+    size_t dir_cap,
+    char* out_basename,
+    size_t base_cap,
+    char* out_ext,
+    size_t ext_cap
+);
+
+/**
+ * Detects document encoding (0: UTF-8/ASCII, 1: UTF-8 BOM, 2: UTF-16LE, 3: UTF-16BE, -1: Binary).
+ */
+int flex_workspace_detect_text_encoding(
+    const unsigned char* buffer,
+    size_t len
+);
+
 #ifdef __cplusplus
 }
 #endif

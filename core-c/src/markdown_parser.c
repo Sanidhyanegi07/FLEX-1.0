@@ -172,3 +172,117 @@ size_t flex_markdown_strip_to_plain(
     return out_idx;
 }
 
+size_t flex_markdown_extract_code_blocks(
+    const char* markdown,
+    size_t md_len,
+    char out_langs[][32],
+    char out_blocks[][512],
+    size_t max_blocks
+) {
+    if (!markdown || md_len == 0 || !out_blocks || max_blocks == 0) return 0;
+
+    size_t block_count = 0;
+    bool in_block = false;
+    size_t block_start = 0;
+    char current_lang[32] = {0};
+
+    for (size_t i = 0; i + 2 < md_len && block_count < max_blocks; ++i) {
+        if ((i == 0 || markdown[i - 1] == '\n') &&
+            markdown[i] == '`' && markdown[i + 1] == '`' && markdown[i + 2] == '`') {
+            if (!in_block) {
+                in_block = true;
+                size_t line_end = i + 3;
+                while (line_end < md_len && markdown[line_end] != '\n') {
+                    line_end++;
+                }
+                size_t lang_len = line_end - (i + 3);
+                if (lang_len >= 32) lang_len = 31;
+                if (lang_len > 0 && out_langs) {
+                    memcpy(current_lang, markdown + i + 3, lang_len);
+                    current_lang[lang_len] = '\0';
+                } else {
+                    current_lang[0] = '\0';
+                }
+                block_start = (line_end < md_len) ? (line_end + 1) : line_end;
+                i = line_end;
+            } else {
+                in_block = false;
+                size_t block_len = i - block_start;
+                if (block_len >= 512) block_len = 511;
+
+                if (out_langs) {
+                    strncpy(out_langs[block_count], current_lang, 31);
+                    out_langs[block_count][31] = '\0';
+                }
+                memcpy(out_blocks[block_count], markdown + block_start, block_len);
+                out_blocks[block_count][block_len] = '\0';
+                block_count++;
+                i += 2;
+            }
+        }
+    }
+    return block_count;
+}
+
+size_t flex_markdown_extract_outline(
+    const char* markdown,
+    size_t md_len,
+    int out_levels[],
+    char out_titles[][128],
+    size_t max_headers
+) {
+    if (!markdown || md_len == 0 || !out_levels || !out_titles || max_headers == 0) return 0;
+
+    size_t count = 0;
+    for (size_t i = 0; i < md_len && count < max_headers; ++i) {
+        if (i == 0 || markdown[i - 1] == '\n') {
+            if (markdown[i] == '#') {
+                int level = 0;
+                size_t p = i;
+                while (p < md_len && markdown[p] == '#' && level < 6) {
+                    level++;
+                    p++;
+                }
+                while (p < md_len && (markdown[p] == ' ' || markdown[p] == '\t')) {
+                    p++;
+                }
+                size_t title_start = p;
+                while (p < md_len && markdown[p] != '\n' && markdown[p] != '\r') {
+                    p++;
+                }
+                size_t title_len = p - title_start;
+                if (title_len >= 128) title_len = 127;
+
+                out_levels[count] = level;
+                memcpy(out_titles[count], markdown + title_start, title_len);
+                out_titles[count][title_len] = '\0';
+                count++;
+                i = p;
+            }
+        }
+    }
+    return count;
+}
+
+size_t flex_markdown_clean_inline(
+    const char* line,
+    size_t line_len,
+    char* out_buf,
+    size_t out_cap
+) {
+    if (!line || line_len == 0 || !out_buf || out_cap < 2) {
+        if (out_buf && out_cap > 0) out_buf[0] = '\0';
+        return 0;
+    }
+
+    size_t out_idx = 0;
+    for (size_t i = 0; i < line_len && out_idx + 1 < out_cap; ++i) {
+        char c = line[i];
+        if (c == '*' || c == '_' || c == '`' || c == '~') {
+            continue;
+        }
+        out_buf[out_idx++] = c;
+    }
+    out_buf[out_idx] = '\0';
+    return out_idx;
+}

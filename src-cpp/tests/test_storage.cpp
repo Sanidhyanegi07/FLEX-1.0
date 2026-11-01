@@ -684,6 +684,109 @@ void test_persistent_memory_facts()
     }
 }
 
+void test_knowledge_base_documents_and_chunks()
+{
+    std::cout << "[Test 14] Knowledge Base: document import, chunking, deduplication, search, and deletion...\n";
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+    std::string dbPath = tempDir.filePath("kb_test.db").toStdString();
+
+    const std::string doc1Content =
+        "# FLEX 1.0 Engineering Architecture\n\n"
+        "FLEX 1.0 is a local, privacy-respecting AI assistant running natively on Windows desktop. "
+        "The architecture enforces strict separation between the C11 core logic and C++ Qt 6 presentation.\n\n"
+        "## Knowledge Base Subsystem\n"
+        "Documents are parsed into semantic chunks with boundary-aware sliding windows. "
+        "Each chunk maintains an overlap buffer to preserve cross-boundary sentence coherence. "
+        "SQLite parameterized queries guarantee SQL injection safety across all CRUD operations.";
+
+    std::string docId1;
+    {
+        flex::ConversationStorage storage(dbPath);
+
+        // 1. Initial Knowledge Stats
+        int64_t docCount = -1, chunkCount = -1;
+        storage.getKnowledgeStats(&docCount, &chunkCount);
+        EXPECT_EQ(0, docCount);
+        EXPECT_EQ(0, chunkCount);
+
+        // 2. Import Document
+        std::string err;
+        docId1 = storage.saveDocument("architecture.md", "C:/docs/architecture.md", doc1Content, &err);
+        EXPECT_FALSE(docId1.empty());
+        EXPECT_TRUE(err.empty());
+
+        storage.getKnowledgeStats(&docCount, &chunkCount);
+        EXPECT_EQ(1, docCount);
+        EXPECT_TRUE(chunkCount >= 1);
+
+        auto docs = storage.listDocuments();
+        EXPECT_EQ(1, docs.size());
+        EXPECT_STR_EQ("architecture.md", docs[0].filename);
+        EXPECT_STR_EQ(docId1, docs[0].id);
+
+        // 3. Inspect Chunks
+        auto chunks = storage.listDocumentChunks(docId1);
+        EXPECT_EQ(chunkCount, chunks.size());
+        EXPECT_STR_EQ("architecture.md", chunks[0].documentName);
+        EXPECT_FALSE(chunks[0].content.empty());
+        EXPECT_TRUE(chunks[0].tokenCount > 0);
+
+        // 4. Search Chunks
+        auto found = storage.searchKnowledgeChunks("C11 core logic");
+        EXPECT_FALSE(found.empty());
+        EXPECT_STR_EQ("architecture.md", found[0].documentName);
+        EXPECT_TRUE(found[0].relevanceScore > 0.5f);
+
+        // 5. Duplicate Import Prevention
+        std::string dupErr;
+        std::string dupId = storage.saveDocument("architecture_duplicate.md", "C:/downloads/arch.md", doc1Content, &dupErr);
+        EXPECT_STR_EQ(docId1, dupId);
+        EXPECT_FALSE(dupErr.empty());
+        EXPECT_TRUE(dupErr.find("Duplicate") != std::string::npos);
+
+        storage.getKnowledgeStats(&docCount, &chunkCount);
+        EXPECT_EQ(1, docCount); // Document count should NOT increment
+
+        // 6. Invalid / Empty Document Handling
+        std::string emptyErr;
+        std::string emptyId = storage.saveDocument("empty.txt", "C:/empty.txt", "", &emptyErr);
+        EXPECT_TRUE(emptyId.empty());
+        EXPECT_FALSE(emptyErr.empty());
+    }
+
+    // 7. Persistence Across Storage Restart
+    {
+        flex::ConversationStorage storageRestarted(dbPath);
+        int64_t docCount = 0, chunkCount = 0;
+        storageRestarted.getKnowledgeStats(&docCount, &chunkCount);
+        EXPECT_EQ(1, docCount);
+        EXPECT_TRUE(chunkCount >= 1);
+
+        auto docs = storageRestarted.listDocuments();
+        EXPECT_EQ(1, docs.size());
+        EXPECT_STR_EQ("architecture.md", docs[0].filename);
+
+        auto found = storageRestarted.searchKnowledgeChunks("sliding windows");
+        EXPECT_FALSE(found.empty());
+        EXPECT_STR_EQ(docId1, found[0].documentId);
+
+        // 8. Document Deletion & Chunk Cascade
+        bool deleted = storageRestarted.deleteDocument(docId1);
+        EXPECT_TRUE(deleted);
+
+        storageRestarted.getKnowledgeStats(&docCount, &chunkCount);
+        EXPECT_EQ(0, docCount);
+        EXPECT_EQ(0, chunkCount);
+
+        auto remainingDocs = storageRestarted.listDocuments();
+        EXPECT_EQ(0, remainingDocs.size());
+
+        auto remainingChunks = storageRestarted.listDocumentChunks(docId1);
+        EXPECT_EQ(0, remainingChunks.size());
+    }
+}
+
 } // anonymous namespace
 
 int main(int argc, char *argv[])
@@ -707,6 +810,7 @@ int main(int argc, char *argv[])
     test_search_and_counts();
     test_settings_persistence();
     test_persistent_memory_facts();
+    test_knowledge_base_documents_and_chunks();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

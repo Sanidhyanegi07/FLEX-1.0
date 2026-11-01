@@ -2,6 +2,7 @@
 #include "flex/backend.hpp"
 #include "flex/settings_persistence_service.hpp"
 #include "flex/voice/speech_to_text_service.hpp"
+#include "flex/ui/knowledge_view.hpp"
 #include <QTemporaryDir>
 #include <QStandardItemModel>
 
@@ -681,6 +682,10 @@ void test_shell_restoration_and_view_switching()
         QCoreApplication::processEvents();
         window.grab().save(artifactDir + "/screenshot_memory.png");
 
+        window.switchView("knowledge");
+        QCoreApplication::processEvents();
+        window.grab().save(artifactDir + "/screenshot_knowledge.png");
+
         window.switchView("settings");
         QCoreApplication::processEvents();
         window.grab().save(artifactDir + "/screenshot_settings.png");
@@ -1127,6 +1132,74 @@ void test_main_window_whisper_lifecycle_and_safe_shutdown()
     EXPECT_TRUE(true);
 }
 
+void test_knowledge_base_view()
+{
+    std::cout << "[Test 18] KnowledgeView document ingestion, chunk inspection, search, and cascade deletion...\n";
+
+    TempDbGuard db;
+    auto storage = std::make_shared<flex::ConversationStorage>(db.path());
+    auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, nullptr);
+
+    flex::ui::KnowledgeView kv(coordinator);
+
+    EXPECT_TRUE(kv.importButton() != nullptr);
+    EXPECT_TRUE(kv.removeButton() != nullptr);
+    EXPECT_TRUE(kv.documentListWidget() != nullptr);
+    EXPECT_TRUE(kv.chunkListWidget() != nullptr);
+    EXPECT_TRUE(kv.searchEdit() != nullptr);
+    EXPECT_TRUE(kv.statusLabel() != nullptr);
+
+    // Initial state: 0 documents
+    EXPECT_EQ(0, kv.documentListWidget()->count());
+
+    // 1. Direct import of markdown document
+    QString docContent =
+        "# Architecture Overview\n"
+        "FLEX 1.0 is built on a hybrid architecture combining C11 core logic with C++17 Qt.\n"
+        "The core C layer ensures memory safety and high throughput.\n\n"
+        "## Knowledge Base Subsystem\n"
+        "The Knowledge Base manages user documents, chunking them with boundary awareness.\n"
+        "Chunks are indexed in SQLite with content hashes for deduplication.\n";
+
+    bool imported = kv.importDocumentDirect("arch_spec.md", "C:/docs/arch_spec.md", docContent);
+    EXPECT_TRUE(imported);
+    QCoreApplication::processEvents();
+
+    EXPECT_EQ(1, kv.documentListWidget()->count());
+    EXPECT_TRUE(kv.chunkListWidget()->count() > 0);
+    EXPECT_TRUE(kv.statusLabel()->text().contains("indexed successfully"));
+
+    // 2. Duplicate document detection
+    bool dupImported = kv.importDocumentDirect("arch_spec_copy.md", "C:/docs/arch_spec_copy.md", docContent);
+    EXPECT_FALSE(dupImported);
+    EXPECT_EQ(1, kv.documentListWidget()->count());
+    EXPECT_TRUE(kv.statusLabel()->text().contains("already exists") || kv.statusLabel()->text().contains("Duplicate"));
+
+    // 3. Search chunk filtering
+    kv.searchEdit()->setText("Knowledge");
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(kv.chunkListWidget()->count() >= 1);
+
+    // Verify chunk selection triggers detail display
+    kv.chunkListWidget()->setCurrentRow(0);
+    QCoreApplication::processEvents();
+
+    // Clear search
+    kv.searchEdit()->setText("");
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(kv.chunkListWidget()->count() > 0);
+
+    // 4. Document deletion
+    kv.documentListWidget()->setCurrentRow(0);
+    QCoreApplication::processEvents();
+    kv.removeButton()->click();
+    QCoreApplication::processEvents();
+
+    EXPECT_EQ(0, kv.documentListWidget()->count());
+    EXPECT_EQ(0, kv.chunkListWidget()->count());
+    EXPECT_TRUE(kv.statusLabel()->text().contains("removed", Qt::CaseInsensitive));
+}
+
 } // anonymous namespace
 
 int main(int argc, char* argv[])
@@ -1164,6 +1237,7 @@ int main(int argc, char* argv[])
     test_settings_view_whisper_model_discovery();
     test_settings_view_transcription_language();
     test_main_window_whisper_lifecycle_and_safe_shutdown();
+    test_knowledge_base_view();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

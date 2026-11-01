@@ -179,7 +179,20 @@ public:
     bool deleteMemoryEntry(const std::string& id);
     std::vector<MemoryEntry> searchMemoryEntries(const std::string& query, int limit = 20);
 
-    // AI & System Diagnostics
+// Knowledge Base Operations
+    std::string importDocument(
+        const std::string& filename,
+        const std::string& originalPath,
+        const std::string& content,
+        std::string* outError = nullptr);
+    std::vector<DocumentRecord> listDocuments(int limit = 100);
+    std::optional<DocumentRecord> getDocument(const std::string& docId);
+    bool deleteDocument(const std::string& docId);
+    std::vector<DocumentChunkRecord> listDocumentChunks(const std::string& docId, int limit = 500);
+    std::vector<DocumentChunkRecord> searchKnowledgeChunks(const std::string& query, int limit = 5);
+    void getKnowledgeStats(int64_t* outDocCount, int64_t* outChunkCount);
+
+        // AI & System Diagnostics
     bool checkHealthSync(double timeoutSeconds = 2.0);
     std::vector<std::string> listModelsSync(double timeoutSeconds = 4.0);
     bool isModelAvailableSync(const std::string& modelName, double timeoutSeconds = 3.0);

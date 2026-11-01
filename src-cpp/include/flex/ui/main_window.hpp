@@ -8,6 +8,7 @@
 #include "flex/ui/navigation_sidebar.hpp"
 #include "flex/ui/projects_view.hpp"
 #include "flex/ui/prototype_view.hpp"
+#include "flex/ui/knowledge_view.hpp"
 #include "flex/ui/right_sidebar.hpp"
 #include "flex/ui/settings_view.hpp"
 #include "flex/ui/top_header_widget.hpp"
@@ -48,6 +49,7 @@ public:
     [[nodiscard]] std::shared_ptr<BackendCoordinator> coordinator() const { return m_coordinator; }
     [[nodiscard]] std::shared_ptr<voice::VoiceConversationController> voiceController() const { return m_voiceController; }
     [[nodiscard]] ChatView* chatView() const { return m_chatView; }
+    [[nodiscard]] KnowledgeView* knowledgeView() const { return m_knowledgeView; }
     [[nodiscard]] ConversationListWidget* conversationListWidget() const;
 
 public slots:
@@ -89,7 +91,7 @@ private:
     ChatView* m_chatView{nullptr};
     VoiceStudioView* m_voiceStudioView{nullptr};
     MemoryView* m_memoryView{nullptr};
-    PrototypeView* m_knowledgeView{nullptr};
+    KnowledgeView* m_knowledgeView{nullptr};
     ProjectsView* m_projectsView{nullptr};
     PrototypeView* m_toolsView{nullptr};
     SettingsView* m_settingsView{nullptr};

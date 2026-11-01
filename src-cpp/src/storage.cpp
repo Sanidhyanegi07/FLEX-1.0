@@ -1,4 +1,5 @@
 #include "flex/storage.hpp"
+#include "knowledge_chunker.h"
 #include "string_util.h"
 #include "memory_index.h"
 #include "sqlite_codec.h"
@@ -654,6 +655,313 @@ public:
         return results;
     }
 
+std::string saveDocument(
+        const std::string& filename,
+        const std::string& originalPath,
+        const std::string& content,
+        std::string* outError = nullptr)
+    {
+        if (content.empty()) {
+            if (outError) *outError = "Document content is empty.";
+            return {};
+        }
+
+        if (!flex_kb_validate_document_text(content.c_str(), content.length(), FLEX_KB_MAX_FILE_BYTES)) {
+            if (outError) *outError = "Document text is invalid, binary, or exceeds 10MB limit.";
+            return {};
+        }
+
+        // Normalize text
+        std::string normBuffer;
+        normBuffer.resize(content.length() + 16);
+        size_t normLen = flex_kb_normalize_text(content.c_str(), content.length(), &normBuffer[0], normBuffer.size());
+        normBuffer.resize(normLen);
+
+        if (normLen == 0) {
+            if (outError) *outError = "Document contains only whitespace.";
+            return {};
+        }
+
+        // Compute content hash
+        char hashBuf[16];
+        flex_kb_compute_content_hash(normBuffer.c_str(), normLen, hashBuf);
+        std::string contentHash(hashBuf);
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        // Check duplicate
+        QSqlQuery dupQuery(db);
+        dupQuery.prepare("SELECT id FROM documents WHERE content_hash = :hash LIMIT 1;");
+        dupQuery.bindValue(":hash", QString::fromStdString(contentHash));
+        if (dupQuery.exec() && dupQuery.next()) {
+            std::string existingId = dupQuery.value(0).toString().toStdString();
+            if (outError) *outError = "Duplicate document: identical content already exists in Knowledge Base.";
+            return existingId;
+        }
+
+        // Split chunks
+        std::vector<flex_kb_chunk_t> chunks(FLEX_KB_MAX_CHUNKS_PER_DOC);
+        flex_kb_chunk_config_t cfg = flex_kb_default_config();
+        size_t chunkCount = flex_kb_split_chunks(
+            normBuffer.c_str(), normLen, &cfg, chunks.data(), chunks.size());
+
+        if (chunkCount == 0) {
+            if (outError) *outError = "Failed to extract chunks from document.";
+            return {};
+        }
+
+        QString docId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QString now = utcNowIso();
+        QString cleanFilename = QString::fromStdString(filename.empty() ? "Untitled Document" : filename);
+        QString cleanPath = QString::fromStdString(originalPath);
+
+        if (!db.transaction()) {
+            throw StorageWriteError("Failed to begin transaction for document import");
+        }
+
+        QSqlQuery docQuery(db);
+        docQuery.prepare(
+            "INSERT INTO documents (id, filename, original_path, content_hash, file_size, chunk_count, created_at) "
+            "VALUES (:id, :filename, :original_path, :content_hash, :file_size, :chunk_count, :created_at);"
+        );
+        docQuery.bindValue(":id", docId);
+        docQuery.bindValue(":filename", cleanFilename);
+        docQuery.bindValue(":original_path", cleanPath);
+        docQuery.bindValue(":content_hash", QString::fromStdString(contentHash));
+        docQuery.bindValue(":file_size", static_cast<qint64>(content.length()));
+        docQuery.bindValue(":chunk_count", static_cast<qint64>(chunkCount));
+        docQuery.bindValue(":created_at", now);
+
+        if (!docQuery.exec()) {
+            db.rollback();
+            throw StorageWriteError("Failed to insert document: " + docQuery.lastError().text().toStdString());
+        }
+
+        QSqlQuery chunkQuery(db);
+        chunkQuery.prepare(
+            "INSERT INTO document_chunks (id, document_id, chunk_index, content, token_count, created_at) "
+            "VALUES (:id, :document_id, :chunk_index, :content, :token_count, :created_at);"
+        );
+
+        for (size_t i = 0; i < chunkCount; ++i) {
+            QString chunkId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            chunkQuery.bindValue(":id", chunkId);
+            chunkQuery.bindValue(":document_id", docId);
+            chunkQuery.bindValue(":chunk_index", static_cast<qint64>(chunks[i].chunk_index));
+            chunkQuery.bindValue(":content", QString::fromUtf8(chunks[i].content));
+            chunkQuery.bindValue(":token_count", static_cast<qint64>(chunks[i].estimated_tokens));
+            chunkQuery.bindValue(":created_at", now);
+
+            if (!chunkQuery.exec()) {
+                db.rollback();
+                throw StorageWriteError("Failed to insert document chunk: " + chunkQuery.lastError().text().toStdString());
+            }
+        }
+
+        if (!db.commit()) {
+            db.rollback();
+            throw StorageWriteError("Failed to commit document import: " + db.lastError().text().toStdString());
+        }
+
+        return docId.toStdString();
+    }
+
+    std::vector<DocumentRecord> listDocuments(int limit)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare(
+            "SELECT id, filename, original_path, content_hash, file_size, chunk_count, created_at "
+            "FROM documents ORDER BY created_at DESC LIMIT :limit;"
+        );
+        query.bindValue(":limit", std::max(1, limit));
+
+        if (!query.exec()) {
+            throw StorageReadError("Failed to list documents: " + query.lastError().text().toStdString());
+        }
+
+        std::vector<DocumentRecord> results;
+        while (query.next()) {
+            DocumentRecord doc;
+            doc.id = query.value(0).toString().toStdString();
+            doc.filename = query.value(1).toString().toStdString();
+            doc.originalPath = query.value(2).toString().toStdString();
+            doc.contentHash = query.value(3).toString().toStdString();
+            doc.fileSize = query.value(4).toLongLong();
+            doc.chunkCount = query.value(5).toLongLong();
+            doc.createdAt = query.value(6).toString().toStdString();
+            results.push_back(std::move(doc));
+        }
+        return results;
+    }
+
+    std::optional<DocumentRecord> getDocument(const std::string& docId)
+    {
+        if (docId.empty()) return std::nullopt;
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare(
+            "SELECT id, filename, original_path, content_hash, file_size, chunk_count, created_at "
+            "FROM documents WHERE id = :id LIMIT 1;"
+        );
+        query.bindValue(":id", QString::fromStdString(docId));
+
+        if (!query.exec() || !query.next()) {
+            return std::nullopt;
+        }
+
+        DocumentRecord doc;
+        doc.id = query.value(0).toString().toStdString();
+        doc.filename = query.value(1).toString().toStdString();
+        doc.originalPath = query.value(2).toString().toStdString();
+        doc.contentHash = query.value(3).toString().toStdString();
+        doc.fileSize = query.value(4).toLongLong();
+        doc.chunkCount = query.value(5).toLongLong();
+        doc.createdAt = query.value(6).toString().toStdString();
+        return doc;
+    }
+
+    bool deleteDocument(const std::string& docId)
+    {
+        if (docId.empty()) return false;
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        if (!db.transaction()) {
+            throw StorageWriteError("Failed to begin transaction for document deletion");
+        }
+
+        QSqlQuery chunkQuery(db);
+        chunkQuery.prepare("DELETE FROM document_chunks WHERE document_id = :id;");
+        chunkQuery.bindValue(":id", QString::fromStdString(docId));
+        chunkQuery.exec();
+
+        QSqlQuery docQuery(db);
+        docQuery.prepare("DELETE FROM documents WHERE id = :id;");
+        docQuery.bindValue(":id", QString::fromStdString(docId));
+        if (!docQuery.exec()) {
+            db.rollback();
+            throw StorageWriteError("Failed to delete document: " + docQuery.lastError().text().toStdString());
+        }
+
+        bool deleted = docQuery.numRowsAffected() > 0;
+        db.commit();
+        return deleted;
+    }
+
+    std::vector<DocumentChunkRecord> listDocumentChunks(const std::string& docId, int limit)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare(
+            "SELECT c.id, c.document_id, d.filename, c.chunk_index, c.content, c.token_count, c.created_at "
+            "FROM document_chunks c "
+            "JOIN documents d ON c.document_id = d.id "
+            "WHERE c.document_id = :doc_id "
+            "ORDER BY c.chunk_index ASC "
+            "LIMIT :limit;"
+        );
+        query.bindValue(":doc_id", QString::fromStdString(docId));
+        query.bindValue(":limit", std::max(1, limit));
+
+        if (!query.exec()) {
+            throw StorageReadError("Failed to list document chunks: " + query.lastError().text().toStdString());
+        }
+
+        std::vector<DocumentChunkRecord> results;
+        while (query.next()) {
+            DocumentChunkRecord chk;
+            chk.id = query.value(0).toString().toStdString();
+            chk.documentId = query.value(1).toString().toStdString();
+            chk.documentName = query.value(2).toString().toStdString();
+            chk.chunkIndex = query.value(3).toLongLong();
+            chk.content = query.value(4).toString().toStdString();
+            chk.tokenCount = query.value(5).toLongLong();
+            chk.createdAt = query.value(6).toString().toStdString();
+            results.push_back(std::move(chk));
+        }
+        return results;
+    }
+
+    std::vector<DocumentChunkRecord> searchKnowledgeChunks(const std::string& queryText, int limit)
+    {
+        std::string cleanQuery = normalizeString(queryText);
+        if (cleanQuery.empty()) {
+            return {};
+        }
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare(
+            "SELECT c.id, c.document_id, d.filename, c.chunk_index, c.content, c.token_count, c.created_at "
+            "FROM document_chunks c "
+            "JOIN documents d ON c.document_id = d.id "
+            "ORDER BY c.created_at DESC "
+            "LIMIT 200;"
+        );
+
+        if (!query.exec()) {
+            throw StorageReadError("Failed to search knowledge chunks: " + query.lastError().text().toStdString());
+        }
+
+        std::vector<DocumentChunkRecord> candidates;
+        while (query.next()) {
+            DocumentChunkRecord chk;
+            chk.id = query.value(0).toString().toStdString();
+            chk.documentId = query.value(1).toString().toStdString();
+            chk.documentName = query.value(2).toString().toStdString();
+            chk.chunkIndex = query.value(3).toLongLong();
+            chk.content = query.value(4).toString().toStdString();
+            chk.tokenCount = query.value(5).toLongLong();
+            chk.createdAt = query.value(6).toString().toStdString();
+
+            float score = flex_kb_score_chunk_relevance(cleanQuery.c_str(), chk.content.c_str());
+            chk.relevanceScore = score;
+            if (score > 0.4f) {
+                candidates.push_back(std::move(chk));
+            }
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const DocumentChunkRecord& a, const DocumentChunkRecord& b) {
+            return a.relevanceScore > b.relevanceScore;
+        });
+
+        if (static_cast<int>(candidates.size()) > limit) {
+            candidates.resize(limit);
+        }
+
+        return candidates;
+    }
+
+    void getKnowledgeStats(int64_t* outDocCount, int64_t* outChunkCount)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        if (outDocCount) {
+            QSqlQuery q(db);
+            q.exec("SELECT COUNT(*) FROM documents;");
+            *outDocCount = (q.next()) ? q.value(0).toLongLong() : 0;
+        }
+
+        if (outChunkCount) {
+            QSqlQuery q(db);
+            q.exec("SELECT COUNT(*) FROM document_chunks;");
+            *outChunkCount = (q.next()) ? q.value(0).toLongLong() : 0;
+        }
+    }
+
     int64_t getTotalMessageCount()
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -880,6 +1188,43 @@ private:
             }
         }
 
+        if (currentVer < 2) {
+            if (!query.exec("CREATE TABLE IF NOT EXISTS documents ("
+                            "id TEXT PRIMARY KEY, filename TEXT NOT NULL, "
+                            "original_path TEXT NOT NULL, content_hash TEXT NOT NULL, "
+                            "file_size INTEGER NOT NULL, chunk_count INTEGER NOT NULL, "
+                            "created_at TEXT NOT NULL);")) {
+                db.rollback();
+                throw StorageInitError("Failed to create documents table: " + query.lastError().text().toStdString());
+            }
+
+            if (!query.exec("CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);")) {
+                db.rollback();
+                throw StorageInitError("Failed to create documents hash index: " + query.lastError().text().toStdString());
+            }
+
+            if (!query.exec("CREATE TABLE IF NOT EXISTS document_chunks ("
+                            "id TEXT PRIMARY KEY, document_id TEXT NOT NULL, "
+                            "chunk_index INTEGER NOT NULL, content TEXT NOT NULL, "
+                            "token_count INTEGER NOT NULL, created_at TEXT NOT NULL, "
+                            "FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE);")) {
+                db.rollback();
+                throw StorageInitError("Failed to create document_chunks table: " + query.lastError().text().toStdString());
+            }
+
+            if (!query.exec("CREATE INDEX IF NOT EXISTS idx_chunks_doc_idx ON document_chunks(document_id, chunk_index ASC);")) {
+                db.rollback();
+                throw StorageInitError("Failed to create document_chunks index: " + query.lastError().text().toStdString());
+            }
+
+            query.prepare("INSERT INTO schema_version (version, applied_at) VALUES (2, :applied_at);");
+            query.bindValue(":applied_at", utcNowIso());
+            if (!query.exec()) {
+                db.rollback();
+                throw StorageInitError("Failed to record schema version 2: " + query.lastError().text().toStdString());
+            }
+        }
+
         if (!db.commit()) {
             db.rollback();
             throw StorageInitError("Failed to commit migration transaction: " + db.lastError().text().toStdString());
@@ -1086,6 +1431,45 @@ std::string ConversationStorage::getDefaultDatabasePath()
     }
 
     return QDir::cleanPath(QDir(baseDir).filePath("conversations.db")).toStdString();
+}
+
+std::string ConversationStorage::saveDocument(
+    const std::string& filename,
+    const std::string& originalPath,
+    const std::string& content,
+    std::string* outError)
+{
+    return m_impl->saveDocument(filename, originalPath, content, outError);
+}
+
+std::vector<DocumentRecord> ConversationStorage::listDocuments(int limit)
+{
+    return m_impl->listDocuments(limit);
+}
+
+std::optional<DocumentRecord> ConversationStorage::getDocument(const std::string& docId)
+{
+    return m_impl->getDocument(docId);
+}
+
+bool ConversationStorage::deleteDocument(const std::string& docId)
+{
+    return m_impl->deleteDocument(docId);
+}
+
+std::vector<DocumentChunkRecord> ConversationStorage::listDocumentChunks(const std::string& docId, int limit)
+{
+    return m_impl->listDocumentChunks(docId, limit);
+}
+
+std::vector<DocumentChunkRecord> ConversationStorage::searchKnowledgeChunks(const std::string& query, int limit)
+{
+    return m_impl->searchKnowledgeChunks(query, limit);
+}
+
+void ConversationStorage::getKnowledgeStats(int64_t* outDocCount, int64_t* outChunkCount)
+{
+    m_impl->getKnowledgeStats(outDocCount, outChunkCount);
 }
 
 } // namespace flex

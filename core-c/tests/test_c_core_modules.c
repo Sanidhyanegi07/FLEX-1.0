@@ -1958,6 +1958,70 @@ static void test_string_util_suite(int *total_run, int *total_passed, int *total
     C_ASSERT(clen == 3, "Truncated length matches");
 }
 
+static void test_knowledge_chunker_suite(int *total_run, int *total_passed, int *total_failed) {
+    printf("[Testing Knowledge Chunker & Processor]...\n");
+
+    /* 1. Default config */
+    flex_kb_chunk_config_t cfg = flex_kb_default_config();
+    C_ASSERT(cfg.target_chunk_chars == 500, "Default target chunk 500 chars");
+    C_ASSERT(cfg.overlap_chars == 80, "Default overlap 80 chars");
+    C_ASSERT(cfg.min_chunk_chars == 40, "Default min chunk 40 chars");
+
+    /* 2. Validation */
+    C_ASSERT(!flex_kb_validate_document_text(NULL, 0, 1024), "Null text rejected");
+    C_ASSERT(!flex_kb_validate_document_text("", 0, 1024), "Empty text rejected");
+    C_ASSERT(!flex_kb_validate_document_text("Hello", 5, 4), "Oversized text rejected");
+    char binary_buf[16] = {'H', 'e', 'l', 'l', 'o', 0, 'W', 'o', 'r', 'l', 'd'};
+    C_ASSERT(!flex_kb_validate_document_text(binary_buf, 11, 1024), "Binary null byte rejected");
+    const char* valid_doc = "# FLEX 1.0 Architecture\nFLEX 1.0 is an offline-first AI desktop companion.";
+    C_ASSERT(flex_kb_validate_document_text(valid_doc, strlen(valid_doc), 1024), "Valid markdown doc accepted");
+
+    /* 3. Text normalization */
+    char norm_buf[256];
+    const char* crlf_text = "  Line 1\r\n\r\n\r\nLine 2\r\n  ";
+    size_t nlen = flex_kb_normalize_text(crlf_text, strlen(crlf_text), norm_buf, sizeof(norm_buf));
+    C_ASSERT(nlen > 0, "Normalization produced output");
+    C_ASSERT(strstr(norm_buf, "\r") == NULL, "CR characters stripped");
+    C_ASSERT(strstr(norm_buf, "\n\n\n") == NULL, "Excessive newlines collapsed");
+
+    /* 4. Chunk splitting with boundary awareness & overlap */
+    const char* sample_article =
+        "The quick brown fox jumps over the lazy dog. "
+        "Knowledge retrieval empowers local LLMs with accurate contextual ground truth. "
+        "By decomposing long engineering documents into coherent chunks, "
+        "the agent avoids hallucinations and preserves precise structural details.\n\n"
+        "Subsystem verification ensures that bounded memory buffers prevent memory leaks, "
+        "and deterministic C pipelines deliver predictable performance across Windows desktop workloads.";
+
+    flex_kb_chunk_config_t test_cfg;
+    test_cfg.target_chunk_chars = 120;
+    test_cfg.overlap_chars = 30;
+    test_cfg.min_chunk_chars = 40;
+
+    flex_kb_chunk_t chunks[16];
+    size_t chunk_count = flex_kb_split_chunks(sample_article, strlen(sample_article), &test_cfg, chunks, 16);
+    C_ASSERT(chunk_count >= 3, "Sample article split into multiple chunks");
+    C_ASSERT(chunks[0].chunk_index == 0, "Chunk 0 index is 0");
+    C_ASSERT(chunks[0].char_count > 0, "Chunk 0 has non-zero length");
+    C_ASSERT(chunks[0].estimated_tokens > 0, "Chunk 0 estimated tokens calculated");
+
+    /* 5. Relevance scoring */
+    float s1 = flex_kb_score_chunk_relevance("quick brown fox", chunks[0].content);
+    float s2 = flex_kb_score_chunk_relevance("completely unrelated quantum teleportation", chunks[0].content);
+    C_ASSERT(s1 > 3.0f, "Relevant query scores high on chunk 0");
+    C_ASSERT(s2 < 0.1f, "Unrelated query scores zero");
+
+    /* 6. Content hashing */
+    char hash1[16];
+    char hash2[16];
+    char hash3[16];
+    flex_kb_compute_content_hash(valid_doc, strlen(valid_doc), hash1);
+    flex_kb_compute_content_hash(valid_doc, strlen(valid_doc), hash2);
+    flex_kb_compute_content_hash("Different document content", 26, hash3);
+    C_ASSERT_STR_EQ(hash1, hash2, "Identical content yields identical hash");
+    C_ASSERT(strcmp(hash1, hash3) != 0, "Different content yields distinct hash");
+}
+
 void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total_failed) {
     printf("\n=== Running Extended C11 Core Subsystem Tests ===\n");
     test_request_validator_suite(total_run, total_passed, total_failed);
@@ -2002,5 +2066,6 @@ void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total
     test_bloom_filter_suite(total_run, total_passed, total_failed);
     test_kv_store_suite(total_run, total_passed, total_failed);
     test_string_util_suite(total_run, total_passed, total_failed);
+    test_knowledge_chunker_suite(total_run, total_passed, total_failed);
     printf("Extended C11 Core Subsystem Tests completed.\n\n");
 }

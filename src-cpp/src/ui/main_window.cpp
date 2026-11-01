@@ -190,21 +190,8 @@ void MainWindow::setupUi()
     });
     m_viewStack->addWidget(m_memoryView);
 
-    // 3: Knowledge Base (Truthful Prototype Specification)
-    m_knowledgeView = new PrototypeView(
-        "Knowledge Base",
-        "📚",
-        "● STATUS: PLANNED FOR STAGE 2",
-        Theme::StatusWarning,
-        "Retrieval-augmented generation (RAG) system for indexing local documentation, PDFs, and codebase repositories.",
-        "Document parsing, chunking, and vector index ingestion are architectural components planned for subsequent stages.",
-        {
-            "Document file ingestion and PDF parsing are not implemented in Stage 1.",
-            "Local vector index and semantic search are not implemented.",
-            "Context injection into AI inference is limited to in-memory conversation history."
-        },
-        m_viewStack
-    );
+    // 3: Knowledge Base
+    m_knowledgeView = new KnowledgeView(m_coordinator, m_viewStack);
     m_viewStack->addWidget(m_knowledgeView);
 
     // 4: Projects & Files
@@ -264,6 +251,7 @@ void MainWindow::switchView(const QString& viewKey)
         m_memoryView->refreshConversations();
         m_viewStack->setCurrentWidget(m_memoryView);
     } else if (viewKey == "knowledge") {
+        m_knowledgeView->refreshDocuments();
         m_viewStack->setCurrentWidget(m_knowledgeView);
     } else if (viewKey == "projects") {
         m_viewStack->setCurrentWidget(m_projectsView);

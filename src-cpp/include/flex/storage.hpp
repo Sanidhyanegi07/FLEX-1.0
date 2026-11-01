@@ -103,6 +103,45 @@ struct MemoryEntry {
     }
 };
 
+/**
+ * Representation of an imported knowledge document record.
+ */
+struct DocumentRecord {
+    std::string id;
+    std::string filename;
+    std::string originalPath;
+    std::string contentHash;
+    int64_t fileSize{0};
+    int64_t chunkCount{0};
+    std::string createdAt;
+
+    bool operator==(const DocumentRecord& other) const noexcept {
+        return id == other.id && filename == other.filename &&
+               originalPath == other.originalPath && contentHash == other.contentHash &&
+               fileSize == other.fileSize && chunkCount == other.chunkCount &&
+               createdAt == other.createdAt;
+    }
+};
+
+/**
+ * Representation of a stored knowledge document chunk.
+ */
+struct DocumentChunkRecord {
+    std::string id;
+    std::string documentId;
+    std::string documentName;
+    int64_t chunkIndex{0};
+    std::string content;
+    int64_t tokenCount{0};
+    std::string createdAt;
+    float relevanceScore{0.0f};
+
+    bool operator==(const DocumentChunkRecord& other) const noexcept {
+        return id == other.id && documentId == other.documentId &&
+               chunkIndex == other.chunkIndex && content == other.content;
+    }
+};
+
 class ConversationStorageImpl;
 
 /**
@@ -111,7 +150,7 @@ class ConversationStorageImpl;
  */
 class ConversationStorage {
 public:
-    static constexpr int CURRENT_SCHEMA_VERSION = 1;
+    static constexpr int CURRENT_SCHEMA_VERSION = 2;
     static constexpr int DEFAULT_BUSY_TIMEOUT_MS = 5000;
     static inline const std::string DEFAULT_CONVERSATION_TITLE = "New Chat";
 
@@ -174,6 +213,19 @@ public:
         const std::string& category = "general");
     bool deleteMemoryEntry(const std::string& id);
     std::vector<MemoryEntry> searchMemoryEntries(const std::string& query, int limit = 20);
+
+// Knowledge Base Operations
+    std::string saveDocument(
+        const std::string& filename,
+        const std::string& originalPath,
+        const std::string& content,
+        std::string* outError = nullptr);
+    std::vector<DocumentRecord> listDocuments(int limit = 100);
+    std::optional<DocumentRecord> getDocument(const std::string& docId);
+    bool deleteDocument(const std::string& docId);
+    std::vector<DocumentChunkRecord> listDocumentChunks(const std::string& docId, int limit = 500);
+    std::vector<DocumentChunkRecord> searchKnowledgeChunks(const std::string& query, int limit = 5);
+    void getKnowledgeStats(int64_t* outDocCount, int64_t* outChunkCount);
 
     void close();
 

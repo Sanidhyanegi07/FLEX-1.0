@@ -181,3 +181,93 @@ const char* flex_file_category_name(flex_file_category_t cat) {
     }
 }
 
+bool flex_workspace_is_supported_doc_ext(const char* filepath) {
+    if (!filepath) return false;
+    const char* dot = strrchr(filepath, '.');
+    if (!dot) return false;
+
+    if (strcmp(dot, ".txt") == 0 || strcmp(dot, ".TXT") == 0) return true;
+    if (strcmp(dot, ".md") == 0 || strcmp(dot, ".MD") == 0) return true;
+    if (strcmp(dot, ".markdown") == 0) return true;
+    return false;
+}
+
+bool flex_workspace_split_path(
+    const char* full_path,
+    char* out_dir,
+    size_t dir_cap,
+    char* out_basename,
+    size_t base_cap,
+    char* out_ext,
+    size_t ext_cap
+) {
+    if (!full_path) return false;
+
+    const char* last_slash = strrchr(full_path, '/');
+    const char* last_bslash = strrchr(full_path, '\\');
+    const char* sep = (last_slash > last_bslash) ? last_slash : last_bslash;
+
+    const char* filename = sep ? (sep + 1) : full_path;
+
+    if (out_dir && dir_cap > 0) {
+        if (sep) {
+            size_t dlen = sep - full_path;
+            if (dlen >= dir_cap) dlen = dir_cap - 1;
+            memcpy(out_dir, full_path, dlen);
+            out_dir[dlen] = '\0';
+        } else {
+            out_dir[0] = '.';
+            out_dir[1] = '\0';
+        }
+    }
+
+    const char* dot = strrchr(filename, '.');
+    if (out_basename && base_cap > 0) {
+        size_t blen = dot ? (size_t)(dot - filename) : strlen(filename);
+        if (blen >= base_cap) blen = base_cap - 1;
+        memcpy(out_basename, filename, blen);
+        out_basename[blen] = '\0';
+    }
+
+    if (out_ext && ext_cap > 0) {
+        if (dot) {
+            strncpy(out_ext, dot, ext_cap - 1);
+            out_ext[ext_cap - 1] = '\0';
+        } else {
+            out_ext[0] = '\0';
+        }
+    }
+
+    return true;
+}
+
+int flex_workspace_detect_text_encoding(
+    const unsigned char* buffer,
+    size_t len
+) {
+    if (!buffer || len == 0) return 0;
+
+    /* UTF-8 BOM */
+    if (len >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) {
+        return 1;
+    }
+
+    /* UTF-16LE BOM */
+    if (len >= 2 && buffer[0] == 0xFF && buffer[1] == 0xFE) {
+        return 2;
+    }
+
+    /* UTF-16BE BOM */
+    if (len >= 2 && buffer[0] == 0xFE && buffer[1] == 0xFF) {
+        return 3;
+    }
+
+    /* Check for null bytes */
+    for (size_t i = 0; i < len; ++i) {
+        if (buffer[i] == 0) {
+            return -1; /* Binary */
+        }
+    }
+
+    return 0; /* Plain UTF-8 / ASCII */
+}

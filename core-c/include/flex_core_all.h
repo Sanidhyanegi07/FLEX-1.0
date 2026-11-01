@@ -47,5 +47,6 @@
 #include "bloom_filter.h"
 #include "kv_store.h"
 #include "string_util.h"
+#include "knowledge_chunker.h"
 
 #endif /* FLEX_CORE_ALL_H */

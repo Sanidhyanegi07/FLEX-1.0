@@ -87,6 +87,7 @@ add_library(flex_core_c STATIC
     core-c/src/bloom_filter.c
     core-c/src/kv_store.c
     core-c/src/string_util.c
+    core-c/src/knowledge_chunker.c
 )
 
 target_include_directories(flex_core_c PUBLIC
@@ -243,6 +244,7 @@ if(FLEX_BUILD_DESKTOP OR FLEX_BUILD_TESTS)
         src-cpp/include/flex/ui/navigation_sidebar.hpp
         src-cpp/include/flex/ui/right_sidebar.hpp
         src-cpp/include/flex/ui/prototype_view.hpp
+        src-cpp/include/flex/ui/knowledge_view.hpp
         src-cpp/include/flex/ui/voice_studio_view.hpp
         src-cpp/include/flex/ui/memory_view.hpp
         src-cpp/include/flex/ui/projects_view.hpp
@@ -257,6 +259,7 @@ if(FLEX_BUILD_DESKTOP OR FLEX_BUILD_TESTS)
         src-cpp/src/ui/navigation_sidebar.cpp
         src-cpp/src/ui/right_sidebar.cpp
         src-cpp/src/ui/prototype_view.cpp
+        src-cpp/src/ui/knowledge_view.cpp
         src-cpp/src/ui/voice_studio_view.cpp
         src-cpp/src/ui/memory_view.cpp
         src-cpp/src/ui/projects_view.cpp

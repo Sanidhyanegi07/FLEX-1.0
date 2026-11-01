@@ -299,6 +299,30 @@ public:
         } catch (...) {
             // Memory retrieval non-blocking fallback
         }
+try {
+            auto recalledChunks = m_storage->searchKnowledgeChunks(cleanMsg, 3);
+            if (!recalledChunks.empty()) {
+                std::string kbBlock = "\n\n[Reference Knowledge Base Context (Untrusted Reference Material)]:\n";
+                size_t charBudget = 1500;
+                size_t currentChars = 0;
+                for (const auto& chunk : recalledChunks) {
+                    std::string snippet = "--- Document: " + chunk.documentName + " (Chunk " + std::to_string(chunk.chunkIndex) + ") ---\n" + chunk.content + "\n";
+                    if (currentChars + snippet.length() > charBudget && currentChars > 0) {
+                        break;
+                    }
+                    kbBlock += snippet;
+                    currentChars += snippet.length();
+                }
+                if (!ollamaMessages.empty() && ollamaMessages.front().role == "system") {
+                    ollamaMessages.front().content += kbBlock;
+                } else {
+                    ollamaMessages.insert(ollamaMessages.begin(), ChatMessage{"system", sysPrompt + kbBlock});
+                }
+            }
+        } catch (...) {
+            // Knowledge retrieval non-blocking fallback
+        }
+
         try {
             auto historyRecords = m_storage->getMessages(targetCid, histLimit);
             for (auto& rec : historyRecords) {
@@ -830,7 +854,56 @@ std::vector<MemoryEntry> BackendCoordinator::searchMemoryEntries(const std::stri
 
 
 
+std::string BackendCoordinator::importDocument(
+    const std::string& filename,
+    const std::string& originalPath,
+    const std::string& content,
+    std::string* outError)
+{
+    if (!m_impl->storage()) return {};
+    return m_impl->storage()->saveDocument(filename, originalPath, content, outError);
+}
+
+std::vector<DocumentRecord> BackendCoordinator::listDocuments(int limit)
+{
+    if (!m_impl->storage()) return {};
+    return m_impl->storage()->listDocuments(limit);
+}
+
+std::optional<DocumentRecord> BackendCoordinator::getDocument(const std::string& docId)
+{
+    if (!m_impl->storage()) return std::nullopt;
+    return m_impl->storage()->getDocument(docId);
+}
+
+bool BackendCoordinator::deleteDocument(const std::string& docId)
+{
+    if (!m_impl->storage()) return false;
+    return m_impl->storage()->deleteDocument(docId);
+}
+
+std::vector<DocumentChunkRecord> BackendCoordinator::listDocumentChunks(const std::string& docId, int limit)
+{
+    if (!m_impl->storage()) return {};
+    return m_impl->storage()->listDocumentChunks(docId, limit);
+}
+
+std::vector<DocumentChunkRecord> BackendCoordinator::searchKnowledgeChunks(const std::string& query, int limit)
+{
+    if (!m_impl->storage()) return {};
+    return m_impl->storage()->searchKnowledgeChunks(query, limit);
+}
+
+void BackendCoordinator::getKnowledgeStats(int64_t* outDocCount, int64_t* outChunkCount)
+{
+    if (!m_impl->storage()) {
+        if (outDocCount) *outDocCount = 0;
+        if (outChunkCount) *outChunkCount = 0;
+        return;
+    }
+    m_impl->storage()->getKnowledgeStats(outDocCount, outChunkCount);
+}
+
 } // namespace flex
 
 #include "moc_backend.cpp"
-
