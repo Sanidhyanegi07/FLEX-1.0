@@ -659,9 +659,6 @@ void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error
     }
     updateCoreStateDisplay();
 }
-    m_chatView->showErrorBanner(errStr);
-    updateCoreStateDisplay();
-}
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
