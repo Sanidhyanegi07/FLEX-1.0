@@ -57,6 +57,7 @@ public slots:
     void handleDeleteConversation(const QString& conversationId);
     void refreshConversations();
     void checkAiConnectivity();
+    void onSettingsUpdated();
     void switchView(const QString& viewKey);
 
 protected:

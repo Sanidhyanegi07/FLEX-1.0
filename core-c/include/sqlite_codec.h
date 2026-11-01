@@ -68,6 +68,34 @@ size_t flex_sql_build_search_messages_query(
     int limit
 );
 
+/**
+ * Builds a SQL query to list memory entries ordered by updated_at descending with limit.
+ */
+size_t flex_sql_build_list_memories_query(
+    char* out_buf,
+    size_t buf_cap,
+    int limit
+);
+
+/**
+ * Builds a SQL query to delete a memory entry by ID.
+ */
+size_t flex_sql_build_delete_memory_query(
+    char* out_buf,
+    size_t buf_cap,
+    const char* memory_id
+);
+
+/**
+ * Builds a SQL query to search memory entries by key, content, or category.
+ */
+size_t flex_sql_build_search_memories_query(
+    char* out_buf,
+    size_t buf_cap,
+    const char* query,
+    int limit
+);
+
 #ifdef __cplusplus
 }
 #endif

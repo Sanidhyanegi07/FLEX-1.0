@@ -159,6 +159,16 @@ flex_cfg_status_t flex_validate_endpoint_url(
 );
 
 /**
+ * Extracts and validates host and port from an endpoint URL.
+ */
+flex_cfg_status_t flex_parse_endpoint_host_port(
+    const char* url,
+    char* out_host,
+    size_t host_size,
+    int* out_port
+);
+
+/**
  * Validates inference temperature (0.0 to 2.0).
  */
 flex_cfg_status_t flex_validate_temperature(

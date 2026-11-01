@@ -140,8 +140,23 @@ void SettingsView::setupUi()
     m_testResultLabel->setStyleSheet("font-size: 11px; color: #94A3B8;");
     formLayout->addRow("", m_testResultLabel);
 
-    m_modelEdit = new QLineEdit("qwen2.5-coder:3b", formCard);
-    formLayout->addRow("Active Model Name:", m_modelEdit);
+    auto* ollamaModelRow = new QHBoxLayout();
+    m_ollamaModelCombo = new QComboBox(formCard);
+    m_ollamaModelCombo->setEditable(true);
+    m_ollamaModelCombo->setCursor(Qt::PointingHandCursor);
+    m_ollamaModelCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_modelEdit = m_ollamaModelCombo->lineEdit();
+    if (m_modelEdit) {
+        m_modelEdit->setText("qwen2.5-coder:3b");
+    }
+
+    m_ollamaRefreshBtn = new QPushButton("Fetch Models", formCard);
+    m_ollamaRefreshBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_ollamaRefreshBtn, &QPushButton::clicked, this, &SettingsView::onFetchOllamaModelsClicked);
+
+    ollamaModelRow->addWidget(m_ollamaModelCombo, 1);
+    ollamaModelRow->addWidget(m_ollamaRefreshBtn);
+    formLayout->addRow("Active Model Name:", ollamaModelRow);
 
     m_tempSpin = new QDoubleSpinBox(formCard);
     m_tempSpin->setRange(0.0, 2.0);
@@ -307,7 +322,17 @@ void SettingsView::loadCurrentConfig()
     const auto& s = loadRes.settings;
 
     if (m_endpointEdit) m_endpointEdit->setText(QString::fromStdString(s.ollamaEndpoint));
-    if (m_modelEdit) m_modelEdit->setText(QString::fromStdString(s.ollamaModel));
+    if (m_ollamaModelCombo) {
+        m_ollamaModelCombo->blockSignals(true);
+        QString modelName = QString::fromStdString(s.ollamaModel);
+        if (m_ollamaModelCombo->findText(modelName) < 0) {
+            m_ollamaModelCombo->addItem(modelName);
+        }
+        m_ollamaModelCombo->setCurrentText(modelName);
+        m_ollamaModelCombo->blockSignals(false);
+    } else if (m_modelEdit) {
+        m_modelEdit->setText(QString::fromStdString(s.ollamaModel));
+    }
     if (m_tempSpin) m_tempSpin->setValue(s.ollamaTemperature);
     if (m_numCtxSpin) m_numCtxSpin->setValue(s.ollamaNumCtx);
     if (m_timeoutSpin) m_timeoutSpin->setValue(s.ollamaTimeout);
@@ -595,25 +620,63 @@ void SettingsView::updateLanguageCompatibilityDisplay()
 
 void SettingsView::onTestConnectionClicked()
 {
+    onFetchOllamaModelsClicked();
+}
+
+void SettingsView::onFetchOllamaModelsClicked()
+{
     if (!m_coordinator) {
         return;
     }
 
-    m_testResultLabel->setText("⏳ Testing connection to daemon...");
+    QString endpoint = m_endpointEdit ? m_endpointEdit->text().trimmed() : QString();
+    if (endpoint.isEmpty()) {
+        m_testResultLabel->setText("✕ Endpoint URL cannot be empty");
+        m_testResultLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusError));
+        return;
+    }
+
+    m_testResultLabel->setText("⏳ Testing connection and fetching models...");
     m_testResultLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusWarning));
 
     auto coord = m_coordinator;
-    auto* thread = QThread::create([this, coord]() {
+    auto* thread = QThread::create([this, coord, endpoint]() {
         bool ok = false;
+        std::vector<std::string> models;
         try {
-            ok = coord->checkHealthSync(2.0);
+            if (coord->ollamaClient()) {
+                coord->ollamaClient()->setBaseUrl(endpoint.toStdString());
+                ok = coord->checkHealthSync(2.0);
+                if (ok) {
+                    models = coord->ollamaClient()->listModelsSync(4.0);
+                }
+            }
         } catch (...) {
             ok = false;
         }
 
-        QMetaObject::invokeMethod(this, [this, ok]() {
+        QMetaObject::invokeMethod(this, [this, ok, models]() {
             if (ok) {
-                m_testResultLabel->setText("✓ Connection successful (Daemon reachable)");
+                QString prevModel = m_ollamaModelCombo ? m_ollamaModelCombo->currentText().trimmed() : (m_modelEdit ? m_modelEdit->text().trimmed() : QString());
+                if (m_ollamaModelCombo) {
+                    m_ollamaModelCombo->blockSignals(true);
+                    m_ollamaModelCombo->clear();
+                    for (const auto& m : models) {
+                        m_ollamaModelCombo->addItem(QString::fromStdString(m));
+                    }
+                    if (!prevModel.isEmpty()) {
+                        int idx = m_ollamaModelCombo->findText(prevModel, Qt::MatchExactly);
+                        if (idx >= 0) {
+                            m_ollamaModelCombo->setCurrentIndex(idx);
+                        } else {
+                            m_ollamaModelCombo->setEditText(prevModel);
+                        }
+                    } else if (m_ollamaModelCombo->count() > 0) {
+                        m_ollamaModelCombo->setCurrentIndex(0);
+                    }
+                    m_ollamaModelCombo->blockSignals(false);
+                }
+                m_testResultLabel->setText(QString("✓ Connected (%1 model%2 found)").arg(models.size()).arg(models.size() == 1 ? "" : "s"));
                 m_testResultLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
             } else {
                 m_testResultLabel->setText("✕ Connection failed (Make sure `ollama serve` is running)");
@@ -629,7 +692,7 @@ void SettingsView::onSaveClicked()
 {
     AppSettings newSettings;
     newSettings.ollamaEndpoint = m_endpointEdit->text().trimmed().toStdString();
-    newSettings.ollamaModel = m_modelEdit->text().trimmed().toStdString();
+    newSettings.ollamaModel = m_ollamaModelCombo ? m_ollamaModelCombo->currentText().trimmed().toStdString() : m_modelEdit->text().trimmed().toStdString();
     newSettings.ollamaTemperature = m_tempSpin->value();
     newSettings.ollamaNumCtx = m_numCtxSpin->value();
     newSettings.ollamaTimeout = m_timeoutSpin->value();
@@ -724,8 +787,16 @@ void SettingsView::onSaveClicked()
 void SettingsView::onResetClicked()
 {
     AppSettings defaults;
-    m_endpointEdit->setText(QString::fromStdString(defaults.ollamaEndpoint));
-    m_modelEdit->setText(QString::fromStdString(defaults.ollamaModel));
+    if (m_endpointEdit) m_endpointEdit->setText(QString::fromStdString(defaults.ollamaEndpoint));
+    if (m_ollamaModelCombo) {
+        m_ollamaModelCombo->blockSignals(true);
+        m_ollamaModelCombo->clear();
+        m_ollamaModelCombo->addItem(QString::fromStdString(defaults.ollamaModel));
+        m_ollamaModelCombo->setCurrentText(QString::fromStdString(defaults.ollamaModel));
+        m_ollamaModelCombo->blockSignals(false);
+    } else if (m_modelEdit) {
+        m_modelEdit->setText(QString::fromStdString(defaults.ollamaModel));
+    }
     m_tempSpin->setValue(defaults.ollamaTemperature);
     m_numCtxSpin->setValue(defaults.ollamaNumCtx);
     m_timeoutSpin->setValue(defaults.ollamaTimeout);

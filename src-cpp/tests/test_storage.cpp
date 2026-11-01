@@ -616,6 +616,74 @@ void test_settings_persistence()
     qunsetenv("FLEX_CONFIG_PATH");
 }
 
+void test_persistent_memory_facts()
+{
+    std::cout << "[Test 13] Persistent Memory: CRUD, search, and restart verification...\n";
+    QTemporaryDir tempDir;
+    EXPECT_TRUE(tempDir.isValid());
+    std::string dbPath = tempDir.filePath("memory_test.db").toStdString();
+
+    // 1. Create and Save Memory Entries
+    std::string id1, id2;
+    {
+        flex::ConversationStorage storage(dbPath);
+        id1 = storage.saveMemoryEntry("Language Preference", "Prefers C11 and C++17 with zero Python dependencies", "preference");
+        EXPECT_FALSE(id1.empty());
+
+        id2 = storage.saveMemoryEntry("Assistant Goal", "FLEX 1.0 Native Windows Desktop AI Assistant", "project");
+        EXPECT_FALSE(id2.empty());
+
+        auto list = storage.listMemoryEntries();
+        EXPECT_EQ(2, list.size());
+
+        auto opt1 = storage.getMemoryEntry(id1);
+        EXPECT_TRUE(opt1.has_value());
+        EXPECT_STR_EQ("Language Preference", opt1->key);
+        EXPECT_STR_EQ("preference", opt1->category);
+
+        // 2. Search
+        auto found = storage.searchMemoryEntries("C11");
+        EXPECT_EQ(1, found.size());
+        EXPECT_STR_EQ(id1, found[0].id);
+
+        // 3. Update
+        bool updated = storage.updateMemoryEntry(id1, "Language Preference", "Prefers C11, C++17, and Qt 6", "preference");
+        EXPECT_TRUE(updated);
+
+        auto optUpdated = storage.getMemoryEntry(id1);
+        EXPECT_TRUE(optUpdated.has_value());
+        EXPECT_STR_EQ("Prefers C11, C++17, and Qt 6", optUpdated->content);
+
+        // 4. Input validation (empty key rejected)
+        bool threw = false;
+        try {
+            storage.saveMemoryEntry("", "content");
+        } catch (const flex::StorageWriteError&) {
+            threw = true;
+        }
+        EXPECT_TRUE(threw);
+    }
+
+    // 5. Verification Across Restart
+    {
+        flex::ConversationStorage storageRestarted(dbPath);
+        auto list = storageRestarted.listMemoryEntries();
+        EXPECT_EQ(2, list.size());
+
+        auto opt1 = storageRestarted.getMemoryEntry(id1);
+        EXPECT_TRUE(opt1.has_value());
+        EXPECT_STR_EQ("Prefers C11, C++17, and Qt 6", opt1->content);
+
+        // 6. Delete
+        bool deleted = storageRestarted.deleteMemoryEntry(id2);
+        EXPECT_TRUE(deleted);
+
+        auto listAfterDel = storageRestarted.listMemoryEntries();
+        EXPECT_EQ(1, listAfterDel.size());
+        EXPECT_STR_EQ(id1, listAfterDel[0].id);
+    }
+}
+
 } // anonymous namespace
 
 int main(int argc, char *argv[])
@@ -638,6 +706,7 @@ int main(int argc, char *argv[])
     test_auto_titling();
     test_search_and_counts();
     test_settings_persistence();
+    test_persistent_memory_facts();
 
     std::cout << "\n========================================================\n";
     std::cout << "Test Summary:\n";

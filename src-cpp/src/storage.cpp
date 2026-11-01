@@ -1,5 +1,7 @@
 #include "flex/storage.hpp"
 #include "string_util.h"
+#include "memory_index.h"
+#include "sqlite_codec.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -458,6 +460,200 @@ public:
         return query.value(0).toLongLong();
     }
 
+    std::string saveMemoryEntry(
+        const std::string& key,
+        const std::string& content,
+        const std::string& category,
+        const std::optional<std::string>& id)
+    {
+        std::string cleanKey = normalizeString(key);
+        std::string cleanContent = normalizeString(content);
+        std::string cleanCat = category.empty() ? "general" : normalizeString(category);
+
+        if (!flex_mem_validate_fact(cleanKey.c_str(), cleanContent.c_str(), cleanCat.c_str())) {
+            throw StorageWriteError("Invalid memory fact: key and content must be non-empty within length limits.");
+        }
+
+        std::string memId = id.has_value() ? normalizeString(id.value())
+                                            : QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+        std::string nowIso = utcNowIso().toStdString();
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare(
+            "INSERT INTO memory_entries (id, key, content, category, created_at, updated_at) "
+            "VALUES (:id, :key, :content, :category, :created_at, :updated_at) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "  key = excluded.key, "
+            "  content = excluded.content, "
+            "  category = excluded.category, "
+            "  updated_at = excluded.updated_at;"
+        );
+        query.bindValue(":id", QString::fromStdString(memId));
+        query.bindValue(":key", QString::fromStdString(cleanKey));
+        query.bindValue(":content", QString::fromStdString(cleanContent));
+        query.bindValue(":category", QString::fromStdString(cleanCat));
+        query.bindValue(":created_at", QString::fromStdString(nowIso));
+        query.bindValue(":updated_at", QString::fromStdString(nowIso));
+
+        if (!query.exec()) {
+            throw StorageWriteError("Failed to save memory entry: " + query.lastError().text().toStdString());
+        }
+        return memId;
+    }
+
+    std::vector<MemoryEntry> listMemoryEntries(int limit)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare("SELECT id, key, content, category, created_at, updated_at FROM memory_entries ORDER BY updated_at DESC LIMIT :limit;");
+        query.bindValue(":limit", std::max(1, limit));
+
+        if (!query.exec()) {
+            throw StorageReadError("Failed to list memory entries: " + query.lastError().text().toStdString());
+        }
+
+        std::vector<MemoryEntry> results;
+        while (query.next()) {
+            MemoryEntry entry;
+            entry.id = query.value(0).toString().toStdString();
+            entry.key = query.value(1).toString().toStdString();
+            entry.content = query.value(2).toString().toStdString();
+            entry.category = query.value(3).toString().toStdString();
+            entry.createdAt = query.value(4).toString().toStdString();
+            entry.updatedAt = query.value(5).toString().toStdString();
+            results.push_back(std::move(entry));
+        }
+        return results;
+    }
+
+    std::optional<MemoryEntry> getMemoryEntry(const std::string& id)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare("SELECT id, key, content, category, created_at, updated_at FROM memory_entries WHERE id = :id;");
+        query.bindValue(":id", QString::fromStdString(id));
+
+        if (!query.exec()) {
+            throw StorageReadError("Failed to get memory entry: " + query.lastError().text().toStdString());
+        }
+
+        if (query.next()) {
+            MemoryEntry entry;
+            entry.id = query.value(0).toString().toStdString();
+            entry.key = query.value(1).toString().toStdString();
+            entry.content = query.value(2).toString().toStdString();
+            entry.category = query.value(3).toString().toStdString();
+            entry.createdAt = query.value(4).toString().toStdString();
+            entry.updatedAt = query.value(5).toString().toStdString();
+            return entry;
+        }
+        return std::nullopt;
+    }
+
+    bool updateMemoryEntry(
+        const std::string& id,
+        const std::string& key,
+        const std::string& content,
+        const std::string& category)
+    {
+        std::string cleanKey = normalizeString(key);
+        std::string cleanContent = normalizeString(content);
+        std::string cleanCat = category.empty() ? "general" : normalizeString(category);
+
+        if (!flex_mem_validate_fact(cleanKey.c_str(), cleanContent.c_str(), cleanCat.c_str())) {
+            throw StorageWriteError("Invalid memory fact: key and content must be non-empty within length limits.");
+        }
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare("UPDATE memory_entries SET key = :key, content = :content, category = :category, updated_at = :updated_at WHERE id = :id;");
+        query.bindValue(":key", QString::fromStdString(cleanKey));
+        query.bindValue(":content", QString::fromStdString(cleanContent));
+        query.bindValue(":category", QString::fromStdString(cleanCat));
+        query.bindValue(":updated_at", utcNowIso());
+        query.bindValue(":id", QString::fromStdString(id));
+
+        if (!query.exec()) {
+            throw StorageWriteError("Failed to update memory entry: " + query.lastError().text().toStdString());
+        }
+        return query.numRowsAffected() > 0;
+    }
+
+    bool deleteMemoryEntry(const std::string& id)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QSqlQuery query(db);
+        query.prepare("DELETE FROM memory_entries WHERE id = :id;");
+        query.bindValue(":id", QString::fromStdString(id));
+
+        if (!query.exec()) {
+            throw StorageWriteError("Failed to delete memory entry: " + query.lastError().text().toStdString());
+        }
+        return query.numRowsAffected() > 0;
+    }
+
+    std::vector<MemoryEntry> searchMemoryEntries(const std::string& queryText, int limit)
+    {
+        std::string cleanQuery = normalizeString(queryText);
+        if (cleanQuery.empty()) {
+            return listMemoryEntries(limit);
+        }
+
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        QSqlDatabase db = getDatabase();
+
+        QString pattern = QString("%%1%").arg(QString::fromStdString(cleanQuery));
+        QSqlQuery query(db);
+        query.prepare(
+            "SELECT id, key, content, category, created_at, updated_at "
+            "FROM memory_entries "
+            "WHERE key LIKE :pat1 OR content LIKE :pat2 OR category LIKE :pat3 "
+            "ORDER BY updated_at DESC "
+            "LIMIT :limit;"
+        );
+        query.bindValue(":pat1", pattern);
+        query.bindValue(":pat2", pattern);
+        query.bindValue(":pat3", pattern);
+        query.bindValue(":limit", std::max(1, limit));
+
+        if (!query.exec()) {
+            throw StorageReadError("Failed to search memory entries: " + query.lastError().text().toStdString());
+        }
+
+        std::vector<MemoryEntry> results;
+        while (query.next()) {
+            MemoryEntry entry;
+            entry.id = query.value(0).toString().toStdString();
+            entry.key = query.value(1).toString().toStdString();
+            entry.content = query.value(2).toString().toStdString();
+            entry.category = query.value(3).toString().toStdString();
+            entry.createdAt = query.value(4).toString().toStdString();
+            entry.updatedAt = query.value(5).toString().toStdString();
+            results.push_back(std::move(entry));
+        }
+
+        if (!results.empty()) {
+            std::sort(results.begin(), results.end(), [&](const MemoryEntry& a, const MemoryEntry& b) {
+                float sa = flex_mem_fact_relevance(cleanQuery.c_str(), a.key.c_str(), a.content.c_str());
+                float sb = flex_mem_fact_relevance(cleanQuery.c_str(), b.key.c_str(), b.content.c_str());
+                return sa > sb;
+            });
+        }
+
+        return results;
+    }
+
     int64_t getTotalMessageCount()
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -672,6 +868,11 @@ private:
             }
 
             query.prepare("INSERT INTO schema_version (version, applied_at) VALUES (1, :applied_at);");
+            query.exec("CREATE TABLE IF NOT EXISTS memory_entries ("
+                       "id TEXT PRIMARY KEY, key TEXT NOT NULL, "
+                       "content TEXT NOT NULL, category TEXT DEFAULT 'general', "
+                       "created_at TEXT NOT NULL, updated_at TEXT NOT NULL);");
+            query.exec("CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries(key);");
             query.bindValue(":applied_at", utcNowIso());
             if (!query.exec()) {
                 db.rollback();
@@ -807,6 +1008,44 @@ std::vector<ConversationRecord> ConversationStorage::searchConversations(
     bool filterEmpty)
 {
     return m_impl->searchConversations(query, limit, filterEmpty);
+}
+
+std::string ConversationStorage::saveMemoryEntry(
+    const std::string& key,
+    const std::string& content,
+    const std::string& category,
+    const std::optional<std::string>& id)
+{
+    return m_impl->saveMemoryEntry(key, content, category, id);
+}
+
+std::vector<MemoryEntry> ConversationStorage::listMemoryEntries(int limit)
+{
+    return m_impl->listMemoryEntries(limit);
+}
+
+std::optional<MemoryEntry> ConversationStorage::getMemoryEntry(const std::string& id)
+{
+    return m_impl->getMemoryEntry(id);
+}
+
+bool ConversationStorage::updateMemoryEntry(
+    const std::string& id,
+    const std::string& key,
+    const std::string& content,
+    const std::string& category)
+{
+    return m_impl->updateMemoryEntry(id, key, content, category);
+}
+
+bool ConversationStorage::deleteMemoryEntry(const std::string& id)
+{
+    return m_impl->deleteMemoryEntry(id);
+}
+
+std::vector<MemoryEntry> ConversationStorage::searchMemoryEntries(const std::string& query, int limit)
+{
+    return m_impl->searchMemoryEntries(query, limit);
 }
 
 void ConversationStorage::close()

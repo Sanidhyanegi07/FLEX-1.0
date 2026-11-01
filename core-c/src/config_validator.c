@@ -469,6 +469,59 @@ flex_cfg_status_t flex_validate_endpoint_url(
     return flex_validate_port(port, true, out_result);
 }
 
+flex_cfg_status_t flex_parse_endpoint_host_port(
+    const char* url,
+    char* out_host,
+    size_t host_size,
+    int* out_port
+) {
+    if (!url || !out_host || host_size == 0 || !out_port) {
+        return FLEX_CFG_ERR_NULL;
+    }
+
+    flex_cfg_result_t res;
+    flex_cfg_status_t status = flex_validate_endpoint_url(url, &res);
+    if (status != FLEX_CFG_VALID) {
+        return status;
+    }
+
+    const char* p = url;
+    int default_port = 80;
+    if (strncmp(p, "http://", 7) == 0) {
+        p += 7;
+        default_port = 80;
+    } else if (strncmp(p, "https://", 8) == 0) {
+        p += 8;
+        default_port = 443;
+    }
+
+    const char* colon = strchr(p, ':');
+    const char* slash = strchr(p, '/');
+    int port = default_port;
+
+    if (colon && (!slash || colon < slash)) {
+        size_t hlen = (size_t)(colon - p);
+        if (hlen >= host_size) return FLEX_CFG_ERR_INVALID_HOST;
+        memcpy(out_host, p, hlen);
+        out_host[hlen] = '\0';
+        port = (int)strtol(colon + 1, NULL, 10);
+    } else if (slash) {
+        size_t hlen = (size_t)(slash - p);
+        if (hlen >= host_size) return FLEX_CFG_ERR_INVALID_HOST;
+        memcpy(out_host, p, hlen);
+        out_host[hlen] = '\0';
+    } else {
+        size_t hlen = strlen(p);
+        if (hlen >= host_size) return FLEX_CFG_ERR_INVALID_HOST;
+        memcpy(out_host, p, hlen);
+        out_host[hlen] = '\0';
+    }
+
+    *out_port = port;
+    return FLEX_CFG_VALID;
+}
+
+
 flex_cfg_status_t flex_validate_temperature(
     double temperature,
     flex_cfg_result_t* out_result

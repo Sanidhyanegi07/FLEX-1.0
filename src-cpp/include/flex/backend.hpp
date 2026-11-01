@@ -164,6 +164,21 @@ public:
         const std::optional<int>& limit = std::nullopt);
     int64_t getMessageCount(const std::string& conversationId);
 
+    // Memory Fact Management
+    std::string saveMemoryEntry(
+        const std::string& key,
+        const std::string& content,
+        const std::string& category = "general");
+    std::vector<MemoryEntry> listMemoryEntries(int limit = 100);
+    std::optional<MemoryEntry> getMemoryEntry(const std::string& id);
+    bool updateMemoryEntry(
+        const std::string& id,
+        const std::string& key,
+        const std::string& content,
+        const std::string& category = "general");
+    bool deleteMemoryEntry(const std::string& id);
+    std::vector<MemoryEntry> searchMemoryEntries(const std::string& query, int limit = 20);
+
     // AI & System Diagnostics
     bool checkHealthSync(double timeoutSeconds = 2.0);
     std::vector<std::string> listModelsSync(double timeoutSeconds = 4.0);

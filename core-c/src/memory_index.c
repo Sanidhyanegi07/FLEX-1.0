@@ -128,3 +128,53 @@ size_t flex_memory_index_search(
 
     return found;
 }
+
+bool flex_mem_validate_fact(
+    const char* key,
+    const char* content,
+    const char* category
+) {
+    if (!key || !content) return false;
+    size_t klen = strlen(key);
+    size_t clen = strlen(content);
+    if (klen == 0 || klen > 64) return false;
+    if (clen == 0 || clen > 1024) return false;
+    if (category && strlen(category) > 32) return false;
+    return true;
+}
+
+float flex_mem_fact_relevance(
+    const char* query,
+    const char* key,
+    const char* content
+) {
+    if (!query || *query == '\0') return 0.0f;
+    float score = 0.0f;
+    size_t dummy_offset = 0;
+
+    if (key && *key != '\0') {
+        score += score_record_match(key, query, &dummy_offset) * 2.5f; /* Key match weighted higher */
+    }
+    if (content && *content != '\0') {
+        score += score_record_match(content, query, &dummy_offset);
+    }
+    return score;
+}
+
+size_t flex_mem_format_context(
+    const char* key,
+    const char* content,
+    char* out_buf,
+    size_t out_buf_size
+) {
+    if (!key || !content || !out_buf || out_buf_size < 8) return 0;
+
+    int written = snprintf(
+        out_buf, out_buf_size,
+        "- %s: %s\n",
+        key, content
+    );
+
+    if (written < 0 || (size_t)written >= out_buf_size) return 0;
+    return (size_t)written;
+}

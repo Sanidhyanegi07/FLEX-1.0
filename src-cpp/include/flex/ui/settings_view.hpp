@@ -67,6 +67,13 @@ public:
     [[nodiscard]] QComboBox* whisperLanguageCombo() const noexcept { return m_whisperLangCombo; }
     [[nodiscard]] QLabel* whisperLanguageWarningLabel() const noexcept { return m_whisperLangWarningLabel; }
 
+    [[nodiscard]] QLineEdit* ollamaEndpointEdit() const noexcept { return m_endpointEdit; }
+    [[nodiscard]] QComboBox* ollamaModelCombo() const noexcept { return m_ollamaModelCombo; }
+    [[nodiscard]] QLineEdit* ollamaModelEdit() const noexcept { return m_modelEdit; }
+    [[nodiscard]] QPushButton* ollamaRefreshButton() const noexcept { return m_ollamaRefreshBtn; }
+    [[nodiscard]] QPushButton* ollamaTestButton() const noexcept { return m_testBtn; }
+    [[nodiscard]] QLabel* ollamaTestResultLabel() const noexcept { return m_testResultLabel; }
+
 public slots:
     void onSaveClicked();
     void onResetClicked();
@@ -76,6 +83,7 @@ signals:
 
 private slots:
     void onTestConnectionClicked();
+    void onFetchOllamaModelsClicked();
     void refreshDeviceList();
     void onModelComboChanged(int index);
 
@@ -91,6 +99,8 @@ private:
     QLineEdit* m_endpointEdit{nullptr};
     QPushButton* m_testBtn{nullptr};
     QLabel* m_testResultLabel{nullptr};
+    QComboBox* m_ollamaModelCombo{nullptr};
+    QPushButton* m_ollamaRefreshBtn{nullptr};
     QLineEdit* m_modelEdit{nullptr};
     QDoubleSpinBox* m_tempSpin{nullptr};
     QSpinBox* m_numCtxSpin{nullptr};

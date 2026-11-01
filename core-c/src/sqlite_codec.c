@@ -135,3 +135,65 @@ size_t flex_sql_build_search_messages_query(
     return (size_t)written;
 }
 
+size_t flex_sql_build_list_memories_query(
+    char* out_buf,
+    size_t buf_cap,
+    int limit
+) {
+    if (!out_buf || buf_cap < 64) return 0;
+    if (limit <= 0) limit = 100;
+
+    int written = snprintf(
+        out_buf, buf_cap,
+        "SELECT id, key, content, category, created_at, updated_at "
+        "FROM memory_entries ORDER BY updated_at DESC LIMIT %d;",
+        limit
+    );
+
+    if (written < 0 || (size_t)written >= buf_cap) return 0;
+    return (size_t)written;
+}
+
+size_t flex_sql_build_delete_memory_query(
+    char* out_buf,
+    size_t buf_cap,
+    const char* memory_id
+) {
+    if (!out_buf || !memory_id || buf_cap < 64) return 0;
+
+    char escaped_id[64];
+    flex_sql_escape_string(memory_id, escaped_id, sizeof(escaped_id));
+
+    int written = snprintf(
+        out_buf, buf_cap,
+        "DELETE FROM memory_entries WHERE id = '%s';",
+        escaped_id
+    );
+
+    if (written < 0 || (size_t)written >= buf_cap) return 0;
+    return (size_t)written;
+}
+
+size_t flex_sql_build_search_memories_query(
+    char* out_buf,
+    size_t buf_cap,
+    const char* query,
+    int limit
+) {
+    if (!out_buf || !query || buf_cap < 128) return 0;
+    if (limit <= 0) limit = 20;
+
+    char escaped_q[128];
+    flex_sql_escape_string(query, escaped_q, sizeof(escaped_q));
+
+    int written = snprintf(
+        out_buf, buf_cap,
+        "SELECT id, key, content, category, created_at, updated_at "
+        "FROM memory_entries WHERE key LIKE '%%%s%%' OR content LIKE '%%%s%%' OR category LIKE '%%%s%%' "
+        "ORDER BY updated_at DESC LIMIT %d;",
+        escaped_q, escaped_q, escaped_q, limit
+    );
+
+    if (written < 0 || (size_t)written >= buf_cap) return 0;
+    return (size_t)written;
+}

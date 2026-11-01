@@ -708,6 +708,27 @@ void test_projects_and_memory_views()
     flex::ui::MemoryView memView(coordinator);
     memView.refreshConversations();
 
+    EXPECT_TRUE(memView.factListWidget() != nullptr);
+    EXPECT_TRUE(memView.keyEdit() != nullptr);
+    EXPECT_TRUE(memView.contentEdit() != nullptr);
+    EXPECT_TRUE(memView.saveFactButton() != nullptr);
+
+    // Test creating a fact via UI
+    memView.keyEdit()->setText("Test Fact");
+    memView.contentEdit()->setPlainText("FLEX 1.0 memory integration test");
+    memView.saveFactButton()->click();
+    QCoreApplication::processEvents();
+
+    EXPECT_EQ(1, memView.factListWidget()->count());
+    EXPECT_TRUE(memView.factStatusLabel()->text().contains("successfully"));
+
+    // Test deleting a fact via UI
+    if (memView.deleteFactButton()) {
+        memView.deleteFactButton()->click();
+        QCoreApplication::processEvents();
+        EXPECT_EQ(0, memView.factListWidget()->count());
+    }
+
     flex::ui::ProjectsView projView;
     EXPECT_FALSE(projView.currentRootPath().isEmpty());
     EXPECT_TRUE(QDir(projView.currentRootPath()).exists());
@@ -749,6 +770,36 @@ void test_settings_view_ui_persistence()
     EXPECT_TRUE(savedLoad.success);
     EXPECT_TRUE(savedLoad.fileExisted);
     EXPECT_STR_EQ("qwen2.5-coder:3b", savedLoad.settings.ollamaModel);
+
+    // Update Ollama endpoint and model via UI controls
+    if (auto* epEdit = settingsView.ollamaEndpointEdit()) {
+        epEdit->setText("http://localhost:11435");
+    }
+    if (auto* combo = settingsView.ollamaModelCombo()) {
+        combo->setEditText("llama3:8b");
+    }
+    if (saveBtn) {
+        saveBtn->click();
+        QCoreApplication::processEvents();
+    }
+
+    auto updatedLoad = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(updatedLoad.success);
+    EXPECT_STR_EQ("http://localhost:11435", updatedLoad.settings.ollamaEndpoint);
+    EXPECT_STR_EQ("llama3:8b", updatedLoad.settings.ollamaModel);
+
+    if (coordinator->ollamaClient()) {
+        EXPECT_STR_EQ("http://localhost:11435", coordinator->ollamaClient()->config().baseUrl);
+        EXPECT_STR_EQ("llama3:8b", coordinator->ollamaClient()->config().model);
+    }
+
+    // Reset settings
+    settingsView.onResetClicked();
+    QCoreApplication::processEvents();
+    auto resetLoad = flex::SettingsPersistenceService::loadSettings();
+    EXPECT_TRUE(resetLoad.success);
+    EXPECT_STR_EQ("http://127.0.0.1:11434", resetLoad.settings.ollamaEndpoint);
+    EXPECT_STR_EQ("qwen2.5-coder:3b", resetLoad.settings.ollamaModel);
 
     qunsetenv("FLEX_CONFIG_PATH");
 }

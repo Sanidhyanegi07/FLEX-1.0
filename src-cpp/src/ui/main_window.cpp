@@ -236,7 +236,7 @@ void MainWindow::setupUi()
 
     // 6: Settings
     m_settingsView = new SettingsView(m_coordinator, m_viewStack);
-    connect(m_settingsView, &SettingsView::settingsUpdated, this, &MainWindow::checkAiConnectivity);
+    connect(m_settingsView, &SettingsView::settingsUpdated, this, &MainWindow::onSettingsUpdated);
     m_viewStack->addWidget(m_settingsView);
 
     workspaceLayout->addWidget(m_viewStack, 1);
@@ -439,6 +439,21 @@ void MainWindow::refreshConversations()
             clist->selectConversation(m_chatView->conversationId());
         }
     }
+}
+
+void MainWindow::onSettingsUpdated()
+{
+    auto loadRes = SettingsPersistenceService::loadSettings();
+    if (loadRes.success && m_coordinator && m_coordinator->ollamaClient()) {
+        OllamaConfig cfg = m_coordinator->ollamaClient()->config();
+        if (!loadRes.settings.ollamaEndpoint.empty()) cfg.baseUrl = loadRes.settings.ollamaEndpoint;
+        if (!loadRes.settings.ollamaModel.empty()) cfg.model = loadRes.settings.ollamaModel;
+        cfg.timeoutSeconds = loadRes.settings.ollamaTimeout;
+        cfg.options.temperature = loadRes.settings.ollamaTemperature;
+        cfg.options.numCtx = loadRes.settings.ollamaNumCtx;
+        m_coordinator->ollamaClient()->setConfig(cfg);
+    }
+    checkAiConnectivity();
 }
 
 void MainWindow::checkAiConnectivity()

@@ -284,6 +284,22 @@ public:
             ollamaMessages.push_back(ChatMessage{"system", sysPrompt});
         }
         try {
+            auto recalledMemories = m_storage->searchMemoryEntries(cleanMsg, 3);
+            if (!recalledMemories.empty()) {
+                std::string memBlock = "\n\n[Recalled User Memory & Preferences]:\n";
+                for (const auto& m : recalledMemories) {
+                    memBlock += "- " + m.key + ": " + m.content + "\n";
+                }
+                if (!ollamaMessages.empty() && ollamaMessages.front().role == "system") {
+                    ollamaMessages.front().content += memBlock;
+                } else {
+                    ollamaMessages.insert(ollamaMessages.begin(), ChatMessage{"system", sysPrompt + memBlock});
+                }
+            }
+        } catch (...) {
+            // Memory retrieval non-blocking fallback
+        }
+        try {
             auto historyRecords = m_storage->getMessages(targetCid, histLimit);
             for (auto& rec : historyRecords) {
                 ollamaMessages.push_back(ChatMessage{std::move(rec.role), std::move(rec.content)});
@@ -756,6 +772,63 @@ std::shared_ptr<OllamaClient> BackendCoordinator::ollamaClient() const
 {
     return m_impl->ollamaClient();
 }
+
+std::string BackendCoordinator::saveMemoryEntry(
+    const std::string& key,
+    const std::string& content,
+    const std::string& category)
+{
+    if (m_impl->storage()) {
+        return m_impl->storage()->saveMemoryEntry(key, content, category);
+    }
+    return {};
+}
+
+std::vector<MemoryEntry> BackendCoordinator::listMemoryEntries(int limit)
+{
+    if (m_impl->storage()) {
+        return m_impl->storage()->listMemoryEntries(limit);
+    }
+    return {};
+}
+
+std::optional<MemoryEntry> BackendCoordinator::getMemoryEntry(const std::string& id)
+{
+    if (m_impl->storage()) {
+        return m_impl->storage()->getMemoryEntry(id);
+    }
+    return std::nullopt;
+}
+
+bool BackendCoordinator::updateMemoryEntry(
+    const std::string& id,
+    const std::string& key,
+    const std::string& content,
+    const std::string& category)
+{
+    if (m_impl->storage()) {
+        return m_impl->storage()->updateMemoryEntry(id, key, content, category);
+    }
+    return false;
+}
+
+bool BackendCoordinator::deleteMemoryEntry(const std::string& id)
+{
+    if (m_impl->storage()) {
+        return m_impl->storage()->deleteMemoryEntry(id);
+    }
+    return false;
+}
+
+std::vector<MemoryEntry> BackendCoordinator::searchMemoryEntries(const std::string& query, int limit)
+{
+    if (m_impl->storage()) {
+        return m_impl->storage()->searchMemoryEntries(query, limit);
+    }
+    return {};
+}
+
+
 
 } // namespace flex
 

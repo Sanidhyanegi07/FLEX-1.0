@@ -68,6 +68,41 @@ size_t flex_memory_index_search(
  */
 void flex_memory_index_clear(flex_memory_index_t* index);
 
+typedef struct {
+    char key[64];
+    char content[256];
+    char category[32];
+    uint64_t updated_at;
+} flex_mem_fact_t;
+
+/**
+ * Validates memory fact fields (non-empty key and content, length boundaries).
+ */
+bool flex_mem_validate_fact(
+    const char* key,
+    const char* content,
+    const char* category
+);
+
+/**
+ * Calculates a relevance score for a memory fact given a search query.
+ */
+float flex_mem_fact_relevance(
+    const char* query,
+    const char* key,
+    const char* content
+);
+
+/**
+ * Formats a memory fact into an injection-safe context line.
+ */
+size_t flex_mem_format_context(
+    const char* key,
+    const char* content,
+    char* out_buf,
+    size_t out_buf_size
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -85,6 +85,24 @@ struct MessageRecord {
     }
 };
 
+/**
+ * Representation of a persistent user memory fact / preference entity.
+ */
+struct MemoryEntry {
+    std::string id;
+    std::string key;
+    std::string content;
+    std::string category{"general"};
+    std::string createdAt;
+    std::string updatedAt;
+
+    bool operator==(const MemoryEntry& other) const noexcept {
+        return id == other.id && key == other.key &&
+               content == other.content && category == other.category &&
+               createdAt == other.createdAt && updatedAt == other.updatedAt;
+    }
+};
+
 class ConversationStorageImpl;
 
 /**
@@ -139,6 +157,23 @@ public:
         const std::string& query,
         int limit = 50,
         bool filterEmpty = false);
+
+    // Memory Fact Operations
+    std::string saveMemoryEntry(
+        const std::string& key,
+        const std::string& content,
+        const std::string& category = "general",
+        const std::optional<std::string>& id = std::nullopt);
+
+    std::vector<MemoryEntry> listMemoryEntries(int limit = 100);
+    std::optional<MemoryEntry> getMemoryEntry(const std::string& id);
+    bool updateMemoryEntry(
+        const std::string& id,
+        const std::string& key,
+        const std::string& content,
+        const std::string& category = "general");
+    bool deleteMemoryEntry(const std::string& id);
+    std::vector<MemoryEntry> searchMemoryEntries(const std::string& query, int limit = 20);
 
     void close();
 
