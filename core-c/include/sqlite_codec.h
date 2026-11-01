@@ -96,6 +96,84 @@ size_t flex_sql_build_search_memories_query(
     int limit
 );
 
+/**
+ * Builds standard DDL for creating the conversations SQLite table.
+ */
+size_t flex_sql_build_create_conversations_table_query(
+    char* out_buf,
+    size_t buf_cap
+);
+
+/**
+ * Builds standard DDL for creating the messages SQLite table.
+ */
+size_t flex_sql_build_create_messages_table_query(
+    char* out_buf,
+    size_t buf_cap
+);
+
+/**
+ * Builds standard DDL for creating the memory_entries SQLite table.
+ */
+size_t flex_sql_build_create_memory_entries_table_query(
+    char* out_buf,
+    size_t buf_cap
+);
+
+/**
+ * Builds standard DDL for creating the schema_version SQLite table.
+ */
+size_t flex_sql_build_create_schema_version_table_query(
+    char* out_buf,
+    size_t buf_cap
+);
+
+/**
+ * Builds SQL transaction control queries (BEGIN, COMMIT, ROLLBACK).
+ */
+size_t flex_sql_build_begin_transaction_query(char* out_buf, size_t buf_cap);
+size_t flex_sql_build_commit_transaction_query(char* out_buf, size_t buf_cap);
+size_t flex_sql_build_rollback_transaction_query(char* out_buf, size_t buf_cap);
+
+/**
+ * Builds SQLite maintenance queries (VACUUM, ANALYZE).
+ */
+size_t flex_sql_build_vacuum_query(char* out_buf, size_t buf_cap);
+size_t flex_sql_build_analyze_query(char* out_buf, size_t buf_cap);
+
+/**
+ * Builds a SQL query to insert a memory fact record into memory_entries.
+ */
+size_t flex_sql_build_insert_memory_query(
+    char* out_buf,
+    size_t buf_cap,
+    const char* id,
+    const char* key,
+    const char* content,
+    const char* category,
+    const char* created_at,
+    const char* updated_at
+);
+
+/**
+ * Builds a SQL query to count total memory entries, optionally filtered by category.
+ */
+size_t flex_sql_build_count_memories_query(
+    char* out_buf,
+    size_t buf_cap,
+    const char* category
+);
+
+/**
+ * Validates a table or column identifier to prevent SQL injection.
+ */
+bool flex_sql_validate_identifier(const char* identifier);
+
+/**
+ * Checks whether an untrusted input string contains SQL injection danger tokens.
+ */
+bool flex_sql_has_injection_tokens(const char* text);
+
 #ifdef __cplusplus
 }
 #endif

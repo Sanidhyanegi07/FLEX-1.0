@@ -103,6 +103,81 @@ size_t flex_mem_format_context(
     size_t out_buf_size
 );
 
+#define FLEX_MEM_FACT_TABLE_CAPACITY 64
+
+typedef struct {
+    flex_mem_fact_t facts[FLEX_MEM_FACT_TABLE_CAPACITY];
+    size_t count;
+    uint64_t total_lookups;
+    uint64_t total_hits;
+} flex_mem_fact_table_t;
+
+/**
+ * Initializes the in-memory fact table.
+ */
+void flex_mem_fact_table_init(flex_mem_fact_table_t* table);
+
+/**
+ * Inserts or updates a fact in the fact table. Returns index slot or -1 on error.
+ */
+int flex_mem_fact_table_upsert(
+    flex_mem_fact_table_t* table,
+    const char* key,
+    const char* content,
+    const char* category,
+    uint64_t timestamp_ms
+);
+
+/**
+ * Finds a fact in the fact table by exact key match. Returns NULL if not found.
+ */
+const flex_mem_fact_t* flex_mem_fact_table_get(
+    flex_mem_fact_table_t* table,
+    const char* key
+);
+
+/**
+ * Deletes a fact from the fact table by key. Returns true if removed.
+ */
+bool flex_mem_fact_table_delete(
+    flex_mem_fact_table_t* table,
+    const char* key
+);
+
+/**
+ * Computes Levenshtein edit distance between two strings.
+ */
+size_t flex_mem_levenshtein_distance(
+    const char* s1,
+    const char* s2
+);
+
+/**
+ * Computes Jaro-Winkler string similarity (0.0 to 1.0).
+ */
+float flex_mem_jaro_winkler_similarity(
+    const char* s1,
+    const char* s2
+);
+
+/**
+ * Evaluates whether two facts are near-duplicates based on key and content similarity.
+ */
+bool flex_mem_fact_is_duplicate(
+    const flex_mem_fact_t* f1,
+    const flex_mem_fact_t* f2,
+    float similarity_threshold
+);
+
+/**
+ * Serializes a fact to a compact JSON string.
+ */
+size_t flex_mem_fact_to_json(
+    const flex_mem_fact_t* fact,
+    char* out_buf,
+    size_t buf_cap
+);
+
 #ifdef __cplusplus
 }
 #endif

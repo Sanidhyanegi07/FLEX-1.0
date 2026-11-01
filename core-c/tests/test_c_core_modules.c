@@ -730,6 +730,45 @@ static void test_memory_index_suite(int *total_run, int *total_passed, int *tota
 
     found = flex_memory_index_search(&index, "nonexistent keyword xyz", results, 4);
     C_ASSERT(found == 0, "No matches for nonexistent term");
+/* Fact Table verification */
+    flex_mem_fact_table_t ftable;
+    flex_mem_fact_table_init(&ftable);
+    int slot = flex_mem_fact_table_upsert(&ftable, "editor", "Neovim", "preferences", 5000);
+    C_ASSERT(slot >= 0, "Upsert fact succeeded");
+    const flex_mem_fact_t* fptr = flex_mem_fact_table_get(&ftable, "editor");
+    C_ASSERT(fptr != NULL, "Fact found by key");
+    C_ASSERT_STR_EQ("Neovim", fptr->content, "Fact content matches");
+    C_ASSERT(flex_mem_fact_table_delete(&ftable, "editor"), "Fact delete succeeded");
+    C_ASSERT(flex_mem_fact_table_get(&ftable, "editor") == NULL, "Fact deleted");
+
+    /* String similarity verification */
+    size_t dist = flex_mem_levenshtein_distance("kitten", "sitting");
+    C_ASSERT(dist == 3, "Levenshtein distance kitten -> sitting is 3");
+    float sim = flex_mem_jaro_winkler_similarity("DIXON", "DICKSONX");
+    C_ASSERT(sim > 0.75f, "Jaro-Winkler similarity DIXON vs DICKSONX is high");
+}
+
+static void test_sqlite_codec_suite(int *total_run, int *total_passed, int *total_failed) {
+    printf("[Testing SQLite Codec & Query Builder]...\n");
+
+    char qbuf[512];
+    size_t len = flex_sql_build_create_conversations_table_query(qbuf, sizeof(qbuf));
+    C_ASSERT(len > 0, "Created conversations DDL");
+    C_ASSERT(strstr(qbuf, "CREATE TABLE IF NOT EXISTS conversations") != NULL, "Conversations DDL has table name");
+
+    len = flex_sql_build_create_memory_entries_table_query(qbuf, sizeof(qbuf));
+    C_ASSERT(len > 0, "Created memory_entries DDL");
+    C_ASSERT(strstr(qbuf, "memory_entries") != NULL, "Memory entries DDL verified");
+
+    len = flex_sql_build_begin_transaction_query(qbuf, sizeof(qbuf));
+    C_ASSERT_STR_EQ("BEGIN TRANSACTION;", qbuf, "Begin transaction SQL matches");
+
+    C_ASSERT(flex_sql_validate_identifier("user_messages_v2"), "Valid identifier accepted");
+    C_ASSERT(!flex_sql_validate_identifier("123_invalid"), "Identifier starting with digit rejected");
+    C_ASSERT(!flex_sql_validate_identifier("bad;id"), "Identifier with semicolon rejected");
+
+    C_ASSERT(flex_sql_has_injection_tokens("SELECT * FROM users; DROP TABLE users;--"), "Injection detected");
+    C_ASSERT(!flex_sql_has_injection_tokens("hello world legitimate query"), "Safe text has no injection tokens");
 }
 
 static void test_conversation_record_suite(int *total_run, int *total_passed, int *total_failed) {
@@ -1931,6 +1970,7 @@ void run_all_extended_c_core_tests(int *total_run, int *total_passed, int *total
     test_config_validator_suite(total_run, total_passed, total_failed);
     test_voice_fsm_suite(total_run, total_passed, total_failed);
     test_memory_index_suite(total_run, total_passed, total_failed);
+    test_sqlite_codec_suite(total_run, total_passed, total_failed);
     test_conversation_record_suite(total_run, total_passed, total_failed);
     test_workspace_analyzer_suite(total_run, total_passed, total_failed);
     test_telemetry_collector_suite(total_run, total_passed, total_failed);

@@ -350,11 +350,12 @@ void MemoryView::onSaveFactClicked()
             m_coordinator->updateMemoryEntry(m_selectedMemoryId.toStdString(), key.toStdString(), content.toStdString(), category.toStdString());
         }
 
+        refreshMemories();
+
         if (m_factStatusLabel) {
             m_factStatusLabel->setText("✓ Memory fact saved successfully.");
             m_factStatusLabel->setStyleSheet(QString("font-size: 11px; color: %1;").arg(Theme::StatusSuccess));
         }
-        refreshMemories();
     } catch (const std::exception& exc) {
         if (m_factStatusLabel) {
             m_factStatusLabel->setText(QString("✕ Error saving fact: %1").arg(exc.what()));
@@ -405,7 +406,7 @@ void MemoryView::refreshConversations()
 
 void MemoryView::onSearchChanged(const QString& text)
 {
-    if (!m_coordinator) return;
+    if (!m_coordinator || !m_coordinator->storage()) return;
 
     std::string query = text.trimmed().toStdString();
     if (query.empty()) {
@@ -413,7 +414,7 @@ void MemoryView::onSearchChanged(const QString& text)
         return;
     }
 
-    auto results = m_coordinator->searchConversations(query, 50, false);
+    auto results = m_coordinator->storage()->searchConversations(query, 50, false);
 
     if (m_listWidget) {
         m_listWidget->blockSignals(true);
@@ -460,7 +461,7 @@ void MemoryView::updateDetailPane(const QString& cid)
     auto messages = m_coordinator->getConversationMessages(cid.toStdString());
     QString transcriptHtml;
     for (const auto& msg : messages) {
-        QString roleColor = (msg.role == "user") ? Theme::Primary : Theme::Accent;
+        QString roleColor = (msg.role == "user") ? Theme::TextAccentViolet : Theme::TextAccentCyan;
         QString roleName = (msg.role == "user") ? "User" : "FLEX Assistant";
 
         transcriptHtml += QString("<p style='margin: 4px 0;'><b style='color: %1;'>%2:</b> %3</p>")
