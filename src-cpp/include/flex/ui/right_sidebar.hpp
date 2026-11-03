@@ -5,6 +5,8 @@
 #include <QLabel>
 #include <QPushButton>
 
+#include "flex/backend.hpp"
+
 namespace flex::ui {
 
 /**
@@ -24,7 +26,7 @@ public:
     ~RightSidebar() override = default;
 
     void updateTelemetry(
-        bool ollamaOnline,
+        flex::AiServiceState aiState,
         const QString& modelName,
         bool coreProcessing,
         const QString& dbPath = QString());
@@ -32,6 +34,7 @@ public:
 signals:
     void quickActionRequested(const QString& actionKey);
     void diagnosticsRequested();
+    void retryAiConnectionRequested();  // Emitted when user clicks Retry button
 
 private slots:
     void onSignInClicked();
@@ -51,6 +54,7 @@ private:
     QLabel* m_networkStatusPill{nullptr};
 
     QPushButton* m_diagnosticsBtn{nullptr};
+    QPushButton* m_retryBtn{nullptr};
 };
 
 } // namespace flex::ui

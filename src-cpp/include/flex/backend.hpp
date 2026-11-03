@@ -17,7 +17,24 @@
 #include <vector>
 
 namespace flex {
+/**
+ * AI service availability state, separate from overall application health.
+ * Only AI inference degrades when Ollama is unavailable; all local features
+ * (memory, knowledge base, storage, voice transcription) remain operational.
+ */
+enum class AiServiceState {
+    Connecting,    // Initial state: startup health check in flight
+    Ready,         // Ollama reachable AND model available
+    Offline,       // Ollama daemon unreachable (connection refused / timeout)
+    ModelMissing,  // Ollama reachable but requested model is not pulled
+    Recovering,    // A retry attempt is in flight after prior failure
+    Error          // Unexpected / non-network error (malformed response, etc.)
+};
 
+/**
+ * Human-readable label for an AiServiceState value.
+ */
+[[nodiscard]] const char* aiServiceStateToString(AiServiceState state) noexcept;
 /**
  * High-level error classification for backend coordinator operations.
  */

@@ -43,6 +43,17 @@ const char* backendErrorCategoryToString(BackendErrorCategory category) noexcept
     }
 }
 
+const char* aiServiceStateToString(AiServiceState state) noexcept
+{
+    switch (state) {
+    case AiServiceState::Connecting:   return "Connecting";
+    case AiServiceState::Ready:        return "Ready";
+    case AiServiceState::Offline:      return "Offline";
+    case AiServiceState::ModelMissing: return "ModelMissing";
+    case AiServiceState::Recovering:   return "Recovering";
+    default:                           return "Error";
+    }
+}
 namespace {
 
 BackendErrorCategory mapOllamaError(OllamaErrorCode code) noexcept

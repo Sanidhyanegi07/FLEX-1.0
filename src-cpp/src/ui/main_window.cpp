@@ -81,23 +81,20 @@ MainWindow::MainWindow(
 
     // Apply hardware preferences to services and wire SettingsView
     if (loadRes.success) {
-        if (!loadRes.settings.audioInputDevice.empty() && m_chatView->audioCaptureService()) {
+        if (!loadRes.settings.audioInputDevice.empty() && m_chatView->audioCaptureService())
             m_chatView->audioCaptureService()->setPreferredDeviceId(loadRes.settings.audioInputDevice);
-        }
         if (m_chatView->textToSpeechService()) {
             m_chatView->textToSpeechService()->setRate(loadRes.settings.ttsRate);
             m_chatView->textToSpeechService()->setVolume(loadRes.settings.ttsVolume);
         }
         if (m_voiceController && m_voiceController->speechToTextService()) {
-            if (!loadRes.settings.whisperModelPath.empty() && !m_voiceController->speechToTextService()->isModelLoaded()) {
-                m_voiceController->speechToTextService()->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
-            }
-            if (!loadRes.settings.whisperLanguage.empty()) {
-                m_voiceController->speechToTextService()->setLanguage(QString::fromStdString(loadRes.settings.whisperLanguage));
-            }
-            if (!loadRes.settings.whisperPrompt.empty()) {
-                m_voiceController->speechToTextService()->setInitialPrompt(QString::fromStdString(loadRes.settings.whisperPrompt));
-            }
+            auto stt = m_voiceController->speechToTextService();
+            if (!loadRes.settings.whisperModelPath.empty() && !stt->isModelLoaded())
+                stt->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
+            if (!loadRes.settings.whisperLanguage.empty())
+                stt->setLanguage(QString::fromStdString(loadRes.settings.whisperLanguage));
+            if (!loadRes.settings.whisperPrompt.empty())
+                stt->setInitialPrompt(QString::fromStdString(loadRes.settings.whisperPrompt));
         }
     }
     m_settingsView->setAudioCaptureService(m_chatView->audioCaptureService());
@@ -124,12 +121,8 @@ MainWindow::~MainWindow()
         m_healthCheckThread->quit();
         m_healthCheckThread->wait(1000);
     }
-    if (m_voiceController) {
-        m_voiceController->cancelAll();
-    }
-    if (m_coordinator) {
-        m_coordinator->cancelAll();
-    }
+    if (m_voiceController) m_voiceController->cancelAll();
+    if (m_coordinator) m_coordinator->cancelAll();
 }
 
 ConversationListWidget* MainWindow::conversationListWidget() const
@@ -339,6 +332,12 @@ void MainWindow::connectCoordinatorSignals()
             this, &MainWindow::onChatError);
     connect(m_coordinator.get(), &BackendCoordinator::chatToken,
             this, &MainWindow::onChatToken);
+
+    // Wire Retry AI Connection button from RightSidebar
+    if (m_rightSidebar) {
+        connect(m_rightSidebar, &RightSidebar::retryAiConnectionRequested,
+                this, &MainWindow::retryAiConnection);
+    }
 }
 
 void MainWindow::handleSendChat(const QString& promptText)
@@ -385,6 +384,16 @@ void MainWindow::handleSendChat(const QString& promptText)
 
     if (m_coordinator->coreSession().isProcessing()) {
         m_chatView->showErrorBanner("System is currently processing another operation. Please wait.");
+        return;
+    }
+
+    // Guard against AI being offline before dispatching request
+    if (m_aiServiceState != flex::AiServiceState::Ready) {
+        // Preserve the user's prompt in the UI and inform them
+        m_chatView->appendUserMessage(trimmed);
+        m_chatView->showErrorBanner("AI service offline – start Ollama or click Retry.");
+        m_chatView->setInputEnabled(true);
+        updateCoreStateDisplay();
         return;
     }
 
@@ -503,10 +512,14 @@ void MainWindow::onSettingsUpdated()
 
 void MainWindow::checkAiConnectivity()
 {
-    if (m_isCheckingHealth || !m_coordinator) {
-        return;
-    }
+    if (m_isCheckingHealth || !m_coordinator) return;
     m_isCheckingHealth = true;
+
+    // Transition to Recovering if we were already Offline; stay Connecting on first call
+    if (m_aiServiceState == flex::AiServiceState::Offline ||
+        m_aiServiceState == flex::AiServiceState::ModelMissing ||
+        m_aiServiceState == flex::AiServiceState::Error)
+        applyAiServiceState(flex::AiServiceState::Recovering);
 
     auto coord = m_coordinator;
     QPointer<MainWindow> safeThis = this;
@@ -515,11 +528,13 @@ void MainWindow::checkAiConnectivity()
             return;
         }
         bool ok = false;
+        bool modelOk = false;
         std::string model = "unknown";
         try {
             ok = coord->checkHealthSync(1.5);
             if (ok && coord->ollamaClient()) {
                 model = coord->ollamaClient()->config().model;
+                modelOk = coord->isModelAvailableSync(model, 2.0);
             }
         } catch (...) {
             ok = false;
@@ -530,11 +545,19 @@ void MainWindow::checkAiConnectivity()
         }
 
         if (safeThis) {
-            QMetaObject::invokeMethod(safeThis.data(), [safeThis, ok, model]() {
-                if (safeThis) {
-                    safeThis->m_isCheckingHealth = false;
-                    safeThis->updateTelemetryBar(ok, QString::fromStdString(model));
-                }
+            QMetaObject::invokeMethod(safeThis.data(), [safeThis, ok, modelOk, model]() {
+                if (!safeThis) return;
+                safeThis->m_isCheckingHealth = false;
+
+                flex::AiServiceState newState = !ok ? flex::AiServiceState::Offline
+                    : (!modelOk ? flex::AiServiceState::ModelMissing : flex::AiServiceState::Ready);
+
+                safeThis->applyAiServiceState(newState);
+                safeThis->updateTelemetryBar(ok && modelOk, QString::fromStdString(model));
+
+                bool isReady = (newState == flex::AiServiceState::Ready);
+                safeThis->m_retryIntervalMs = isReady ? kRetryBaseMs : std::min(safeThis->m_retryIntervalMs * 2, kRetryMaxMs);
+                safeThis->m_healthCheckTimer.setInterval(isReady ? 10000 : safeThis->m_retryIntervalMs);
             }, Qt::QueuedConnection);
         }
     });
@@ -544,24 +567,30 @@ void MainWindow::checkAiConnectivity()
     thread->start();
 }
 
+void MainWindow::retryAiConnection()
+{
+    m_retryIntervalMs = kRetryBaseMs;
+    m_healthCheckTimer.setInterval(kRetryBaseMs);
+    if (!m_isCheckingHealth) checkAiConnectivity();
+}
+
+void MainWindow::applyAiServiceState(flex::AiServiceState newState)
+{
+    m_aiServiceState = newState;
+    if (!m_rightSidebar) return;
+    QString dbPath = (m_coordinator && m_coordinator->storage()) ? QString::fromStdString(m_coordinator->storage()->dbPath()) : QString();
+    bool coreProc = m_coordinator ? m_coordinator->coreSession().isProcessing() : false;
+    m_rightSidebar->updateTelemetry(newState, m_lastOllamaModel, coreProc, dbPath);
+}
+
 void MainWindow::updateTelemetryBar(bool ollamaOnline, const QString& modelName)
 {
     m_lastOllamaOnline = ollamaOnline;
     m_lastOllamaModel = modelName;
-
     if (m_topHeader) {
         m_topHeader->setOllamaStatus(ollamaOnline, modelName);
     }
-
-    QString dbPath;
-    if (m_coordinator && m_coordinator->storage()) {
-        dbPath = QString::fromStdString(m_coordinator->storage()->dbPath());
-    }
-
-    bool coreProc = m_coordinator ? m_coordinator->coreSession().isProcessing() : false;
-    if (m_rightSidebar) {
-        m_rightSidebar->updateTelemetry(ollamaOnline, modelName, coreProc, dbPath);
-    }
+    // RightSidebar state is managed by applyAiServiceState; no duplicate call here.
 }
 
 void MainWindow::updateCoreStateDisplay()
@@ -583,7 +612,7 @@ void MainWindow::updateCoreStateDisplay()
     }
 
     if (m_rightSidebar) {
-        m_rightSidebar->updateTelemetry(m_lastOllamaOnline, m_lastOllamaModel, processing, dbPath);
+        m_rightSidebar->updateTelemetry(m_aiServiceState, m_lastOllamaModel, processing, dbPath);
     }
 }
 
@@ -655,6 +684,14 @@ void MainWindow::onChatError(uint64_t requestId, const flex::BackendError& error
         m_chatView->setInputEnabled(true);
         m_chatView->setVisualState(CoreVisualState::Error);
         QString errStr = QString::fromStdString(error.message);
+        if (error.category == flex::BackendErrorCategory::AiNetworkError ||
+            error.category == flex::BackendErrorCategory::AiTimeout) {
+            errStr = QStringLiteral(
+                "Local AI (Ollama) is unavailable. "
+                "Your message has been saved. "
+                "Start Ollama with 'ollama serve' then click Retry.");
+            if (!m_isCheckingHealth) { checkAiConnectivity(); }
+        }
         m_chatView->showErrorBanner(errStr);
     }
     updateCoreStateDisplay();
@@ -668,12 +705,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
         m_healthCheckThread->quit();
         m_healthCheckThread->wait(1000);
     }
-    if (m_voiceController) {
-        m_voiceController->cancelAll();
-    }
-    if (m_coordinator) {
-        m_coordinator->cancelAll();
-    }
+    if (m_voiceController) m_voiceController->cancelAll();
+    if (m_coordinator) m_coordinator->cancelAll();
     event->accept();
 }
 
