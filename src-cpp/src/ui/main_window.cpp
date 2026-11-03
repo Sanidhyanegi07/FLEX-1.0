@@ -356,7 +356,7 @@ void MainWindow::handleSendChat(const QString& promptText)
             return;
         }
 
-        m_chatView->appendUserMessage(trimmed);
+        
         QString responseText = QString::fromUtf8(dispResult.response_text);
         if (action == FLEX_DISPATCH_HANDLED_INTERNAL) {
             m_chatView->startAssistantMessage("c-core:tools");
@@ -387,6 +387,16 @@ void MainWindow::handleSendChat(const QString& promptText)
         return;
     }
 
+    // Guard against AI being offline before dispatching request
+    if (m_aiServiceState != flex::AiServiceState::Ready) {
+        // Preserve the user's prompt in the UI and inform them
+        m_chatView->appendUserMessage(trimmed);
+        m_chatView->showErrorBanner("AI service offline – start Ollama or click Retry.");
+        m_chatView->setInputEnabled(true);
+        updateCoreStateDisplay();
+        return;
+    }
+
     ChatRequest req;
     req.message = trimmed.toStdString();
     if (!m_chatView->conversationId().isEmpty()) {
@@ -396,7 +406,7 @@ void MainWindow::handleSendChat(const QString& promptText)
 
     m_chatView->setInputEnabled(false);
     m_chatView->setVisualState(CoreVisualState::Thinking);
-    m_chatView->appendUserMessage(trimmed);
+    
     m_chatView->startAssistantMessage();
 
     updateCoreStateDisplay();
