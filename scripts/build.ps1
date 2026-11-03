@@ -100,6 +100,13 @@ if ($NoBridge) {
     $cmakeArgs += "-DFLEX_BUILD_BRIDGE=ON"
 }
 
+# Detect ccache and enable it for faster incremental builds
+$ccacheCmd = Get-Command "ccache" -ErrorAction SilentlyContinue
+if ($ccacheCmd) {
+    Write-Host "ccache detected – enabling compiler launcher for faster builds" -ForegroundColor Cyan
+    $cmakeArgs += "-DCMAKE_C_COMPILER_LAUNCHER=ccache"
+    $cmakeArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+}
 Write-Host "Configuring CMake project..." -ForegroundColor Cyan
 & cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) {
