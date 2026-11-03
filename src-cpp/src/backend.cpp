@@ -51,8 +51,7 @@ const char* aiServiceStateToString(AiServiceState state) noexcept
     case AiServiceState::Offline:      return "Offline";
     case AiServiceState::ModelMissing: return "ModelMissing";
     case AiServiceState::Recovering:   return "Recovering";
-    case AiServiceState::Error:        return "Error";
-    default:                           return "Unknown";
+    default:                           return "Error";
     }
 }
 namespace {

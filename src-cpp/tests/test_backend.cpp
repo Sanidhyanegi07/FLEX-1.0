@@ -1077,37 +1077,12 @@ void test_concurrent_request_rejection_and_no_orphans(MockOllamaServer& mock)
 // Offline Resilience & Ollama Failure Recovery Tests (15 scenarios)
 // =============================================================================
 
-// Helper: run event loop for up to N milliseconds or until condition is true
-static bool waitForCondition(std::function<bool()> cond, int timeoutMs = 3000)
-{
-    QEventLoop loop;
-    QTimer timer;
-    timer.setSingleShot(true);
-    bool result = false;
-    QTimer::singleShot(0, &loop, [&]() {
-        if (cond()) { result = true; loop.quit(); }
-    });
-    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
-        result = cond();
-        loop.quit();
-    });
-    timer.start(timeoutMs);
-    // Poll every 100ms
-    QTimer pollTimer;
-    QObject::connect(&pollTimer, &QTimer::timeout, &loop, [&]() {
-        if (cond()) { result = true; timer.stop(); loop.quit(); }
-    });
-    pollTimer.start(100);
-    loop.exec();
-    return result;
-}
-
 // Test 1: Ollama available at startup — chat succeeds
 static void test_offline_ollama_available_at_startup(MockOllamaServer& mock)
 {
     mock.reset();
-    // Health endpoint
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    // Health endpoint requires {"version": "..."}
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
 
     auto storage = std::make_shared<flex::ConversationStorage>(std::nullopt);
     flex::OllamaConfig cfg;
@@ -1115,17 +1090,16 @@ static void test_offline_ollama_available_at_startup(MockOllamaServer& mock)
     cfg.model = "test-model";
     auto ollamaClient = std::make_shared<flex::OllamaClient>(cfg);
 
-    // Configure mock for chat
-    std::string chatResp = R"({"model":"test-model","message":{"role":"assistant","content":"Hello"},"done":true})";
-    mock.setResponse(200, "OK", chatResp);
-
     auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, ollamaClient);
     bool healthy = coordinator->checkHealthSync(1.5);
     EXPECT_TRUE(healthy);
 
+    // Configure mock for chat
+    std::string chatResp = R"({"model":"test-model","message":{"role":"assistant","content":"Hello"},"done":true})";
+    mock.setResponse(200, "OK", chatResp);
+
     flex::ChatRequest req;
     req.message = "Test 1 message";
-    mock.setResponse(200, "OK", chatResp);
     flex::BackendError err;
     auto result = coordinator->sendChatSync(req, &err);
     EXPECT_TRUE(result.success);
@@ -1150,7 +1124,7 @@ static void test_offline_ollama_unavailable_at_startup()
 static void test_offline_local_ollama_no_internet(MockOllamaServer& mock)
 {
     mock.reset();
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
     flex::OllamaConfig cfg;
     cfg.baseUrl = mock.url();
     cfg.model = "local-model";
@@ -1190,9 +1164,6 @@ static void test_offline_no_internet_no_ollama()
 static void test_offline_ollama_starts_after_flex(MockOllamaServer& mock)
 {
     mock.reset();
-    // First 2 health calls fail
-    int callCount = 0;
-    // We simulate this by stopping/restarting mock — instead use setDelay/setResponse
     // Initially: 503
     mock.setResponse(503, "Service Unavailable", "");
     flex::OllamaConfig cfg;
@@ -1206,7 +1177,7 @@ static void test_offline_ollama_starts_after_flex(MockOllamaServer& mock)
     EXPECT_FALSE(h1);  // First call fails
 
     // Now "Ollama starts": switch to success
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
     bool h2 = coordinator->checkHealthSync(1.0);
     EXPECT_TRUE(h2);   // Second call succeeds
 }
@@ -1215,7 +1186,7 @@ static void test_offline_ollama_starts_after_flex(MockOllamaServer& mock)
 static void test_offline_ollama_stops_during_session(MockOllamaServer& mock)
 {
     mock.reset();
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
     flex::OllamaConfig cfg;
     cfg.baseUrl = mock.url();
     cfg.model = "test-model";
@@ -1257,7 +1228,7 @@ static void test_offline_ollama_restart_cycle(MockOllamaServer& mock)
     EXPECT_FALSE(coordinator->checkHealthSync(0.5));
 
     // Back up
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
     EXPECT_TRUE(coordinator->checkHealthSync(1.0));
 
     // Down again
@@ -1265,7 +1236,7 @@ static void test_offline_ollama_restart_cycle(MockOllamaServer& mock)
     EXPECT_FALSE(coordinator->checkHealthSync(0.5));
 
     // Back up again
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
     EXPECT_TRUE(coordinator->checkHealthSync(1.0));
 }
 
@@ -1273,7 +1244,7 @@ static void test_offline_ollama_restart_cycle(MockOllamaServer& mock)
 static void test_offline_model_missing(MockOllamaServer& mock)
 {
     mock.reset();
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
     flex::OllamaConfig cfg;
     cfg.baseUrl = mock.url();
     cfg.model = "nonexistent-model";
@@ -1284,8 +1255,8 @@ static void test_offline_model_missing(MockOllamaServer& mock)
     bool healthy = coordinator->checkHealthSync(1.0);
     EXPECT_TRUE(healthy);  // Ollama daemon is reachable
 
-    // Model availability check — mock returns 404 for models/show
-    mock.setResponse(404, "Not Found", R"({"error":"model nonexistent-model not found"})");
+    // Model availability check — mock returns tag list without nonexistent-model
+    mock.setResponse(200, "OK", R"({"models": [{"name": "other-model:latest"}]})");
     bool modelOk = coordinator->isModelAvailableSync("nonexistent-model", 1.0);
     EXPECT_FALSE(modelOk);  // Model is missing
 }
@@ -1348,10 +1319,12 @@ static void test_offline_multiple_requests_during_unavailability()
     auto storage = std::make_shared<flex::ConversationStorage>(std::nullopt);
     auto coordinator = std::make_shared<flex::BackendCoordinator>(storage, ollamaClient);
 
+    std::string cid = coordinator->createConversation("Unavailability Topic");
     int64_t convsBefore = storage->getConversationCount();
 
     for (int i = 0; i < 3; ++i) {
         flex::ChatRequest req;
+        req.conversationId = cid;
         req.message = "Unavailability test " + std::to_string(i);
         flex::BackendError err;
         auto result = coordinator->sendChatSync(req, &err);
@@ -1371,7 +1344,7 @@ static void test_offline_safe_shutdown_during_health_check(MockOllamaServer& moc
 {
     mock.reset();
     mock.setDelay(500);  // Delay response so health check is in flight
-    mock.setResponse(200, "OK", R"({"status":"ok"})");
+    mock.setResponse(200, "OK", R"({"version": "0.4.6"})");
 
     flex::OllamaConfig cfg;
     cfg.baseUrl = mock.url();

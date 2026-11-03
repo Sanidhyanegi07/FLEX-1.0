@@ -81,23 +81,20 @@ MainWindow::MainWindow(
 
     // Apply hardware preferences to services and wire SettingsView
     if (loadRes.success) {
-        if (!loadRes.settings.audioInputDevice.empty() && m_chatView->audioCaptureService()) {
+        if (!loadRes.settings.audioInputDevice.empty() && m_chatView->audioCaptureService())
             m_chatView->audioCaptureService()->setPreferredDeviceId(loadRes.settings.audioInputDevice);
-        }
         if (m_chatView->textToSpeechService()) {
             m_chatView->textToSpeechService()->setRate(loadRes.settings.ttsRate);
             m_chatView->textToSpeechService()->setVolume(loadRes.settings.ttsVolume);
         }
         if (m_voiceController && m_voiceController->speechToTextService()) {
-            if (!loadRes.settings.whisperModelPath.empty() && !m_voiceController->speechToTextService()->isModelLoaded()) {
-                m_voiceController->speechToTextService()->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
-            }
-            if (!loadRes.settings.whisperLanguage.empty()) {
-                m_voiceController->speechToTextService()->setLanguage(QString::fromStdString(loadRes.settings.whisperLanguage));
-            }
-            if (!loadRes.settings.whisperPrompt.empty()) {
-                m_voiceController->speechToTextService()->setInitialPrompt(QString::fromStdString(loadRes.settings.whisperPrompt));
-            }
+            auto stt = m_voiceController->speechToTextService();
+            if (!loadRes.settings.whisperModelPath.empty() && !stt->isModelLoaded())
+                stt->loadModel(QString::fromStdString(loadRes.settings.whisperModelPath));
+            if (!loadRes.settings.whisperLanguage.empty())
+                stt->setLanguage(QString::fromStdString(loadRes.settings.whisperLanguage));
+            if (!loadRes.settings.whisperPrompt.empty())
+                stt->setInitialPrompt(QString::fromStdString(loadRes.settings.whisperPrompt));
         }
     }
     m_settingsView->setAudioCaptureService(m_chatView->audioCaptureService());
@@ -124,12 +121,8 @@ MainWindow::~MainWindow()
         m_healthCheckThread->quit();
         m_healthCheckThread->wait(1000);
     }
-    if (m_voiceController) {
-        m_voiceController->cancelAll();
-    }
-    if (m_coordinator) {
-        m_coordinator->cancelAll();
-    }
+    if (m_voiceController) m_voiceController->cancelAll();
+    if (m_coordinator) m_coordinator->cancelAll();
 }
 
 ConversationListWidget* MainWindow::conversationListWidget() const
@@ -509,17 +502,14 @@ void MainWindow::onSettingsUpdated()
 
 void MainWindow::checkAiConnectivity()
 {
-    if (m_isCheckingHealth || !m_coordinator) {
-        return;
-    }
+    if (m_isCheckingHealth || !m_coordinator) return;
     m_isCheckingHealth = true;
 
     // Transition to Recovering if we were already Offline; stay Connecting on first call
     if (m_aiServiceState == flex::AiServiceState::Offline ||
         m_aiServiceState == flex::AiServiceState::ModelMissing ||
-        m_aiServiceState == flex::AiServiceState::Error) {
+        m_aiServiceState == flex::AiServiceState::Error)
         applyAiServiceState(flex::AiServiceState::Recovering);
-    }
 
     auto coord = m_coordinator;
     QPointer<MainWindow> safeThis = this;
@@ -549,27 +539,15 @@ void MainWindow::checkAiConnectivity()
                 if (!safeThis) return;
                 safeThis->m_isCheckingHealth = false;
 
-                flex::AiServiceState newState;
-                if (!ok) {
-                    newState = flex::AiServiceState::Offline;
-                } else if (!modelOk) {
-                    newState = flex::AiServiceState::ModelMissing;
-                } else {
-                    newState = flex::AiServiceState::Ready;
-                }
+                flex::AiServiceState newState = !ok ? flex::AiServiceState::Offline
+                    : (!modelOk ? flex::AiServiceState::ModelMissing : flex::AiServiceState::Ready);
 
                 safeThis->applyAiServiceState(newState);
                 safeThis->updateTelemetryBar(ok && modelOk, QString::fromStdString(model));
 
-                // Schedule next check: exponential backoff when offline, steady 10s when ready
-                if (newState == flex::AiServiceState::Ready) {
-                    safeThis->m_retryIntervalMs = kRetryBaseMs;
-                    safeThis->m_healthCheckTimer.setInterval(10000);
-                } else {
-                    // Double the interval up to kRetryMaxMs
-                    safeThis->m_retryIntervalMs = std::min(safeThis->m_retryIntervalMs * 2, kRetryMaxMs);
-                    safeThis->m_healthCheckTimer.setInterval(safeThis->m_retryIntervalMs);
-                }
+                bool isReady = (newState == flex::AiServiceState::Ready);
+                safeThis->m_retryIntervalMs = isReady ? kRetryBaseMs : std::min(safeThis->m_retryIntervalMs * 2, kRetryMaxMs);
+                safeThis->m_healthCheckTimer.setInterval(isReady ? 10000 : safeThis->m_retryIntervalMs);
             }, Qt::QueuedConnection);
         }
     });
@@ -581,24 +559,16 @@ void MainWindow::checkAiConnectivity()
 
 void MainWindow::retryAiConnection()
 {
-    // Reset backoff and immediately trigger a check
     m_retryIntervalMs = kRetryBaseMs;
     m_healthCheckTimer.setInterval(kRetryBaseMs);
-    if (!m_isCheckingHealth) {
-        checkAiConnectivity();
-    }
+    if (!m_isCheckingHealth) checkAiConnectivity();
 }
 
 void MainWindow::applyAiServiceState(flex::AiServiceState newState)
 {
     m_aiServiceState = newState;
-
     if (!m_rightSidebar) return;
-
-    QString dbPath;
-    if (m_coordinator && m_coordinator->storage()) {
-        dbPath = QString::fromStdString(m_coordinator->storage()->dbPath());
-    }
+    QString dbPath = (m_coordinator && m_coordinator->storage()) ? QString::fromStdString(m_coordinator->storage()->dbPath()) : QString();
     bool coreProc = m_coordinator ? m_coordinator->coreSession().isProcessing() : false;
     m_rightSidebar->updateTelemetry(newState, m_lastOllamaModel, coreProc, dbPath);
 }
@@ -725,12 +695,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
         m_healthCheckThread->quit();
         m_healthCheckThread->wait(1000);
     }
-    if (m_voiceController) {
-        m_voiceController->cancelAll();
-    }
-    if (m_coordinator) {
-        m_coordinator->cancelAll();
-    }
+    if (m_voiceController) m_voiceController->cancelAll();
+    if (m_coordinator) m_coordinator->cancelAll();
     event->accept();
 }
 
