@@ -356,7 +356,7 @@ void MainWindow::handleSendChat(const QString& promptText)
             return;
         }
 
-        
+        m_chatView->appendUserMessage(trimmed);
         QString responseText = QString::fromUtf8(dispResult.response_text);
         if (action == FLEX_DISPATCH_HANDLED_INTERNAL) {
             m_chatView->startAssistantMessage("c-core:tools");
@@ -406,7 +406,7 @@ void MainWindow::handleSendChat(const QString& promptText)
 
     m_chatView->setInputEnabled(false);
     m_chatView->setVisualState(CoreVisualState::Thinking);
-    
+    m_chatView->appendUserMessage(trimmed);
     m_chatView->startAssistantMessage();
 
     updateCoreStateDisplay();
