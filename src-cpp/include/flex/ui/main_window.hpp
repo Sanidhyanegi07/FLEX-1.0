@@ -74,12 +74,14 @@ private slots:
     void onChatToken(uint64_t requestId, const QString& token);
     void onToggleRightSidebar();
     void onDiagnosticsRequested();
+    void retryAiConnection();  // Triggered by Retry button in RightSidebar
 
 private:
     void setupUi();
     void connectCoordinatorSignals();
     void updateTelemetryBar(bool ollamaOnline, const QString& modelName = QString());
     void updateCoreStateDisplay();
+    void applyAiServiceState(flex::AiServiceState newState);
 
     std::shared_ptr<BackendCoordinator> m_coordinator;
     std::shared_ptr<voice::VoiceConversationController> m_voiceController;
@@ -107,6 +109,12 @@ private:
     uint64_t m_opCount{0};
     bool m_lastOllamaOnline{false};
     QString m_lastOllamaModel;
+
+    // Offline resilience: AI service state machine
+    flex::AiServiceState m_aiServiceState{flex::AiServiceState::Connecting};
+    int m_retryIntervalMs{2000};
+    static constexpr int kRetryBaseMs = 2000;
+    static constexpr int kRetryMaxMs  = 60000;
 };
 
 } // namespace flex::ui
