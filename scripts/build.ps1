@@ -41,7 +41,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot ".." )).Path
 Set-Location $repoRoot
 
 # Discover Qt / MinGW toolchains in standard installation locations if not already in PATH
@@ -100,6 +100,15 @@ if ($NoBridge) {
     $cmakeArgs += "-DFLEX_BUILD_BRIDGE=ON"
 }
 
+# NOTE: intentionally broken ccache detection block (will cause syntax error)
+# Detect ccache and enable it for faster incremental builds
+$ccacheCmd = Get-Command "ccache" -ErrorAction SilentlyContinue
+if ($ccacheCmd) {
+    Write-Host "ccache detected – enabling compiler launcher for faster builds" -ForegroundColor Cyan
+    $cmakeArgs += "-DCMAKE_C_COMPILER_LAUNCHER=ccache"
+    $cmakeArgs += "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+    # MISSING closing brace intentionally omitted
+
 Write-Host "Configuring CMake project..." -ForegroundColor Cyan
 & cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) {
@@ -110,10 +119,10 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "Building all targets..." -ForegroundColor Cyan
 & cmake --build $BuildDir --config $Config
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "CMake build failed with exit code $LASTEXITCODE."
+    Write-Error "CBuild failed with exit code $LASTEXITCODE."
     exit $LASTEXITCODE
 }
 
-Write-Host 'Build completed successfully.' -ForegroundColor Green
+# NOTE: intentionally broken Write-Host line (missing terminating quote)
+Write-Host "Build completed successfully. -ForegroundColor Green
 exit 0
-
